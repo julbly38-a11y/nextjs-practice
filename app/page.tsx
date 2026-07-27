@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { Rnd } from "react-rnd";
 
-type ViewState = "login" | "intermediate" | "cabinet";
 type ElementType = "block" | "heading" | "text" | "button";
 
 interface CanvasElement {
@@ -20,14 +19,24 @@ interface CanvasElement {
   parentId: number | null;
 }
 
-export default function AppFixed() {
-  const [currentView, setCurrentView] = useState<ViewState>("login");
-  const [email, setEmail] = useState("manager@hospital.com");
-  const [password, setPassword] = useState("123");
-  const [role, setRole] = useState<"manager" | "doctor">("manager");
+const adjustColorBrightness = (hex: string, percent: number) => {
+  let num = parseInt(hex.replace("#", ""), 16);
+  if (isNaN(num)) return hex;
+  let r = (num >> 16) + percent;
+  let g = ((num >> 8) & 0x00ff) + percent;
+  let b = (num & 0x0000ff) + percent;
+  r = Math.min(255, Math.max(0, r));
+  g = Math.min(255, Math.max(0, g));
+  b = Math.min(255, Math.max(0, b));
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+};
 
+export default function AppFixed() {
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [tempContent, setTempContent] = useState<string>("");
 
   const [newType, setNewType] = useState<ElementType>("block");
   const [newContent, setNewContent] = useState<string>("Блок");
@@ -38,13 +47,14 @@ export default function AppFixed() {
 
   const selectedElement = elements.find((el) => el.id === selectedId);
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    setCurrentView("intermediate");
-    setTimeout(() => {
-      setRole(email.includes("manager") ? "manager" : "doctor");
-      setCurrentView("cabinet");
-    }, 1200);
+  const getElementDepth = (id: number): number => {
+    let depth = 0;
+    let current = elements.find((el) => el.id === id);
+    while (current && current.parentId !== null) {
+      depth++;
+      current = elements.find((el) => el.id === current?.parentId);
+    }
+    return depth;
   };
 
   const handleAddElement = (e: React.FormEvent) => {
@@ -53,13 +63,13 @@ export default function AppFixed() {
       id: Date.now(),
       type: newType,
       content: newContent,
-      width: 180,
-      height: 90,
-      x: newParentId ? 20 : 40,
-      y: newParentId ? 20 : 40,
+      width: newParentId ? 160 : 200,
+      height: newParentId ? 90 : 110,
+      x: 1,
+      y: 1,
       bgColor: newParentId ? "#10b981" : "#3b82f6",
       textColor: "#ffffff",
-      padding: 10,
+      padding: 1, // Початковий відступ 1px
       parentId: newParentId,
     };
     setElements([...elements, newElement]);
@@ -100,11 +110,11 @@ export default function AppFixed() {
           content: shortName,
           width: width !== null ? width : 300,
           height: height !== null ? height : 200,
-          x: left !== null ? left : 20,
-          y: top !== null ? top : 20,
+          x: left !== null ? left : 1,
+          y: top !== null ? top : 1,
           bgColor: "#3b82f6",
           textColor: "#ffffff",
-          padding: 10,
+          padding: 1,
           parentId: null,
         });
       });
@@ -121,95 +131,359 @@ export default function AppFixed() {
   const updateSelectedField = (field: keyof CanvasElement, value: any) => {
     if (selectedId === null) return;
     setElements((prev) =>
-      prev.map((el) => (el.id === selectedId ? { ...el, [field]: value } : el))
+      prev.map((el) => {
+        if (el.id === selectedId) {
+          const updated = { ...el, [field]: value };
+          // Якщо змінюється padding, одразу перевіряємо, щоб координати не виходили за межі
+          if (field === "padding") {
+            let maxW = 1200;
+            let maxH = 800;
+            if (updated.parentId !== null) {
+              const parent = prev.find((item) => item.id === updated.parentId);
+              if (parent) {
+                maxW = parent.width;
+                maxH = parent.height;
+              }
+            }
+            if (updated.x < value) updated.x = value;
+            if (updated.y < value) updated.y = value;
+            if (updated.x + updated.width > maxW - value) {
+              updated.x = Math.max(value, maxW - value - updated.width);
+            }
+            if (updated.y + updated.height > maxH - value) {
+              updated.y = Math.max(value, maxH - value - updated.height);
+            }
+          }
+          return updated;
+        }
+        return el;
+      })
     );
+  };
+
+  const handleSaveRename = (id: number) => {
+    if (tempContent.trim() !== "") {
+      setElements((prev) =>
+        prev.map((el) => (el.id === id ? { ...el, content: tempContent.trim() } : el))
+      );
+    }
+    setEditingId(null);
   };
 
   const handleDelete = (id: number) => {
-    setElements(elements.filter((el) => el.id !== id && el.parentId !== id));
-    if (selectedId === id) setSelectedId(null);
+    const idsToDelete = new Set<number>([id]);
+    
+    const findChildren = (targetId: number) => {
+      elements.forEach((el) => {
+        if (el.parentId === targetId) {
+          idsToDelete.add(el.id);
+          findChildren(el.id);
+        }
+      });
+    };
+    findChildren(id);
+
+    setElements((prev) => prev.filter((el) => !idsToDelete.has(el.id)));
+
+    if (selectedId !== null && idsToDelete.has(selectedId)) {
+      setSelectedId(null);
+    }
+    if (editingId !== null && idsToDelete.has(editingId)) {
+      setEditingId(null);
+    }
   };
 
-  const availableParents = elements.filter((el) => el.type === "block" && el.parentId === null);
+  const availableParents = elements.filter((el) => el.type === "block");
   const rootElements = elements.filter((el) => el.parentId === null);
 
-  if (currentView === "login") {
+  const isValidParent = (childId: number, targetParentId: number | null): boolean => {
+    if (targetParentId === null) return true;
+    if (childId === targetParentId) return false;
+    
+    let currentId: number | null = targetParentId;
+    while (currentId !== null) {
+      if (currentId === childId) return false;
+      const parentEl = elements.find((el) => el.id === currentId);
+      currentId = parentEl ? parentEl.parentId : null;
+    }
+    return true;
+  };
+
+  const changeParent = (elementId: number, newParent: number | null) => {
+    if (!isValidParent(elementId, newParent)) {
+      alert("Неможливо перемістити блок всередину самого себе чи його власних дочірніх елементів!");
+      return;
+    }
+    setElements((prev) =>
+      prev.map((el) => (el.id === elementId ? { ...el, parentId: newParent } : el))
+    );
+  };
+
+  const renderSidebarTree = (parentId: number | null, depth = 0) => {
+    const children = elements.filter((el) => el.parentId === parentId);
+    if (children.length === 0) return null;
+
+    return children.map((el) => {
+      const isSelected = selectedId === el.id;
+      const possibleParents = availableParents.filter((p) => isValidParent(el.id, p.id));
+      const isEditing = editingId === el.id;
+
+      return (
+        <div key={el.id} className="space-y-1 my-1" style={{ marginLeft: `${depth * 10}px` }}>
+          <div
+            onClick={() => setSelectedId(el.id)}
+            className={`p-2 rounded cursor-pointer text-xs space-y-1.5 transition-all ${
+              isSelected
+                ? "bg-blue-600 text-white font-bold shadow-sm"
+                : el.type === "block"
+                ? "bg-slate-100 hover:bg-slate-200 text-slate-800"
+                : "bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200"
+            }`}
+          >
+            <div className="flex justify-between items-center">
+              <div 
+                className="flex items-center gap-1 flex-1 truncate"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  setEditingId(el.id);
+                  setTempContent(el.content);
+                }}
+              >
+                <span>{el.type === "block" ? "📦" : "📄"}</span>
+                {isEditing ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={tempContent}
+                    onChange={(e) => setTempContent(e.target.value)}
+                    onBlur={() => handleSaveRename(el.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveRename(el.id);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full px-1 py-0.5 bg-white text-slate-900 rounded text-xs border border-blue-400 outline-none"
+                  />
+                ) : (
+                  <span className="truncate" title="Подвійний клік для перейменування">{el.content}</span>
+                )}
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(el.id);
+                }}
+                className={`ml-1 px-1.5 py-0.5 rounded text-[10px] ${
+                  isSelected ? "bg-red-500 text-white hover:bg-red-600" : "bg-slate-200 text-slate-700 hover:bg-red-500 hover:text-white"
+                }`}
+                title="Видалити"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1 pt-1 border-t border-black/10 text-[10px]">
+              <span className="opacity-75">Усередині:</span>
+              <select
+                value={el.parentId ?? ""}
+                onChange={(e) => {
+                  e.stopPropagation();
+                  changeParent(el.id, e.target.value ? Number(e.target.value) : null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className={`w-full p-0.5 rounded border text-[10px] bg-white ${
+                  isSelected ? "text-slate-800 font-normal" : "text-slate-700"
+                }`}
+              >
+                <option value="">📁 Корінь (Полотно)</option>
+                {possibleParents.map((p) => (
+                  <option key={p.id} value={p.id}>📦 {p.content}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {renderSidebarTree(el.id, depth + 1)}
+        </div>
+      );
+    });
+  };
+
+  const renderCanvasNode = (el: CanvasElement, containerWidth = 1200, containerHeight = 800) => {
+    const children = elements.filter((child) => child.parentId === el.id);
+    const isSelected = selectedId === el.id;
+    const isBlock = el.type === "block";
+    const isEditing = editingId === el.id;
+
+    const depth = getElementDepth(el.id);
+    const dynamicBgColor = adjustColorBrightness(el.bgColor, depth * -15);
+
+    const handleDragStop = (e: any, d: any) => {
+      e.stopPropagation();
+      let newX = d.x;
+      let newY = d.y;
+
+      let maxW = containerWidth;
+      let maxH = containerHeight;
+
+      if (el.parentId !== null) {
+        const parent = elements.find((item) => item.id === el.parentId);
+        if (parent) {
+          maxW = parent.width;
+          maxH = parent.height;
+        }
+      }
+
+      const minLimit = el.padding;
+      const maxLimitX = maxW - el.padding - el.width;
+      const maxLimitY = maxH - el.padding - el.height;
+
+      if (newX < minLimit) newX = minLimit;
+      if (newY < minLimit) newY = minLimit;
+      if (newX > maxLimitX) newX = Math.max(minLimit, maxLimitX);
+      if (newY > maxLimitY) newY = Math.max(minLimit, maxLimitY);
+
+      setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, x: newX, y: newY } : item)));
+    };
+
+    const handleResizeStop = (e: any, direction: any, ref: any, delta: any, position: any) => {
+      e.stopPropagation();
+      let newWidth = parseInt(ref.style.width);
+      let newHeight = parseInt(ref.style.height);
+      let newX = position.x;
+      let newY = position.y;
+
+      let maxW = containerWidth;
+      let maxH = containerHeight;
+
+      if (el.parentId !== null) {
+        const parent = elements.find((item) => item.id === el.parentId);
+        if (parent) {
+          maxW = parent.width;
+          maxH = parent.height;
+        }
+      }
+
+      const minLimit = el.padding;
+      const maxAllowedWidth = maxW - el.padding - newX;
+      const maxAllowedHeight = maxH - el.padding - newY;
+
+      if (newX < minLimit) {
+        newWidth -= (minLimit - newX);
+        newX = minLimit;
+      }
+      if (newY < minLimit) {
+        newHeight -= (minLimit - newY);
+        newY = minLimit;
+      }
+
+      if (newWidth > maxAllowedWidth) newWidth = Math.max(40, maxAllowedWidth);
+      if (newHeight > maxAllowedHeight) newHeight = Math.max(40, maxAllowedHeight);
+
+      setElements((prev) =>
+        prev.map((item) =>
+          item.id === el.id
+            ? { ...item, width: newWidth, height: newHeight, x: newX, y: newY }
+            : item
+        )
+      );
+    };
+
     return (
-      <main className="min-h-screen bg-slate-100 flex items-center justify-center font-sans">
-        <div className="bg-white p-8 rounded-xl shadow-md w-96 space-y-6">
-          <div>
-            <h1 className="text-xl font-bold text-slate-800">Вхід у систему МІС</h1>
-            <p className="text-xs text-slate-500 mt-1">Оберіть тестовий акаунт для швидкого входу:</p>
+      <Rnd
+        key={el.id}
+        size={{ width: el.width, height: el.height }}
+        position={{ x: el.x, y: el.y }}
+        onDragStart={(e) => {
+          e.stopPropagation();
+          setSelectedId(el.id);
+        }}
+        onDragStop={handleDragStop}
+        onResizeStart={(e) => {
+          e.stopPropagation();
+          setSelectedId(el.id);
+        }}
+        onResizeStop={handleResizeStop}
+        enableResizing={true}
+        className="group absolute"
+        style={{ zIndex: isSelected ? 40 : 10 }}
+      >
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            setSelectedId(el.id);
+          }}
+          style={{
+            backgroundColor: dynamicBgColor,
+            color: el.textColor,
+            width: "100%",
+            height: "100%",
+          }}
+          className={`rounded shadow-sm text-xs font-medium relative box-border transition-all overflow-hidden ${
+            isSelected ? "ring-2 ring-blue-600 ring-offset-1 shadow-md" : "border border-black/15"
+          }`}
+        >
+          <div className="absolute top-0.5 left-0.5 right-0.5 flex justify-between items-center bg-black/30 backdrop-blur-sm px-1 py-0.5 rounded opacity-60 group-hover:opacity-100 transition-opacity z-50 pointer-events-auto">
+            <div 
+              className="flex items-center gap-1 flex-1 truncate mr-1 cursor-text"
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditingId(el.id);
+                setTempContent(el.content);
+              }}
+            >
+              <span className="shrink-0">{isBlock ? "📦" : "📄"}</span>
+              {isEditing ? (
+                <input
+                  type="text"
+                  autoFocus
+                  value={tempContent}
+                  onChange={(e) => setTempContent(e.target.value)}
+                  onBlur={() => handleSaveRename(el.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveRename(el.id);
+                    if (e.key === "Escape") setEditingId(null);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full px-1 py-0.5 bg-white text-slate-900 rounded text-[10px] border border-blue-400 outline-none"
+                />
+              ) : (
+                <span className="font-bold text-[10px] truncate" title="Подвійний клік для перейменування">
+                  {el.content} (р.{depth})
+                </span>
+              )}
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete(el.id);
+              }}
+              className="bg-red-500 text-white rounded-full w-3 h-3 flex items-center justify-center text-[8px] hover:bg-red-600 shrink-0"
+            >
+              ✕
+            </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => { setEmail("manager@hospital.com"); setPassword("123"); }}
-              className="p-2 text-xs bg-blue-50 text-blue-700 font-semibold rounded border border-blue-200 hover:bg-blue-100 transition-colors text-left"
-            >
-              👔 Завідувач<br/>
-              <span className="text-[10px] font-normal opacity-75">manager@hospital.com</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setEmail("doctor@hospital.com"); setPassword("123"); }}
-              className="p-2 text-xs bg-emerald-50 text-emerald-700 font-semibold rounded border border-emerald-200 hover:bg-emerald-100 transition-colors text-left"
-            >
-              🩺 Лікар<br/>
-              <span className="text-[10px] font-normal opacity-75">doctor@hospital.com</span>
-            </button>
+          <div 
+            className="absolute inset-0 pointer-events-none"
+            style={{ padding: `${el.padding}px` }}
+          >
+            <div className="relative w-full h-full pointer-events-auto">
+              {children.map((child) => renderCanvasNode(child, el.width, el.height))}
+            </div>
           </div>
-
-          <form onSubmit={handleLogin} className="space-y-4 pt-2 border-t">
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">Email:</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="w-full p-2 border border-slate-300 rounded text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 mb-1">Пароль:</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="w-full p-2 border border-slate-300 rounded text-sm"
-              />
-            </div>
-            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded text-sm shadow-sm">
-              Увійти в систему
-            </button>
-          </form>
         </div>
-      </main>
+      </Rnd>
     );
-  }
-
-  if (currentView === "intermediate") {
-    return (
-      <main className="min-h-screen bg-slate-100 flex items-center justify-center font-sans">
-        <div className="bg-white p-8 rounded-xl shadow-md w-96 text-center space-y-4">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mx-auto"></div>
-          <h2 className="text-lg font-bold text-slate-800">Авторизація успішна!</h2>
-        </div>
-      </main>
-    );
-  }
+  };
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-100 text-slate-800 font-sans relative">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-slate-900">
-            {role === "manager" ? "Кабінет Завідувача (Конструктор)" : "Кабінет Лікаря"}
+            Кабінет Завідувача (Конструктор МІС)
           </h1>
-          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">{email}</span>
+          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">регулювання відступів бігунком</span>
         </div>
         <div className="flex gap-2">
           <button
@@ -218,13 +492,9 @@ export default function AppFixed() {
           >
             📥 Імпортувати HTML
           </button>
-          <button onClick={() => setCurrentView("login")} className="px-3 py-1.5 bg-red-100 text-red-600 text-xs font-semibold rounded hover:bg-red-200">
-            Вийти
-          </button>
         </div>
       </header>
 
-      {/* МОДАЛЬНЕ ВІКНО ІМПОРТУ */}
       {isImportModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 space-y-4">
@@ -262,7 +532,7 @@ export default function AppFixed() {
                 onChange={(e) => setNewParentId(e.target.value ? Number(e.target.value) : null)}
                 className="w-full p-1.5 border border-slate-300 rounded-md bg-white text-xs"
               >
-                <option value="">📁 Головне полотно (Батько)</option>
+                <option value="">📁 Головне полотно (Корінь)</option>
                 {availableParents.map((p) => (
                   <option key={p.id} value={p.id}>📦 Всередину: {p.content}</option>
                 ))}
@@ -290,41 +560,14 @@ export default function AppFixed() {
             </button>
           </form>
 
-          {/* Структура сторінки */}
           <div className="space-y-2 pb-4 border-b">
-            <h2 className="font-bold text-slate-900 text-xs uppercase text-slate-500">Структура сторінки:</h2>
+            <h2 className="font-bold text-slate-900 text-xs uppercase text-slate-500">Структура і переміщення:</h2>
             <div className="space-y-1 text-xs">
               {elements.length === 0 && <span className="text-slate-400 italic">Немає елементів</span>}
-              {rootElements.map((parent) => {
-                const children = elements.filter((c) => c.parentId === parent.id);
-                return (
-                  <div key={parent.id} className="space-y-1">
-                    <div
-                      onClick={() => setSelectedId(parent.id)}
-                      className={`p-1.5 rounded cursor-pointer flex justify-between items-center ${
-                        selectedId === parent.id ? "bg-blue-600 text-white font-bold" : "bg-slate-100 hover:bg-slate-200"
-                      }`}
-                    >
-                      <span>📦 {parent.content}</span>
-                    </div>
-                    {children.map((child) => (
-                      <div
-                        key={child.id}
-                        onClick={() => setSelectedId(child.id)}
-                        className={`ml-4 p-1.5 rounded cursor-pointer flex justify-between items-center ${
-                          selectedId === child.id ? "bg-emerald-600 text-white font-bold" : "bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200"
-                        }`}
-                      >
-                        <span>↳ 📄 {child.content}</span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
+              {renderSidebarTree(null)}
             </div>
           </div>
 
-          {/* Редагування назви та параметрів виділеного */}
           <div className="space-y-3">
             <h2 className="font-bold text-slate-900 text-sm">Параметри виділеного</h2>
             {selectedElement ? (
@@ -359,12 +602,21 @@ export default function AppFixed() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Відступ (Padding): {selectedElement.padding}px</label>
-                  <input type="range" min="0" max="40" value={selectedElement.padding} onChange={(e) => updateSelectedField("padding", Number(e.target.value))} className="w-full cursor-pointer" />
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                    Відступ (Padding): <span className="font-bold text-blue-600">{selectedElement.padding}px</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="30"
+                    value={selectedElement.padding}
+                    onChange={(e) => updateSelectedField("padding", Number(e.target.value))}
+                    className="w-full cursor-pointer"
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Фон:</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Базовий фон:</label>
                     <input type="color" value={selectedElement.bgColor} onChange={(e) => updateSelectedField("bgColor", e.target.value)} className="w-full h-8 rounded border cursor-pointer" />
                   </div>
                   <div>
@@ -381,115 +633,18 @@ export default function AppFixed() {
           </div>
         </aside>
 
-        {/* Полотно */}
-        <main className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[600px]">
+        <main className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[600px] p-[1px]">
           <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none" />
 
-          {elements.length === 0 ? (
-            <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
-              Полотно порожнє. Імпортуйте розмітку через кнопку вгорі або створіть вручну.
-            </div>
-          ) : (
-            rootElements.map((el) => {
-              const children = elements.filter((child) => child.parentId === el.id);
-              const isSelected = selectedId === el.id;
-
-              return (
-                <Rnd
-                  key={el.id}
-                  size={{ width: el.width, height: el.height }}
-                  position={{ x: el.x, y: el.y }}
-                  onDragStart={() => setSelectedId(el.id)}
-                  onDragStop={(e, d) => {
-                    setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, x: d.x, y: d.y } : item)));
-                  }}
-                  onResizeStart={() => setSelectedId(el.id)}
-                  onResizeStop={(e, direction, ref, delta, position) => {
-                    setElements((prev) =>
-                      prev.map((item) =>
-                        item.id === el.id
-                          ? { ...item, width: parseInt(ref.style.width), height: parseInt(ref.style.height), x: position.x, y: position.y }
-                          : item
-                      )
-                    );
-                  }}
-                  bounds="parent"
-                  className="group cursor-move"
-                >
-                  <div
-                    onClick={(e) => { e.stopPropagation(); setSelectedId(el.id); }}
-                    style={{
-                      backgroundColor: el.bgColor,
-                      color: el.textColor,
-                      padding: `${el.padding}px`,
-                      width: "100%",
-                      height: "100%",
-                    }}
-                    className={`rounded-lg shadow-md text-xs font-medium relative overflow-hidden box-border flex flex-col transition-all ${
-                      isSelected ? "ring-2 ring-blue-600 ring-offset-2 shadow-lg" : "border border-black/10"
-                    }`}
-                  >
-                    {/* Шапка блоку (не заважає дочірнім елементам вирівнюватись зверху) */}
-                    <div className="font-bold flex justify-between items-center mb-1 bg-black/10 px-1.5 py-0.5 rounded shrink-0">
-                      <span>📦 {el.content}</span>
-                      <button onClick={(e) => { e.stopPropagation(); handleDelete(el.id); }} className="bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center text-[9px] opacity-0 group-hover:opacity-100">
-                        ✕
-                      </button>
-                    </div>
-
-                    <div className="relative w-full flex-1">
-                      {children.map((child) => {
-                        const isChildSelected = selectedId === child.id;
-
-                        return (
-                          <Rnd
-                            key={child.id}
-                            size={{ width: child.width, height: child.height }}
-                            position={{ x: child.x, y: child.y }}
-                            onDragStart={() => setSelectedId(child.id)}
-                            onDragStop={(e, d) => {
-                              setElements((prev) => prev.map((item) => (item.id === child.id ? { ...item, x: d.x, y: d.y } : item)));
-                            }}
-                            onResizeStart={() => setSelectedId(child.id)}
-                            onResizeStop={(e, direction, ref, delta, position) => {
-                              setElements((prev) =>
-                                prev.map((item) =>
-                                  item.id === child.id
-                                    ? { ...item, width: parseInt(ref.style.width), height: parseInt(ref.style.height), x: position.x, y: position.y }
-                                    : item
-                                )
-                              );
-                            }}
-                            bounds="parent"
-                            className="group/child cursor-move absolute"
-                          >
-                            <div
-                              onClick={(e) => { e.stopPropagation(); setSelectedId(child.id); }}
-                              style={{
-                                backgroundColor: child.bgColor,
-                                color: child.textColor,
-                                padding: `${child.padding}px`,
-                                width: "100%",
-                                height: "100%",
-                              }}
-                              className={`rounded shadow-sm text-center flex flex-col items-center justify-center relative box-border transition-all ${
-                                isChildSelected ? "ring-2 ring-blue-600 ring-offset-1 shadow-md" : "border border-black/10"
-                              }`}
-                            >
-                              <span className="font-bold">↳ {child.content}</span>
-                              <button onClick={(e) => { e.stopPropagation(); handleDelete(child.id); }} className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full w-3.5 h-3.5 flex items-center justify-center text-[8px] opacity-0 group-hover/child:opacity-100 z-10">
-                                ✕
-                              </button>
-                            </div>
-                          </Rnd>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </Rnd>
-              );
-            })
-          )}
+          <div className="relative w-full h-full">
+            {elements.length === 0 ? (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
+                Полотно порожнє. Імпортуйте розмітку через кнопку вгорі або створіть вручну.
+              </div>
+            ) : (
+              rootElements.map((el) => renderCanvasNode(el, 1200, 800))
+            )}
+          </div>
         </main>
       </div>
     </div>
