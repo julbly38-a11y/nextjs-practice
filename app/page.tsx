@@ -36,25 +36,25 @@ interface CanvasElement {
   customBgColor?: string;
 
   // Hover параметри
-  hoverContent?: string;      // Текст при наведенні
+  hoverContent?: string;      
   hoverBgColor?: string;
   hoverTextColor?: string;
   glowColor?: string;
   glowBlur?: number;
 
   // Active / Pressed параметри
-  activeContent?: string;     // Текст при натисканні
+  activeContent?: string;     
   activeBgColor?: string;
   activeTextColor?: string;
   activeScale?: number;
   activeOffsetY?: number;
   activeGlowColor?: string;
   activeGlowBlur?: number;
-  activeWidthOffset?: number;  // Зміна ширини при натисканні (+/- px)
-  activeHeightOffset?: number; // Зміна висоти при натисканні (+/- px)
+  activeWidthOffset?: number;  
+  activeHeightOffset?: number; 
 
-  isToggle?: boolean;         // Режим перемикача
-  isPressed?: boolean;        // Затиснутий стан
+  isToggle?: boolean;         
+  isPressed?: boolean;        
 }
 
 export default function AppBoundedCanvas() {
@@ -298,7 +298,6 @@ export default function AppBoundedCanvas() {
 
     const { minWidth, minHeight } = getMinDimensions(el.id);
 
-    // Розрахунок свічення та розмірів для Hover/Active
     const glowBlur = el.glowBlur || 0;
     const glowColor = el.glowColor || "#3b82f6";
     const hoverShadow = glowBlur > 0 ? `0 0 ${glowBlur}px ${glowColor}` : "none";
@@ -307,7 +306,6 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
-    // Розрахунок активної ширини/висоти (при натисканні)
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
@@ -485,7 +483,6 @@ export default function AppBoundedCanvas() {
   return (
     <div className="flex flex-col min-h-screen bg-slate-100 text-slate-800 font-sans">
       <style jsx global>{`
-        /* Зміна тексту та стилів при Hover */
         .is-button-element:hover {
           background-color: var(--hover-bg) !important;
           color: var(--hover-text) !important;
@@ -498,7 +495,6 @@ export default function AppBoundedCanvas() {
           display: inline !important;
         }
 
-        /* Зміна стилів, розміру та свічення при натисканні (Active) */
         .is-button-element:active {
           background-color: var(--active-bg) !important;
           color: var(--active-text) !important;
@@ -628,25 +624,48 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* Розміри */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Ширина (px):</label>
-                    <input
-                      type="number"
-                      value={singleSelected ? singleSelected.width : ""}
-                      onChange={(e) => updateSelectedFields("width", Number(e.target.value))}
-                      className="w-full p-1.5 border rounded-md"
-                    />
+                {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+                  <span className="font-bold text-[11px] text-slate-700 uppercase block">
+                    📏 Позиція та розміри (Live):
+                  </span>
+
+                  {/* Координати X та Y (Живі дані) */}
+                  <div className="grid grid-cols-2 gap-2 pb-1 border-b border-slate-200">
+                    <div className="bg-white p-1.5 border rounded shadow-2xs">
+                      <span className="block text-[10px] text-slate-400 font-semibold">Позиція X:</span>
+                      <span className="text-xs font-mono font-bold text-slate-800">
+                        {singleSelected ? Math.round(singleSelected.x) : 0} px
+                      </span>
+                    </div>
+                    <div className="bg-white p-1.5 border rounded shadow-2xs">
+                      <span className="block text-[10px] text-slate-400 font-semibold">Позиція Y:</span>
+                      <span className="text-xs font-mono font-bold text-slate-800">
+                        {singleSelected ? Math.round(singleSelected.y) : 0} px
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Висота (px):</label>
-                    <input
-                      type="number"
-                      value={singleSelected ? singleSelected.height : ""}
-                      onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
-                      className="w-full p-1.5 border rounded-md"
-                    />
+
+                  {/* Ширина та Висота (Редаговані + Живі) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-600 mb-1">Ширина (W):</label>
+                      <input
+                        type="number"
+                        value={singleSelected ? singleSelected.width : ""}
+                        onChange={(e) => updateSelectedFields("width", Number(e.target.value))}
+                        className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-600 mb-1">Висота (H):</label>
+                      <input
+                        type="number"
+                        value={singleSelected ? singleSelected.height : ""}
+                        onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
+                        className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -678,7 +697,6 @@ export default function AppBoundedCanvas() {
                 {/* НАЛАШТУВАННЯ ДЛЯ КНОПОК */}
                 {singleSelected?.type === "button" ? (
                   <>
-                    {/* Перемикач стану Toggle */}
                     <div className="p-2.5 bg-indigo-50/70 border border-indigo-200 rounded-lg space-y-2">
                       <div className="flex items-center justify-between">
                         <label className="text-[11px] font-bold text-indigo-900 flex items-center gap-1.5 cursor-pointer">
@@ -709,7 +727,6 @@ export default function AppBoundedCanvas() {
                       )}
                     </div>
 
-                    {/* Округленість кутів */}
                     <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg space-y-1.5">
                       <div className="flex items-center justify-between">
                         <label className="block text-[11px] font-bold text-blue-900">
@@ -731,7 +748,6 @@ export default function AppBoundedCanvas() {
                       </div>
                     </div>
 
-                    {/* ПРИ НАВЕДЕННІ (HOVER) */}
                     <div className="p-2.5 bg-slate-50 border rounded-lg space-y-2">
                       <span className="font-bold text-[11px] text-slate-700 uppercase block">
                         ✨ При наведенні (Hover):
@@ -791,7 +807,6 @@ export default function AppBoundedCanvas() {
                       </div>
                     </div>
 
-                    {/* ПРИ НАТИСКАННІ (ACTIVE / PRESSED) */}
                     <div className="p-2.5 bg-slate-50 border rounded-lg space-y-2">
                       <span className="font-bold text-[11px] text-slate-700 uppercase block">
                         🖱️ При натисканні (Active / Click):
@@ -829,7 +844,6 @@ export default function AppBoundedCanvas() {
                         </div>
                       </div>
 
-                      {/* Зміна розмірів при Active */}
                       <div className="grid grid-cols-2 gap-2 pt-1">
                         <div>
                           <label className="block text-[10px] text-slate-500 mb-1">Δ Ширини (px):</label>
