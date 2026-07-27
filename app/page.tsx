@@ -22,8 +22,8 @@ const TYPE_LABELS: Record<ElementType, string> = {
 
 interface CanvasElement {
   id: number;
-  pageId: string; // ID сторінки (ігнорується, якщо isGlobal = true)
-  isGlobal?: boolean; // Чи є елемент глобальним для всіх сторінок
+  pageId: string;
+  isGlobal?: boolean;
   type: ElementType;
   content: string;
   width: number;
@@ -37,17 +37,24 @@ interface CanvasElement {
   parentId: number | null;
   customBgColor?: string;
 
-  // Дія кнопки (зміна сторінки)
+  // Налаштування появи
+  showOnHoverId?: number | null; // ID елемента, який з'явиться при наведенні
+  showOnClickId?: number | null; // ID елемента, який з'явиться при натисканні
+  isTriggerTarget?: boolean;     // Чи прихований цей елемент за замовчуванням
+
+  // Налаштування шрифтів
+  fontFamily?: string;
+  fontWeight?: string;
+  textAlign?: "left" | "center" | "right" | "justify";
+
   targetPageId?: string | null;
 
-  // Hover параметри
   hoverContent?: string;      
   hoverBgColor?: string;
   hoverTextColor?: string;
   glowColor?: string;
   glowBlur?: number;
 
-  // Active / Pressed параметри
   activeContent?: string;     
   activeBgColor?: string;
   activeTextColor?: string;
@@ -69,14 +76,18 @@ interface Page {
 
 export default function AppBoundedCanvas() {
   const [pages, setPages] = useState<Page[]>([
-    { id: "home", name: "Головна сторінка" },
-    { id: "page-2", name: "Сторінка 2" },
+    { id: "home", name: "Головна" },
+    { id: "page-2", name: "Контакти" },
   ]);
   const [currentPageId, setCurrentPageId] = useState<string>("home");
 
   const [elements, setElements] = useState<CanvasElement[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isMounted, setIsMounted] = useState(false);
+
+  // Стан для відстеження активних ховер-тригерів та клік-тригерів
+  const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
+  const [clickedElementId, setClickedElementId] = useState<number | null>(null);
 
   const [newType, setNewType] = useState<ElementType>("block");
   const [newContent, setNewContent] = useState<string>("Елемент");
@@ -113,6 +124,27 @@ export default function AppBoundedCanvas() {
     setPages([...pages, newPage]);
     setCurrentPageId(newPage.id);
   };
+
+  const handleUpdateCurrentPageName = (newName: string) => {
+    setPages((prev) =>
+      prev.map((p) => (p.id === currentPageId ? { ...p, name: newName } : p))
+    );
+  };
+
+  const handleDeleteCurrentPage = () => {
+    if (pages.length <= 1) {
+      alert("Неможливо видалити останню сторінку!");
+      return;
+    }
+    if (confirm("Видалити цю сторінку та всі її елементи?")) {
+      const remainingPages = pages.filter((p) => p.id !== currentPageId);
+      setPages(remainingPages);
+      setCurrentPageId(remainingPages[0].id);
+      setElements((prev) => prev.filter((el) => el.pageId !== currentPageId));
+    }
+  };
+
+  const currentPage = pages.find((p) => p.id === currentPageId) || pages[0];
 
   const getMinDimensions = (parentId: number) => {
     const children = elements.filter((el) => el.parentId === parentId && (el.isGlobal || el.pageId === currentPageId));
@@ -220,6 +252,11 @@ export default function AppBoundedCanvas() {
     e.stopPropagation();
     handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
 
+    // Клік-тригер: якщо у елемента налаштовано показ іншого елемента по кліку
+    if (el.showOnClickId) {
+      setClickedElementId((prev) => (prev === el.showOnClickId ? null : el.showOnClickId));
+    }
+
     if (el.type === "button") {
       if (el.targetPageId) {
         setCurrentPageId(el.targetPageId);
@@ -243,6 +280,9 @@ export default function AppBoundedCanvas() {
       id: Date.now(),
       pageId: currentPageId,
       isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
       type: newType,
       content: newContent,
       width: isButton ? 120 : forcedParentId ? 120 : 240,
@@ -253,6 +293,9 @@ export default function AppBoundedCanvas() {
       padding: isButton ? 4 : 8,
       borderRadius: isButton ? 8 : 0,
       fontSize: newType === "heading" ? 16 : 12,
+      fontFamily: "inherit",
+      fontWeight: "500",
+      textAlign: "left",
       parentId: forcedParentId,
       targetPageId: null,
       hoverContent: "",
@@ -353,6 +396,18 @@ export default function AppBoundedCanvas() {
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
+    // Перевірка видимості тригерних елементів
+    const isTargetOfHover = elements.some((item) => item.showOnHoverId === el.id);
+    const isTargetOfClick = elements.some((item) => item.showOnClickId === el.id);
+
+    const isHoverTriggered = hoveredElementId !== null && elements.find((item) => item.id === hoveredElementId)?.showOnHoverId === el.id;
+    const isClickTriggered = clickedElementId === el.id;
+
+    // Якщо це цільовий елемент, він ховається за замовчуванням і з'являється по ховеру або кліку
+    const shouldHide = el.isTriggerTarget && (isTargetOfHover || isTargetOfClick) && !isHoverTriggered && !isClickTriggered && !isSelected;
+
+    if (shouldHide) return null;
+
     return (
       <Rnd
         key={el.id}
@@ -393,6 +448,8 @@ export default function AppBoundedCanvas() {
         style={{ zIndex: isSelected ? 40 : 10 }}
       >
         <div
+          onMouseEnter={() => setHoveredElementId(el.id)}
+          onMouseLeave={() => setHoveredElementId(null)}
           onClick={(e) => handleButtonClick(e, el)}
           style={
             {
@@ -407,6 +464,9 @@ export default function AppBoundedCanvas() {
               borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
               padding: `${el.padding || 0}px`,
               fontSize: `${el.fontSize || 12}px`,
+              fontFamily: el.fontFamily || "inherit",
+              fontWeight: el.fontWeight || "500",
+              textAlign: el.textAlign || "left",
               boxShadow: el.isPressed ? activeShadow : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
@@ -422,7 +482,7 @@ export default function AppBoundedCanvas() {
               "--active-h-offset": isButton ? `${el.activeHeightOffset || 0}px` : "0px",
             } as React.CSSProperties
           }
-          className={`interactive-node font-medium relative box-border transition-all duration-75 cursor-pointer select-none ${
+          className={`interactive-node relative box-border transition-all duration-75 cursor-pointer select-none ${
             isButton ? "is-button-element flex items-center justify-center" : ""
           } ${
             isSelected
@@ -431,7 +491,7 @@ export default function AppBoundedCanvas() {
           }`}
         >
           {el.type === "button" && (
-            <div className="font-bold truncate pointer-events-none opacity-90 text-center px-1">
+            <div className="font-bold truncate pointer-events-none opacity-90 w-full text-center px-1">
               {el.isPressed
                 ? (el.activeContent || el.hoverContent || el.content)
                 : (
@@ -443,12 +503,12 @@ export default function AppBoundedCanvas() {
             </div>
           )}
           {el.type === "heading" && (
-            <div className="font-bold leading-tight pointer-events-none truncate">
+            <div className="leading-tight pointer-events-none truncate w-full">
               {el.content}
             </div>
           )}
           {el.type === "text" && (
-            <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full">
+            <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full w-full">
               {el.content}
             </div>
           )}
@@ -492,7 +552,7 @@ export default function AppBoundedCanvas() {
               />
               <span className="truncate">
                 <span className="text-[10px] opacity-60 mr-1 font-semibold">
-                  [{TYPE_LABELS[el.type]}] {el.isGlobal ? "(🌍)" : ""}
+                  [{TYPE_LABELS[el.type]}] {el.isGlobal ? "(🌍)" : ""} {el.isTriggerTarget ? "(👁️)" : ""}
                 </span>
                 {el.content}
               </span>
@@ -554,6 +614,7 @@ export default function AppBoundedCanvas() {
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold text-slate-900">Конструктор</h1>
 
+          {/* ПЕРЕМИКАЧ СТОРІНОК */}
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border">
             {pages.map((p) => (
               <button
@@ -615,6 +676,31 @@ export default function AppBoundedCanvas() {
 
       <div className="flex flex-1 p-6 gap-6">
         <aside className="w-80 bg-white p-5 rounded-xl border border-slate-200 shadow-sm shrink-0 flex flex-col gap-6 overflow-y-auto max-h-[85vh]">
+          
+          {/* НАЛАШТУВАННЯ ПОТОЧНОЇ СТОРІНКИ */}
+          <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2">
+            <span className="font-bold text-[11px] text-blue-900 uppercase block">
+              📄 Налаштування сторінки:
+            </span>
+            <div>
+              <label className="block text-[10px] text-blue-800 mb-1">Назва сторінки:</label>
+              <input
+                type="text"
+                value={currentPage.name}
+                onChange={(e) => handleUpdateCurrentPageName(e.target.value)}
+                className="w-full p-1.5 border rounded-md text-xs bg-white font-semibold text-blue-900"
+              />
+            </div>
+            {pages.length > 1 && (
+              <button
+                onClick={handleDeleteCurrentPage}
+                className="w-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 py-1 rounded text-[11px] font-medium transition-colors"
+              >
+                🗑️ Видалити сторінку
+              </button>
+            )}
+          </div>
+
           {/* Створення елемента */}
           <form onSubmit={handleAddElement} className="space-y-3 pb-4 border-b">
             <h2 className="font-bold text-slate-900 text-sm">Створити елемент</h2>
@@ -691,19 +777,76 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
 
-                    {/* ГЛОБАЛЬНИЙ ЧЕКБОКС */}
-                    <div className="p-2.5 bg-violet-50 border border-violet-200 rounded-lg">
-                      <label className="text-[11px] font-bold text-violet-900 flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={singleSelected.isGlobal ?? false}
-                          onChange={(e) => updateSelectedFields("isGlobal", e.target.checked)}
-                          className="rounded border-violet-300 text-violet-600 focus:ring-violet-500 h-4 w-4"
-                        />
-                        🌍 Показувати на всіх сторінках (Глобальний)
-                      </label>
+                    <div className="space-y-2">
+                      <div className="p-2.5 bg-violet-50 border border-violet-200 rounded-lg">
+                        <label className="text-[11px] font-bold text-violet-900 flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={singleSelected.isGlobal ?? false}
+                            onChange={(e) => updateSelectedFields("isGlobal", e.target.checked)}
+                            className="rounded border-violet-300 text-violet-600 focus:ring-violet-500 h-4 w-4"
+                          />
+                          🌍 Показувати на всіх сторінках
+                        </label>
+                      </div>
+
+                      <div className="p-2.5 bg-cyan-50 border border-cyan-200 rounded-lg">
+                        <label className="text-[11px] font-bold text-cyan-900 flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={singleSelected.isTriggerTarget ?? false}
+                            onChange={(e) => updateSelectedFields("isTriggerTarget", e.target.checked)}
+                            className="rounded border-cyan-300 text-cyan-600 focus:ring-cyan-500 h-4 w-4"
+                          />
+                          👁️ Схований за замовчуванням (ціль тригера)
+                        </label>
+                      </div>
                     </div>
                   </>
+                )}
+
+                {/* НАЛАШТУВАННЯ ТРИГЕРІВ (HOVER ТА CLICK) */}
+                {singleSelected && (
+                  <div className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-lg space-y-2.5">
+                    <span className="font-bold text-[11px] text-indigo-900 uppercase block">
+                      ⚡ Тригери появи елементів:
+                    </span>
+                    <div>
+                      <label className="block text-[10px] text-indigo-800 mb-1">Показувати при наведенні (Hover):</label>
+                      <select
+                        value={singleSelected.showOnHoverId || ""}
+                        onChange={(e) => updateSelectedFields("showOnHoverId", e.target.value === "" ? null : Number(e.target.value))}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white font-medium text-indigo-900"
+                      >
+                        <option value="">(Немає)</option>
+                        {elements
+                          .filter((el) => el.id !== singleSelected.id)
+                          .map((el) => (
+                            <option key={el.id} value={el.id}>
+                              [{TYPE_LABELS[el.type]}] {el.content}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-indigo-800 mb-1">Показувати при кліку (Click):</label>
+                      <select
+                        value={singleSelected.showOnClickId || ""}
+                        onChange={(e) => updateSelectedFields("showOnClickId", e.target.value === "" ? null : Number(e.target.value))}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white font-medium text-indigo-900"
+                      >
+                        <option value="">(Немає)</option>
+                        {elements
+                          .filter((el) => el.id !== singleSelected.id)
+                          .map((el) => (
+                            <option key={el.id} value={el.id}>
+                              [{TYPE_LABELS[el.type]}] {el.content}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </div>
                 )}
 
                 {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
@@ -745,6 +888,61 @@ export default function AppBoundedCanvas() {
                         onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
                       />
+                    </div>
+                  </div>
+                </div>
+
+                {/* ТИПОГРАФІКА (ШРИФТИ) */}
+                <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-lg space-y-2.5">
+                  <span className="font-bold text-[11px] text-amber-900 uppercase block">
+                    🔤 Типографіка (Шрифти):
+                  </span>
+
+                  <div>
+                    <label className="block text-[10px] text-amber-800 mb-1">Шрифт (Font Family):</label>
+                    <select
+                      value={singleSelected?.fontFamily || "inherit"}
+                      onChange={(e) => updateSelectedFields("fontFamily", e.target.value)}
+                      className="w-full p-1.5 border rounded-md text-xs bg-white font-medium"
+                    >
+                      <option value="inherit">За замовчуванням (System)</option>
+                      <option value="sans-serif">Sans-Serif</option>
+                      <option value="serif">Serif (З насічками)</option>
+                      <option value="monospace">Monospace (Код)</option>
+                      <option value="Inter, sans-serif">Inter</option>
+                      <option value="Roboto, sans-serif">Roboto</option>
+                      <option value="Georgia, serif">Georgia</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-amber-800 mb-1">Насиченість (Weight):</label>
+                      <select
+                        value={singleSelected?.fontWeight || "500"}
+                        onChange={(e) => updateSelectedFields("fontWeight", e.target.value)}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white"
+                      >
+                        <option value="300">Light (300)</option>
+                        <option value="400">Regular (400)</option>
+                        <option value="500">Medium (500)</option>
+                        <option value="600">SemiBold (600)</option>
+                        <option value="700">Bold (700)</option>
+                        <option value="900">Black (900)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-amber-800 mb-1">Вирівнювання:</label>
+                      <select
+                        value={singleSelected?.textAlign || "left"}
+                        onChange={(e) => updateSelectedFields("textAlign", e.target.value)}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white"
+                      >
+                        <option value="left">Зліва</option>
+                        <option value="center">По центру</option>
+                        <option value="right">Справа</option>
+                        <option value="justify">По ширині</option>
+                      </select>
                     </div>
                   </div>
                 </div>
@@ -824,25 +1022,6 @@ export default function AppBoundedCanvas() {
                         </div>
                       )}
                     </div>
-
-                    <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-[11px] font-bold text-blue-900">
-                          🔘 Округлення кутів (Radius px):
-                        </label>
-                        <span className="text-[10px] text-blue-600 font-mono font-semibold">
-                          {singleSelected.borderRadius ?? 8}px
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="30"
-                        value={singleSelected.borderRadius ?? 8}
-                        onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
-                        className="w-full h-1.5 bg-blue-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                      />
-                    </div>
                   </>
                 ) : null}
 
@@ -877,7 +1056,10 @@ export default function AppBoundedCanvas() {
 
         {/* Полотно */}
         <main
-          onClick={() => handleSelectElement(null)}
+          onClick={() => {
+            handleSelectElement(null);
+            setClickedElementId(null);
+          }}
           className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[800px]"
         >
           <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
