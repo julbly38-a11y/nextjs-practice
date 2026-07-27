@@ -38,9 +38,9 @@ interface CanvasElement {
   customBgColor?: string;
 
   // Налаштування появи
-  showOnHoverId?: number | null; // ID елемента, який з'явиться при наведенні
-  showOnClickId?: number | null; // ID елемента, який з'явиться при натисканні
-  isTriggerTarget?: boolean;     // Чи прихований цей елемент за замовчуванням
+  showOnHoverId?: number | null;
+  showOnClickId?: number | null;
+  isTriggerTarget?: boolean;
 
   // Налаштування шрифтів
   fontFamily?: string;
@@ -85,7 +85,6 @@ export default function AppBoundedCanvas() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isMounted, setIsMounted] = useState(false);
 
-  // Стан для відстеження активних ховер-тригерів та клік-тригерів
   const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
   const [clickedElementId, setClickedElementId] = useState<number | null>(null);
 
@@ -252,7 +251,6 @@ export default function AppBoundedCanvas() {
     e.stopPropagation();
     handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
 
-    // Клік-тригер: якщо у елемента налаштовано показ іншого елемента по кліку
     if (el.showOnClickId) {
       setClickedElementId((prev) => (prev === el.showOnClickId ? null : el.showOnClickId));
     }
@@ -396,14 +394,12 @@ export default function AppBoundedCanvas() {
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
-    // Перевірка видимості тригерних елементів
     const isTargetOfHover = elements.some((item) => item.showOnHoverId === el.id);
     const isTargetOfClick = elements.some((item) => item.showOnClickId === el.id);
 
     const isHoverTriggered = hoveredElementId !== null && elements.find((item) => item.id === hoveredElementId)?.showOnHoverId === el.id;
     const isClickTriggered = clickedElementId === el.id;
 
-    // Якщо це цільовий елемент, він ховається за замовчуванням і з'являється по ховеру або кліку
     const shouldHide = el.isTriggerTarget && (isTargetOfHover || isTargetOfClick) && !isHoverTriggered && !isClickTriggered && !isSelected;
 
     if (shouldHide) return null;
@@ -945,6 +941,18 @@ export default function AppBoundedCanvas() {
                       </select>
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-[10px] text-amber-800 mb-1">Розмір шрифту (Font Size px):</label>
+                    <input
+                      type="number"
+                      min="8"
+                      max="120"
+                      value={singleSelected ? singleSelected.fontSize ?? 12 : 12}
+                      onChange={(e) => updateSelectedFields("fontSize", Number(e.target.value))}
+                      className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
+                    />
+                  </div>
                 </div>
 
                 {/* Основні кольори */}
@@ -1025,25 +1033,14 @@ export default function AppBoundedCanvas() {
                   </>
                 ) : null}
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
-                    <input
-                      type="number"
-                      value={singleSelected ? singleSelected.padding ?? 0 : ""}
-                      onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
-                      className="w-full p-1.5 border rounded-md"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Font Size (px):</label>
-                    <input
-                      type="number"
-                      value={singleSelected ? singleSelected.fontSize ?? 12 : ""}
-                      onChange={(e) => updateSelectedFields("fontSize", Number(e.target.value))}
-                      className="w-full p-1.5 border rounded-md"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
+                  <input
+                    type="number"
+                    value={singleSelected ? singleSelected.padding ?? 0 : ""}
+                    onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
+                    className="w-full p-1.5 border rounded-md"
+                  />
                 </div>
               </div>
             ) : (
