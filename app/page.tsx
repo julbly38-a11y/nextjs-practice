@@ -40,12 +40,29 @@ export default function AppFixed() {
 
   const [newType, setNewType] = useState<ElementType>("block");
   const [newContent, setNewContent] = useState<string>("Блок");
-  const [newParentId, setNewParentId] = useState<number | null>(null);
+  
+  // Батьківський блок для нового елемента
+  const [forcedParentId, setForcedParentId] = useState<number | null>(null);
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importedHTMLCode, setImportedHTMLCode] = useState("");
 
   const selectedElement = elements.find((el) => el.id === selectedId);
+
+  // Універсальна функція вибору елемента з автоматичним оновленням батька для нових елементів
+  const handleSelectElement = (id: number | null) => {
+    setSelectedId(id);
+    if (id !== null) {
+      const el = elements.find((item) => item.id === id);
+      // Якщо клікнули на блок, робимо його батьком для майбутніх елементів
+      if (el && el.type === "block") {
+        setForcedParentId(id);
+      }
+    } else {
+      // Якщо зняли виділення (клік на корінь/полотно), скидаємо батька на корінь
+      setForcedParentId(null);
+    }
+  };
 
   const getElementDepth = (id: number): number => {
     let depth = 0;
@@ -63,17 +80,17 @@ export default function AppFixed() {
       id: Date.now(),
       type: newType,
       content: newContent,
-      width: newParentId ? 160 : 200,
-      height: newParentId ? 90 : 110,
+      width: forcedParentId ? 160 : 200,
+      height: forcedParentId ? 90 : 110,
       x: 1,
       y: 1,
-      bgColor: newParentId ? "#10b981" : "#3b82f6",
+      bgColor: forcedParentId ? "#10b981" : "#3b82f6",
       textColor: "#ffffff",
-      padding: 1, // Початковий відступ 1px
-      parentId: newParentId,
+      padding: 1,
+      parentId: forcedParentId,
     };
     setElements([...elements, newElement]);
-    setSelectedId(newElement.id);
+    handleSelectElement(newElement.id);
   };
 
   const handleImportHTML = () => {
@@ -134,7 +151,6 @@ export default function AppFixed() {
       prev.map((el) => {
         if (el.id === selectedId) {
           const updated = { ...el, [field]: value };
-          // Якщо змінюється padding, одразу перевіряємо, щоб координати не виходили за межі
           if (field === "padding") {
             let maxW = 1200;
             let maxH = 800;
@@ -186,7 +202,7 @@ export default function AppFixed() {
     setElements((prev) => prev.filter((el) => !idsToDelete.has(el.id)));
 
     if (selectedId !== null && idsToDelete.has(selectedId)) {
-      setSelectedId(null);
+      handleSelectElement(null);
     }
     if (editingId !== null && idsToDelete.has(editingId)) {
       setEditingId(null);
@@ -231,10 +247,10 @@ export default function AppFixed() {
       return (
         <div key={el.id} className="space-y-1 my-1" style={{ marginLeft: `${depth * 10}px` }}>
           <div
-            onClick={() => setSelectedId(el.id)}
+            onClick={() => handleSelectElement(el.id)}
             className={`p-2 rounded cursor-pointer text-xs space-y-1.5 transition-all ${
               isSelected
-                ? "bg-blue-600 text-white font-bold shadow-sm"
+                ? "bg-blue-600 text-white font-bold shadow-md ring-2 ring-blue-400"
                 : el.type === "block"
                 ? "bg-slate-100 hover:bg-slate-200 text-slate-800"
                 : "bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200"
@@ -283,7 +299,7 @@ export default function AppFixed() {
             </div>
 
             <div className="flex items-center gap-1 pt-1 border-t border-black/10 text-[10px]">
-              <span className="opacity-75">Усередині:</span>
+              <span className={isSelected ? "text-blue-100" : "opacity-75"}>Усередині:</span>
               <select
                 value={el.parentId ?? ""}
                 onChange={(e) => {
@@ -292,7 +308,7 @@ export default function AppFixed() {
                 }}
                 onClick={(e) => e.stopPropagation()}
                 className={`w-full p-0.5 rounded border text-[10px] bg-white ${
-                  isSelected ? "text-slate-800 font-normal" : "text-slate-700"
+                  isSelected ? "text-slate-900 font-normal" : "text-slate-700"
                 }`}
               >
                 <option value="">📁 Корінь (Полотно)</option>
@@ -395,12 +411,12 @@ export default function AppFixed() {
         position={{ x: el.x, y: el.y }}
         onDragStart={(e) => {
           e.stopPropagation();
-          setSelectedId(el.id);
+          handleSelectElement(el.id);
         }}
         onDragStop={handleDragStop}
         onResizeStart={(e) => {
           e.stopPropagation();
-          setSelectedId(el.id);
+          handleSelectElement(el.id);
         }}
         onResizeStop={handleResizeStop}
         enableResizing={true}
@@ -410,7 +426,7 @@ export default function AppFixed() {
         <div
           onClick={(e) => {
             e.stopPropagation();
-            setSelectedId(el.id);
+            handleSelectElement(el.id);
           }}
           style={{
             backgroundColor: dynamicBgColor,
@@ -483,7 +499,7 @@ export default function AppFixed() {
           <h1 className="text-xl font-bold text-slate-900">
             Кабінет Завідувача (Конструктор МІС)
           </h1>
-          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">регулювання відступів бігунком</span>
+          <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded font-mono">автоматичний вибір батька</span>
         </div>
         <div className="flex gap-2">
           <button
@@ -528,15 +544,18 @@ export default function AppFixed() {
             <div>
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">Батьківський блок:</label>
               <select
-                value={newParentId ?? ""}
-                onChange={(e) => setNewParentId(e.target.value ? Number(e.target.value) : null)}
-                className="w-full p-1.5 border border-slate-300 rounded-md bg-white text-xs"
+                value={forcedParentId ?? ""}
+                onChange={(e) => setForcedParentId(e.target.value ? Number(e.target.value) : null)}
+                className="w-full p-1.5 border border-slate-300 rounded-md bg-white text-xs font-medium text-blue-700"
               >
                 <option value="">📁 Головне полотно (Корінь)</option>
                 {availableParents.map((p) => (
                   <option key={p.id} value={p.id}>📦 Всередину: {p.content}</option>
                 ))}
               </select>
+              <span className="text-[10px] text-slate-400 mt-0.5 block">
+                * Змінюється автоматично при кліку на блок
+              </span>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -556,7 +575,7 @@ export default function AppFixed() {
             </div>
 
             <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm">
-              + Створити елемент
+              + Створити елемент у вибраному
             </button>
           </form>
 
@@ -633,7 +652,10 @@ export default function AppFixed() {
           </div>
         </aside>
 
-        <main className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[600px] p-[1px]">
+        <main 
+          onClick={() => handleSelectElement(null)}
+          className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[600px] p-[1px] cursor-default"
+        >
           <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none" />
 
           <div className="relative w-full h-full">
