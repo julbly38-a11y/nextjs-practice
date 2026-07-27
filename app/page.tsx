@@ -35,17 +35,26 @@ interface CanvasElement {
   parentId: number | null;
   customBgColor?: string;
 
-  // Hover / Active для кнопок
+  // Hover параметри
+  hoverContent?: string;      // Текст при наведенні
   hoverBgColor?: string;
   hoverTextColor?: string;
   glowColor?: string;
   glowBlur?: number;
+
+  // Active / Pressed параметри
+  activeContent?: string;     // Текст при натисканні
   activeBgColor?: string;
   activeTextColor?: string;
   activeScale?: number;
   activeOffsetY?: number;
   activeGlowColor?: string;
   activeGlowBlur?: number;
+  activeWidthOffset?: number;  // Зміна ширини при натисканні (+/- px)
+  activeHeightOffset?: number; // Зміна висоти при натисканні (+/- px)
+
+  isToggle?: boolean;         // Режим перемикача
+  isPressed?: boolean;        // Затиснутий стан
 }
 
 export default function AppBoundedCanvas() {
@@ -66,7 +75,7 @@ export default function AppBoundedCanvas() {
       try {
         setElements(JSON.parse(saved));
       } catch (e) {
-        console.error(e);
+        console.error("Помилка зчитування з localStorage:", e);
       }
     }
   }, []);
@@ -77,7 +86,6 @@ export default function AppBoundedCanvas() {
     }
   }, [elements, isMounted]);
 
-  // 🛡️ ОБРАХУНОК МІНІМАЛЬНИХ РОЗМІРІВ: знаходимо крайню точку (X + W) та (Y + H) серед усіх дочірніх елементів
   const getMinDimensions = (parentId: number) => {
     const children = elements.filter((el) => el.parentId === parentId);
     if (children.length === 0) {
@@ -111,23 +119,24 @@ export default function AppBoundedCanvas() {
   };
 
   const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     const fileReader = new FileReader();
-    if (e.target.files && e.target.files[0]) {
-      fileReader.readAsText(e.target.files[0], "UTF-8");
-      fileReader.onload = (event) => {
-        try {
-          const parsed = JSON.parse(event.target?.result as string);
-          if (Array.isArray(parsed)) {
-            setElements(parsed);
-            setSelectedIds([]);
-          } else {
-            alert("Невірний формат JSON!");
-          }
-        } catch (err) {
-          alert("Помилка читання JSON файлу");
+    fileReader.readAsText(file, "UTF-8");
+    fileReader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        if (Array.isArray(parsed)) {
+          setElements(parsed);
+          setSelectedIds([]);
+        } else {
+          alert("Невірний формат JSON!");
         }
-      };
-    }
+      } catch (err) {
+        alert("Помилка читання JSON файлу");
+      }
+    };
   };
 
   const triggerFileInput = () => {
@@ -173,6 +182,19 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  const handleButtonClick = (e: React.MouseEvent, el: CanvasElement) => {
+    e.stopPropagation();
+    handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
+
+    if (el.type === "button" && el.isToggle) {
+      setElements((prev) =>
+        prev.map((item) =>
+          item.id === el.id ? { ...item, isPressed: !item.isPressed } : item
+        )
+      );
+    }
+  };
+
   const handleAddElement = (e: React.FormEvent) => {
     e.preventDefault();
     const isButton = newType === "button";
@@ -180,25 +202,31 @@ export default function AppBoundedCanvas() {
       id: Date.now(),
       type: newType,
       content: newContent,
-      width: isButton ? 100 : forcedParentId ? 120 : 240,
-      height: isButton ? 36 : forcedParentId ? 60 : 140,
+      width: isButton ? 120 : forcedParentId ? 120 : 240,
+      height: isButton ? 40 : forcedParentId ? 60 : 140,
       x: 5,
       y: 5,
       textColor: "#ffffff",
-      padding: 0,
-      borderRadius: isButton ? 6 : 4,
+      padding: isButton ? 4 : 8,
+      borderRadius: isButton ? 8 : 0,
       fontSize: newType === "heading" ? 16 : 12,
       parentId: forcedParentId,
+      hoverContent: "",
       hoverBgColor: isButton ? "#1d4ed8" : "",
       hoverTextColor: isButton ? "#ffffff" : "",
       glowColor: "#3b82f6",
-      glowBlur: 0,
+      glowBlur: 8,
+      activeContent: "",
       activeBgColor: isButton ? "#1e40af" : "",
       activeTextColor: isButton ? "#ffffff" : "",
       activeScale: isButton ? 0.96 : 1,
       activeOffsetY: isButton ? 1 : 0,
       activeGlowColor: "#60a5fa",
-      activeGlowBlur: 0,
+      activeGlowBlur: 14,
+      activeWidthOffset: 0,
+      activeHeightOffset: 0,
+      isToggle: false,
+      isPressed: false,
     };
     setElements((prev) => [...prev, newElement]);
     handleSelectElement(newElement.id);
@@ -211,7 +239,6 @@ export default function AppBoundedCanvas() {
         if (!selectedIds.includes(el.id)) return el;
 
         let newValue = value;
-        // Захист від введення значення, меншого за дочірній елемент через інпути
         if (field === "width" || field === "height") {
           const { minWidth, minHeight } = getMinDimensions(el.id);
           if (field === "width") newValue = Math.max(Number(value), minWidth);
@@ -263,32 +290,35 @@ export default function AppBoundedCanvas() {
     );
   };
 
-  // Рекурсивний рендер Canvas елементів
   const renderCanvasNode = (el: CanvasElement) => {
     const children = elements.filter((child) => child.parentId === el.id);
     const isSelected = selectedIds.includes(el.id);
     const computedBgColor = getElementColor(el);
     const isButton = el.type === "button";
 
-    // Отримуємо динамічні мінімальні розміри для даного елемента
     const { minWidth, minHeight } = getMinDimensions(el.id);
 
+    // Розрахунок свічення та розмірів для Hover/Active
     const glowBlur = el.glowBlur || 0;
     const glowColor = el.glowColor || "#3b82f6";
-    const normalShadow = glowBlur > 0 ? `0 0 ${glowBlur}px ${glowColor}` : "none";
+    const hoverShadow = glowBlur > 0 ? `0 0 ${glowBlur}px ${glowColor}` : "none";
 
     const activeGlowBlur = el.activeGlowBlur || 0;
     const activeGlowColor = el.activeGlowColor || glowColor;
-    const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : normalShadow;
+    const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
+
+    // Розрахунок активної ширини/висоти (при натисканні)
+    const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
+    const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
     return (
       <Rnd
         key={el.id}
-        size={{ width: el.width, height: el.height }}
+        size={{ width: currentWidth, height: currentHeight }}
         position={{ x: el.x, y: el.y }}
         bounds="parent"
-        minWidth={minWidth}   // 🛡️ НЕ ДАЄ ЗМЕНШИТИ БАТЬКА МЕНШЕ ЗА ШИРИНУ ДОЧІРНІХ
-        minHeight={minHeight} // 🛡️ НЕ ДАЄ ЗМЕНШИТИ БАТЬКА МЕНШЕ ЗА ВИСОТУ ДОЧІРНІХ
+        minWidth={minWidth}
+        minHeight={minHeight}
         onDragStart={(e) => {
           e.stopPropagation();
           if (!selectedIds.includes(el.id)) {
@@ -321,47 +351,66 @@ export default function AppBoundedCanvas() {
         style={{ zIndex: isSelected ? 40 : 10 }}
       >
         <div
-          onClick={(e) => {
-            e.stopPropagation();
-            handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
-          }}
+          onClick={(e) => handleButtonClick(e, el)}
           style={
             {
-              backgroundColor: computedBgColor,
-              color: el.textColor || "#ffffff",
+              backgroundColor: el.isPressed
+                ? (el.activeBgColor || el.hoverBgColor || computedBgColor)
+                : computedBgColor,
+              color: el.isPressed
+                ? (el.activeTextColor || el.hoverTextColor || el.textColor || "#ffffff")
+                : (el.textColor || "#ffffff"),
               width: "100%",
               height: "100%",
-              borderRadius: `${el.borderRadius || 0}px`,
+              borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
               padding: `${el.padding || 0}px`,
               fontSize: `${el.fontSize || 12}px`,
-              boxShadow: normalShadow,
+              boxShadow: el.isPressed ? activeShadow : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
+              "--hover-shadow": isButton ? hoverShadow : "none",
 
               "--active-bg": isButton ? (el.activeBgColor || el.hoverBgColor || computedBgColor) : computedBgColor,
               "--active-text": isButton ? (el.activeTextColor || el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
               "--active-scale": isButton ? (el.activeScale ?? 1) : 1,
               "--active-offset-y": isButton ? `${el.activeOffsetY ?? 0}px` : "0px",
-              "--active-shadow": isButton ? activeShadow : normalShadow,
+              "--active-shadow": isButton ? activeShadow : hoverShadow,
+              "--active-w-offset": isButton ? `${el.activeWidthOffset || 0}px` : "0px",
+              "--active-h-offset": isButton ? `${el.activeHeightOffset || 0}px` : "0px",
             } as React.CSSProperties
           }
-          className={`interactive-node shadow-md font-medium relative box-border transition-all duration-75 cursor-pointer select-none ${
+          className={`interactive-node font-medium relative box-border transition-all duration-75 cursor-pointer select-none ${
             isButton ? "is-button-element flex items-center justify-center" : ""
           } ${
             isSelected
               ? "ring-4 ring-amber-400 ring-offset-1 shadow-lg"
-              : "border border-black/15"
+              : "border border-black/15 shadow-sm"
           }`}
         >
-          {/* Напис показується ТІЛЬКИ для кнопок */}
-          {isButton && (
+          {el.type === "button" && (
             <div className="font-bold truncate pointer-events-none opacity-90 text-center px-1">
+              {el.isPressed
+                ? (el.activeContent || el.hoverContent || el.content)
+                : (
+                  <>
+                    <span className="btn-default-text">{el.content}</span>
+                    <span className="btn-hover-text hidden">{el.hoverContent || el.content}</span>
+                  </>
+                )}
+            </div>
+          )}
+          {el.type === "heading" && (
+            <div className="font-bold leading-tight pointer-events-none truncate">
+              {el.content}
+            </div>
+          )}
+          {el.type === "text" && (
+            <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full">
               {el.content}
             </div>
           )}
 
-          {/* Контейнер для вкладених елементів */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             <div className="relative w-full h-full pointer-events-auto">
               {children.map((child) => renderCanvasNode(child))}
@@ -436,15 +485,27 @@ export default function AppBoundedCanvas() {
   return (
     <div className="flex flex-col min-h-screen bg-slate-100 text-slate-800 font-sans">
       <style jsx global>{`
+        /* Зміна тексту та стилів при Hover */
         .is-button-element:hover {
           background-color: var(--hover-bg) !important;
           color: var(--hover-text) !important;
+          box-shadow: var(--hover-shadow) !important;
         }
+        .is-button-element:hover .btn-default-text {
+          display: none !important;
+        }
+        .is-button-element:hover .btn-hover-text {
+          display: inline !important;
+        }
+
+        /* Зміна стилів, розміру та свічення при натисканні (Active) */
         .is-button-element:active {
           background-color: var(--active-bg) !important;
           color: var(--active-text) !important;
           transform: scale(var(--active-scale)) translateY(var(--active-offset-y)) !important;
           box-shadow: var(--active-shadow) !important;
+          width: calc(100% + var(--active-w-offset)) !important;
+          height: calc(100% + var(--active-h-offset)) !important;
         }
       `}</style>
 
@@ -529,7 +590,7 @@ export default function AppBoundedCanvas() {
 
           {/* Ієрархія елементів */}
           <div className="space-y-2 pb-4 border-b">
-            <h2 className="font-bold text-slate-900 text-xs uppercase text-slate-500">
+            <h2 className="font-bold text-xs uppercase text-slate-500">
               Ієрархія елементів:
             </h2>
             <div className="space-y-1 text-xs">{renderSidebarTree(null)}</div>
@@ -556,7 +617,7 @@ export default function AppBoundedCanvas() {
                 {singleSelected && (
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Назва / Контент ({TYPE_LABELS[singleSelected.type]}):
+                      Основний текст ({TYPE_LABELS[singleSelected.type]}):
                     </label>
                     <input
                       type="text"
@@ -617,10 +678,76 @@ export default function AppBoundedCanvas() {
                 {/* НАЛАШТУВАННЯ ДЛЯ КНОПОК */}
                 {singleSelected?.type === "button" ? (
                   <>
+                    {/* Перемикач стану Toggle */}
+                    <div className="p-2.5 bg-indigo-50/70 border border-indigo-200 rounded-lg space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-bold text-indigo-900 flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={singleSelected.isToggle ?? false}
+                            onChange={(e) => updateSelectedFields("isToggle", e.target.checked)}
+                            className="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                          />
+                          Режим перемикача (Toggle)
+                        </label>
+                      </div>
+                      {singleSelected.isToggle && (
+                        <div className="flex items-center justify-between pt-1 border-t border-indigo-100">
+                          <span className="text-[10px] text-indigo-700 font-medium">Затиснутий стан:</span>
+                          <button
+                            type="button"
+                            onClick={() => updateSelectedFields("isPressed", !singleSelected.isPressed)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              singleSelected.isPressed
+                                ? "bg-indigo-600 text-white"
+                                : "bg-indigo-200 text-indigo-800"
+                            }`}
+                          >
+                            {singleSelected.isPressed ? "ON (Pressed)" : "OFF (Normal)"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Округленість кутів */}
+                    <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-[11px] font-bold text-blue-900">
+                          🔘 Округлення кутів (Radius px):
+                        </label>
+                        <span className="text-[10px] text-blue-600 font-mono font-semibold">
+                          {singleSelected.borderRadius ?? 8}px
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min="0"
+                          max="30"
+                          value={singleSelected.borderRadius ?? 8}
+                          onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
+                          className="w-full h-1.5 bg-blue-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                        />
+                      </div>
+                    </div>
+
+                    {/* ПРИ НАВЕДЕННІ (HOVER) */}
                     <div className="p-2.5 bg-slate-50 border rounded-lg space-y-2">
                       <span className="font-bold text-[11px] text-slate-700 uppercase block">
                         ✨ При наведенні (Hover):
                       </span>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-500 mb-1">Надпис при Hover:</label>
+                        <input
+                          type="text"
+                          placeholder={singleSelected.content}
+                          value={singleSelected?.hoverContent || ""}
+                          onChange={(e) => updateSelectedFields("hoverContent", e.target.value)}
+                          className="w-full p-1 border rounded text-xs bg-white"
+                        />
+                      </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <label className="block text-[10px] text-slate-500 mb-1">Фон Hover:</label>
@@ -644,7 +771,7 @@ export default function AppBoundedCanvas() {
 
                       <div className="grid grid-cols-2 gap-2 pt-1">
                         <div>
-                          <label className="block text-[10px] text-slate-500 mb-1">Колір свічення:</label>
+                          <label className="block text-[10px] text-slate-500 mb-1">Свічення Hover:</label>
                           <input
                             type="color"
                             value={singleSelected?.glowColor || "#3b82f6"}
@@ -656,7 +783,7 @@ export default function AppBoundedCanvas() {
                           <label className="block text-[10px] text-slate-500 mb-1">Сила (Blur px):</label>
                           <input
                             type="number"
-                            value={singleSelected?.glowBlur ?? 0}
+                            value={singleSelected?.glowBlur ?? 8}
                             onChange={(e) => updateSelectedFields("glowBlur", Number(e.target.value))}
                             className="w-full p-1 border rounded text-xs bg-white"
                           />
@@ -664,10 +791,22 @@ export default function AppBoundedCanvas() {
                       </div>
                     </div>
 
+                    {/* ПРИ НАТИСКАННІ (ACTIVE / PRESSED) */}
                     <div className="p-2.5 bg-slate-50 border rounded-lg space-y-2">
                       <span className="font-bold text-[11px] text-slate-700 uppercase block">
-                        🖱️ При натисканні (Active):
+                        🖱️ При натисканні (Active / Click):
                       </span>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-500 mb-1">Надпис при Active:</label>
+                        <input
+                          type="text"
+                          placeholder={singleSelected.hoverContent || singleSelected.content}
+                          value={singleSelected?.activeContent || ""}
+                          onChange={(e) => updateSelectedFields("activeContent", e.target.value)}
+                          className="w-full p-1 border rounded text-xs bg-white"
+                        />
+                      </div>
 
                       <div className="grid grid-cols-2 gap-2">
                         <div>
@@ -686,6 +825,30 @@ export default function AppBoundedCanvas() {
                             value={singleSelected?.activeTextColor || singleSelected?.textColor || "#ffffff"}
                             onChange={(e) => updateSelectedFields("activeTextColor", e.target.value)}
                             className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Зміна розмірів при Active */}
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div>
+                          <label className="block text-[10px] text-slate-500 mb-1">Δ Ширини (px):</label>
+                          <input
+                            type="number"
+                            placeholder="0"
+                            value={singleSelected?.activeWidthOffset ?? 0}
+                            onChange={(e) => updateSelectedFields("activeWidthOffset", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-500 mb-1">Δ Висоти (px):</label>
+                          <input
+                            type="number"
+                            placeholder="0"
+                            value={singleSelected?.activeHeightOffset ?? 0}
+                            onChange={(e) => updateSelectedFields("activeHeightOffset", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs bg-white"
                           />
                         </div>
                       </div>
@@ -726,7 +889,7 @@ export default function AppBoundedCanvas() {
                           <label className="block text-[10px] text-slate-500 mb-1">Сила (Blur px):</label>
                           <input
                             type="number"
-                            value={singleSelected?.activeGlowBlur ?? 0}
+                            value={singleSelected?.activeGlowBlur ?? 14}
                             onChange={(e) => updateSelectedFields("activeGlowBlur", Number(e.target.value))}
                             className="w-full p-1 border rounded text-xs bg-white"
                           />
@@ -736,14 +899,14 @@ export default function AppBoundedCanvas() {
                   </>
                 ) : (
                   <div className="p-2.5 bg-amber-50/60 border border-amber-200 rounded-lg text-[11px] text-amber-800">
-                    ℹ️ Налаштування дій hover/active доступні для елементів типу <b>"Кнопка"</b>.
+                    ℹ️ Налаштування ефектів hover/active/glow доступні для елементів типу <b>"Кнопка"</b>.
                   </div>
                 )}
 
-                {/* Padding, Radius, Font-size */}
-                <div className="grid grid-cols-3 gap-2">
+                {/* Padding & Font-size */}
+                <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding:</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
                     <input
                       type="number"
                       value={singleSelected ? singleSelected.padding ?? 0 : ""}
@@ -752,16 +915,7 @@ export default function AppBoundedCanvas() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Radius:</label>
-                    <input
-                      type="number"
-                      value={singleSelected ? singleSelected.borderRadius ?? 4 : ""}
-                      onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
-                      className="w-full p-1.5 border rounded-md"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Font Size:</label>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Font Size (px):</label>
                     <input
                       type="number"
                       value={singleSelected ? singleSelected.fontSize ?? 12 : ""}
