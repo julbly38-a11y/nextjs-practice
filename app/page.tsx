@@ -92,19 +92,49 @@ export default function AppBoundedCanvas() {
   const [newContent, setNewContent] = useState<string>("Елемент");
   const [forcedParentId, setForcedParentId] = useState<number | null>(null);
 
+  // НОВІ СТАНТИ: Сітка (Grid Snap) та Історія (Undo/Redo)
+  const [enableGrid, setEnableGrid] = useState<boolean>(true);
+  const [history, setHistory] = useState<{ pages: Page[]; elements: CanvasElement[] }[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Функція збереження стану в Історію для Undo/Redo
+  const saveToHistory = (newPages: Page[], newElements: CanvasElement[]) => {
+    const updatedHistory = history.slice(0, historyIndex + 1);
+    updatedHistory.push({ pages: newPages, elements: newElements });
+    
+    // Обмежуємо історію останніми 30 кроками
+    if (updatedHistory.length > 30) updatedHistory.shift();
+    
+    setHistory(updatedHistory);
+    setHistoryIndex(updatedHistory.length - 1);
+  };
 
   useEffect(() => {
     setIsMounted(true);
     const savedElements = localStorage.getItem("mis_canvas_elements_multipage");
     const savedPages = localStorage.getItem("mis_canvas_pages_list");
 
+    let initialPages = pages;
+    let initialElements = elements;
+
     if (savedPages) {
-      try { setPages(JSON.parse(savedPages)); } catch (e) {}
+      try { 
+        initialPages = JSON.parse(savedPages);
+        setPages(initialPages); 
+      } catch (e) {}
     }
     if (savedElements) {
-      try { setElements(JSON.parse(savedElements)); } catch (e) {}
+      try { 
+        initialElements = JSON.parse(savedElements);
+        setElements(initialElements); 
+      } catch (e) {}
     }
+
+    // Записуємо початковий стан в історію
+    setHistory([{ pages: initialPages, elements: initialElements }]);
+    setHistoryIndex(0);
   }, []);
 
   useEffect(() => {
@@ -114,20 +144,68 @@ export default function AppBoundedCanvas() {
     }
   }, [elements, pages, isMounted]);
 
+  // ГАРЯЧІ КЛАВІШІ ДЛЯ UNDO / REDO (Ctrl+Z / Ctrl+Y)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        handleRedo();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [history, historyIndex]);
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const prevIndex = historyIndex - 1;
+      const prevState = history[prevIndex];
+      setPages(prevState.pages);
+      setElements(prevState.elements);
+      setHistoryIndex(prevIndex);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < history.length - 1) {
+      const nextIndex = historyIndex + 1;
+      const nextState = history[nextIndex];
+      setPages(nextState.pages);
+      setElements(nextState.elements);
+      setHistoryIndex(nextIndex);
+    }
+  };
+
+  // Оновлюємо методи зміни даних, щоб фіксувати кроки в Історії
+  const updateElementsAndHistory = (newElements: CanvasElement[]) => {
+    setElements(newElements);
+    saveToHistory(pages, newElements);
+  };
+
+  const updatePagesAndHistory = (newPages: Page[]) => {
+    setPages(newPages);
+    saveToHistory(newPages, elements);
+  };
+
   const handleAddPage = () => {
     const pageNum = pages.length + 1;
     const newPage: Page = {
       id: `page-${Date.now()}`,
       name: `Сторінка ${pageNum}`,
     };
-    setPages([...pages, newPage]);
+    const nextPages = [...pages, newPage];
+    updatePagesAndHistory(nextPages);
     setCurrentPageId(newPage.id);
   };
 
   const handleUpdateCurrentPageName = (newName: string) => {
-    setPages((prev) =>
-      prev.map((p) => (p.id === currentPageId ? { ...p, name: newName } : p))
-    );
+    const nextPages = pages.map((p) => (p.id === currentPageId ? { ...p, name: newName } : p));
+    updatePagesAndHistory(nextPages);
   };
 
   const handleDeleteCurrentPage = () => {
@@ -137,9 +215,13 @@ export default function AppBoundedCanvas() {
     }
     if (confirm("Видалити цю сторінку та всі її елементи?")) {
       const remainingPages = pages.filter((p) => p.id !== currentPageId);
+      const remainingElements = elements.filter((el) => el.pageId !== currentPageId);
+      
       setPages(remainingPages);
+      setElements(remainingElements);
+      saveToHistory(remainingPages, remainingElements);
+
       setCurrentPageId(remainingPages[0].id);
-      setElements((prev) => prev.filter((el) => el.pageId !== currentPageId));
     }
   };
 
@@ -178,6 +260,98 @@ export default function AppBoundedCanvas() {
     downloadAnchor.remove();
   };
 
+  // ЕКСПОРТ В ГОТОВИЙ HTML / CSS
+  const handleExportHTML = () => {
+    const renderElementHTML = (el: CanvasElement): string => {
+      const children = elements.filter((child) => child.parentId === el.id);
+      const computedBgColor = el.customBgColor || getElementColor(el);
+      const isBtn = el.type === "button";
+
+      const style = `
+        position: absolute;
+        left: ${el.x}px;
+        top: ${el.y}px;
+        width: ${el.width}px;
+        height: ${el.height}px;
+        background-color: ${computedBgColor};
+        color: ${el.textColor || "#ffffff"};
+        padding: ${el.padding || 0}px;
+        border-radius: ${isBtn ? (el.borderRadius ?? 8) : 0}px;
+        font-size: ${el.fontSize || 12}px;
+        font-family: ${el.fontFamily || "inherit"};
+        font-weight: ${el.fontWeight || "500"};
+        text-align: ${el.textAlign || "left"};
+        box-sizing: border-box;
+      `;
+
+      let contentHTML = "";
+      if (el.type === "button") {
+        contentHTML = `<button style="width:100%;height:100%;border:none;background:transparent;color:inherit;font:inherit;cursor:pointer;" ${
+          el.targetPageId ? `onclick="switchPage('${el.targetPageId}')"` : ""
+        }>${el.content}</button>`;
+      } else if (el.type === "heading") {
+        contentHTML = `<h2 style="margin:0;font-size:inherit;">${el.content}</h2>`;
+      } else {
+        contentHTML = `<div>${el.content}</div>`;
+      }
+
+      const innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
+
+      return `
+        <div id="el-${el.id}" style="${style}">
+          ${contentHTML}
+          ${innerChildrenHTML}
+        </div>
+      `;
+    };
+
+    const pagesHTML = pages
+      .map((p) => {
+        const topElements = elements.filter(
+          (el) => el.parentId === null && (el.isGlobal || el.pageId === p.id)
+        );
+        return `
+        <div id="page-${p.id}" class="page-container" style="display: ${p.id === currentPageId ? "block" : "none"}; position: relative; width: 100%; min-height: 800px;">
+          ${topElements.map((el) => renderElementHTML(el)).join("")}
+        </div>
+      `;
+      })
+      .join("");
+
+    const fullHTML = `
+      <!DOCTYPE html>
+      <html lang="uk">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Сгенерована сторінка</title>
+        <style>
+          body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
+          .page-container { position: relative; max-width: 1200px; margin: 0 auto; background: #ffffff; min-height: 100vh; }
+        </style>
+      </head>
+      <body>
+        ${pagesHTML}
+        <script>
+          function switchPage(pageId) {
+            document.querySelectorAll('.page-container').forEach(el => el.style.display = 'none');
+            const target = document.getElementById('page-' + pageId);
+            if(target) target.style.display = 'block';
+          }
+        </script>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob([fullHTML], { type: "text/html" });
+    const downloadAnchor = document.createElement("a");
+    downloadAnchor.href = URL.createObjectURL(blob);
+    downloadAnchor.download = `exported-site-${Date.now()}.html`;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
   const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -190,10 +364,12 @@ export default function AppBoundedCanvas() {
         if (parsed.pages && parsed.elements) {
           setPages(parsed.pages);
           setElements(parsed.elements);
+          saveToHistory(parsed.pages, parsed.elements);
           setCurrentPageId(parsed.pages[0]?.id || "home");
           setSelectedIds([]);
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
+          saveToHistory(pages, parsed);
           setSelectedIds([]);
         } else {
           alert("Невірний формат JSON!");
@@ -262,11 +438,10 @@ export default function AppBoundedCanvas() {
       }
 
       if (el.isToggle) {
-        setElements((prev) =>
-          prev.map((item) =>
-            item.id === el.id ? { ...item, isPressed: !item.isPressed } : item
-          )
+        const nextElements = elements.map((item) =>
+          item.id === el.id ? { ...item, isPressed: !item.isPressed } : item
         );
+        updateElementsAndHistory(nextElements);
       }
     }
   };
@@ -313,26 +488,26 @@ export default function AppBoundedCanvas() {
       isToggle: false,
       isPressed: false,
     };
-    setElements((prev) => [...prev, newElement]);
+    const nextElements = [...elements, newElement];
+    updateElementsAndHistory(nextElements);
     handleSelectElement(newElement.id);
   };
 
   const updateSelectedFields = (field: keyof CanvasElement, value: any) => {
     if (selectedIds.length === 0) return;
-    setElements((prev) =>
-      prev.map((el) => {
-        if (!selectedIds.includes(el.id)) return el;
+    const nextElements = elements.map((el) => {
+      if (!selectedIds.includes(el.id)) return el;
 
-        let newValue = value;
-        if (field === "width" || field === "height") {
-          const { minWidth, minHeight } = getMinDimensions(el.id);
-          if (field === "width") newValue = Math.max(Number(value), minWidth);
-          if (field === "height") newValue = Math.max(Number(value), minHeight);
-        }
+      let newValue = value;
+      if (field === "width" || field === "height") {
+        const { minWidth, minHeight } = getMinDimensions(el.id);
+        if (field === "width") newValue = Math.max(Number(value), minWidth);
+        if (field === "height") newValue = Math.max(Number(value), minHeight);
+      }
 
-        return { ...el, [field]: newValue };
-      })
-    );
+      return { ...el, [field]: newValue };
+    });
+    updateElementsAndHistory(nextElements);
   };
 
   const handleDeleteSelected = () => {
@@ -346,7 +521,8 @@ export default function AppBoundedCanvas() {
       });
     };
     selectedIds.forEach((id) => findChildren(id));
-    setElements((prev) => prev.filter((el) => !idsToDelete.has(el.id)));
+    const remaining = elements.filter((el) => !idsToDelete.has(el.id));
+    updateElementsAndHistory(remaining);
     setSelectedIds([]);
   };
 
@@ -368,11 +544,10 @@ export default function AppBoundedCanvas() {
       alert("Неможливо перемістити блок всередину самого себе!");
       return;
     }
-    setElements((prev) =>
-      prev.map((el) =>
-        el.id === elementId ? { ...el, parentId: newParent, x: 5, y: 5 } : el
-      )
+    const nextElements = elements.map((el) =>
+      el.id === elementId ? { ...el, parentId: newParent, x: 5, y: 5 } : el
     );
+    updateElementsAndHistory(nextElements);
   };
 
   const renderCanvasNode = (el: CanvasElement) => {
@@ -410,6 +585,8 @@ export default function AppBoundedCanvas() {
         size={{ width: currentWidth, height: currentHeight }}
         position={{ x: el.x, y: el.y }}
         bounds="parent"
+        dragGrid={enableGrid ? [10, 10] : [1, 1]}
+        resizeGrid={enableGrid ? [10, 10] : [1, 1]}
         minWidth={minWidth}
         minHeight={minHeight}
         onDragStart={(e) => {
@@ -420,25 +597,23 @@ export default function AppBoundedCanvas() {
         }}
         onDragStop={(e, d) => {
           e.stopPropagation();
-          setElements((prev) =>
-            prev.map((item) => (item.id === el.id ? { ...item, x: d.x, y: d.y } : item))
-          );
+          const nextElements = elements.map((item) => (item.id === el.id ? { ...item, x: d.x, y: d.y } : item));
+          updateElementsAndHistory(nextElements);
         }}
         onResizeStop={(e, dir, ref, delta, pos) => {
           e.stopPropagation();
-          setElements((prev) =>
-            prev.map((item) =>
-              item.id === el.id
-                ? {
-                    ...item,
-                    width: parseInt(ref.style.width),
-                    height: parseInt(ref.style.height),
-                    x: pos.x,
-                    y: pos.y,
-                  }
-                : item
-            )
+          const nextElements = elements.map((item) =>
+            item.id === el.id
+              ? {
+                  ...item,
+                  width: parseInt(ref.style.width),
+                  height: parseInt(ref.style.height),
+                  x: pos.x,
+                  y: pos.y,
+                }
+              : item
           );
+          updateElementsAndHistory(nextElements);
         }}
         enableResizing={true}
         style={{ zIndex: isSelected ? 40 : 10 }}
@@ -634,12 +809,60 @@ export default function AppBoundedCanvas() {
             </button>
           </div>
 
+          {/* КНОПКИ UNDO / REDO */}
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border">
+            <button
+              onClick={handleUndo}
+              disabled={historyIndex <= 0}
+              className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                historyIndex > 0
+                  ? "bg-white text-slate-800 hover:bg-slate-200 shadow-xs"
+                  : "text-slate-400 cursor-not-allowed"
+              }`}
+              title="Скасувати дія (Ctrl+Z)"
+            >
+              ↩️ Undo
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={historyIndex >= history.length - 1}
+              className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                historyIndex < history.length - 1
+                  ? "bg-white text-slate-800 hover:bg-slate-200 shadow-xs"
+                  : "text-slate-400 cursor-not-allowed"
+              }`}
+              title="Повторити дія (Ctrl+Y)"
+            >
+              ↪️ Redo
+            </button>
+          </div>
+
+          {/* ПЕРЕМИКАЧ СІТКИ (GRID) */}
+          <button
+            onClick={() => setEnableGrid(!enableGrid)}
+            className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-all ${
+              enableGrid
+                ? "bg-indigo-50 border-indigo-300 text-indigo-700"
+                : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            🧩 Сітка: {enableGrid ? "УВІМК (10px)" : "ВИМК"}
+          </button>
+
           <div className="flex items-center gap-2">
             <button
               onClick={handleExportJSON}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors"
             >
               💾 Зберегти JSON
+            </button>
+
+            <button
+              onClick={handleExportHTML}
+              className="bg-orange-600 hover:bg-orange-700 text-white font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors"
+              title="Експортувати готову HTML-сторінку"
+            >
+              🌐 Експорт в HTML
             </button>
 
             <button
@@ -1059,7 +1282,16 @@ export default function AppBoundedCanvas() {
           }}
           className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[800px]"
         >
-          <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-60 pointer-events-none" />
+          {/* ФОН СІТКИ (Динамічний при увімкненні) */}
+          <div 
+            className="absolute inset-0 opacity-60 pointer-events-none transition-all"
+            style={{
+              backgroundImage: enableGrid 
+                ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)" 
+                : "radial-gradient(#e2e8f0 1px, transparent 1px)",
+              backgroundSize: enableGrid ? "10px 10px" : "16px 16px",
+            }} 
+          />
           <div className="relative w-full h-full">
             {elements
               .filter((el) => el.parentId === null && (el.isGlobal || el.pageId === currentPageId))
