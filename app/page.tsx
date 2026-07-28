@@ -252,7 +252,7 @@ export default function AppBoundedCanvas() {
     handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
 
     if (el.showOnClickId) {
-      setClickedElementId((prev) => (prev === el.showOnClickId ? null : el.showOnClickId));
+      setClickedElementId((prev) => (prev === el.showOnClickId ? null : (el.showOnClickId ?? null)));
     }
 
     if (el.type === "button") {
