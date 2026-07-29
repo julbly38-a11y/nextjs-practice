@@ -103,6 +103,9 @@ export default function AppBoundedCanvas() {
   const [panelSize, setPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 640 });
   const [panelOpacity, setPanelOpacity] = useState<number>(0.8);
 
+  // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
+  const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const saveToHistory = (newPages: Page[], newElements: CanvasElement[]) => {
@@ -266,6 +269,120 @@ export default function AppBoundedCanvas() {
     return {
       minWidth: Math.max(20, maxRight),
       minHeight: Math.max(20, maxBottom),
+    };
+  };
+
+  // Одновимірний "slab" тест: рух точки з p0 в p1 проти відрізка [boxMin, boxMax].
+  // Повертає [entry, exit] — частку шляху (t), на якій рух входить/виходить із відрізка.
+  const sweepAxis = (p0: number, p1: number, boxMin: number, boxMax: number): [number, number] => {
+    const d = p1 - p0;
+    if (Math.abs(d) < 1e-9) {
+      return p0 >= boxMin && p0 <= boxMax ? [-Infinity, Infinity] : [Infinity, -Infinity];
+    }
+    let t1 = (boxMin - p0) / d;
+    let t2 = (boxMax - p0) / d;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    return [t1, t2];
+  };
+
+  // Не дає елементу під час перетягування підійти до сусіда (того ж рівня/батька)
+  // ближче ніж на minGap пікселів. Це swept-AABB перевірка: рухому коробку розглядаємо
+  // як точку, а перешкоду "роздуваємо" на розмір рухомої коробки + minGap, і шукаємо
+  // найранішу частку шляху (t) від (fromX, fromY) до (toX, toY), на якій відбувається
+  // зіткнення. Перевірка лише кінцевої точки пропускає "проскакування" через сусіда
+  // одним великим стрибком (тунелювання) — тут перевіряється весь шлях цілком,
+  // однаково для дрібних елементів і великих батьківських блоків.
+  const resolveCollision = (
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    width: number,
+    height: number,
+    siblings: CanvasElement[],
+    minGap: number
+  ) => {
+    if (siblings.length === 0) {
+      return { x: toX, y: toY };
+    }
+
+    let earliestT = 1;
+
+    siblings.forEach((sib) => {
+      const expMinX = sib.x - minGap - width;
+      const expMaxX = sib.x + sib.width + minGap;
+      const expMinY = sib.y - minGap - height;
+      const expMaxY = sib.y + sib.height + minGap;
+
+      const [txEntry, txExit] = sweepAxis(fromX, toX, expMinX, expMaxX);
+      const [tyEntry, tyExit] = sweepAxis(fromY, toY, expMinY, expMaxY);
+
+      const entry = Math.max(txEntry, tyEntry, 0);
+      const exit = Math.min(txExit, tyExit, 1);
+
+      if (entry <= exit && entry < earliestT) {
+        earliestT = entry;
+      }
+    });
+
+    return {
+      x: Math.round(fromX + (toX - fromX) * earliestT),
+      y: Math.round(fromY + (toY - fromY) * earliestT),
+    };
+  };
+
+  const boxesOverlap = (
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    sib: CanvasElement,
+    minGap: number
+  ): boolean => {
+    const sx1 = sib.x - minGap;
+    const sy1 = sib.y - minGap;
+    const sx2 = sib.x + sib.width + minGap;
+    const sy2 = sib.y + sib.height + minGap;
+    return x < sx2 && x + width > sx1 && y < sy2 && y + height > sy1;
+  };
+
+  // Те саме, що resolveCollision, але для зміни розміру: тут "рухається" не лише
+  // позиція, а й ширина/висота одночасно (ручка resize може зсувати x/y — напр. ліва
+  // чи верхня грань). Лінійно інтерполюємо весь бокс {x,y,width,height} від останнього
+  // валідного стану (from) до запропонованого (to) і бінарним пошуком знаходимо
+  // найбільшу частку шляху (t), на якій ще немає перетину із сусідами.
+  const resolveResizeCollision = (
+    from: { x: number; y: number; width: number; height: number },
+    to: { x: number; y: number; width: number; height: number },
+    siblings: CanvasElement[],
+    minGap: number
+  ) => {
+    if (siblings.length === 0) return to;
+
+    const collidesAt = (t: number) => {
+      const bx = from.x + (to.x - from.x) * t;
+      const by = from.y + (to.y - from.y) * t;
+      const bw = from.width + (to.width - from.width) * t;
+      const bh = from.height + (to.height - from.height) * t;
+      return siblings.some((sib) => boxesOverlap(bx, by, bw, bh, sib, minGap));
+    };
+
+    if (!collidesAt(1)) return to;
+    if (collidesAt(0)) return from;
+
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2;
+      if (collidesAt(mid)) hi = mid;
+      else lo = mid;
+    }
+
+    return {
+      x: Math.round(from.x + (to.x - from.x) * lo),
+      y: Math.round(from.y + (to.y - from.y) * lo),
+      width: Math.round(from.width + (to.width - from.width) * lo),
+      height: Math.round(from.height + (to.height - from.height) * lo),
     };
   };
 
@@ -494,8 +611,8 @@ export default function AppBoundedCanvas() {
       content: newContent,
       width: isButton ? 120 : forcedParentId ? 120 : 240,
       height: isButton ? 40 : forcedParentId ? 60 : 140,
-      x: 5,
-      y: 5,
+      x: 1,
+      y: 1,
       textColor: "#ffffff",
       padding: isButton ? 4 : 8,
       borderRadius: isButton ? 8 : 0,
@@ -632,7 +749,7 @@ export default function AppBoundedCanvas() {
       return;
     }
     const nextElements = elements.map((el) =>
-      el.id === elementId ? { ...el, parentId: newParent, x: 5, y: 5 } : el
+      el.id === elementId ? { ...el, parentId: newParent, x: 1, y: 1 } : el
     );
     updateElementsAndHistory(nextElements);
   };
@@ -672,8 +789,8 @@ export default function AppBoundedCanvas() {
         size={{ width: currentWidth, height: currentHeight }}
         position={{ x: el.x, y: el.y }}
         bounds="parent"
-        dragGrid={enableGrid ? [10, 10] : [1, 1]}
-        resizeGrid={enableGrid ? [10, 10] : [1, 1]}
+        dragGrid={enableGrid ? [1, 1] : [1, 1]}
+        resizeGrid={enableGrid ? [1, 1] : [1, 1]}
         minWidth={minWidth}
         minHeight={minHeight}
         onDragStart={(e) => {
@@ -682,24 +799,67 @@ export default function AppBoundedCanvas() {
             handleSelectElement(el.id, false);
           }
         }}
+        onDrag={(e, d) => {
+          const siblings = elements.filter(
+            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
+          );
+          const resolved = resolveCollision(el.x, el.y, d.x, d.y, currentWidth, currentHeight, siblings, 1);
+          if (resolved.x !== el.x || resolved.y !== el.y) {
+            setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, x: resolved.x, y: resolved.y } : item)));
+          }
+        }}
         onDragStop={(e, d) => {
           e.stopPropagation();
-          const nextElements = elements.map((item) => (item.id === el.id ? { ...item, x: d.x, y: d.y } : item));
+          const siblings = elements.filter(
+            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
+          );
+          const resolved = resolveCollision(el.x, el.y, d.x, d.y, currentWidth, currentHeight, siblings, 1);
+          const nextElements = elements.map((item) => (item.id === el.id ? { ...item, x: resolved.x, y: resolved.y } : item));
           updateElementsAndHistory(nextElements);
+        }}
+        onResize={(e, dir, ref, delta, pos) => {
+          const siblings = elements.filter(
+            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
+          );
+          const proposed = {
+            x: pos.x,
+            y: pos.y,
+            width: parseInt(ref.style.width),
+            height: parseInt(ref.style.height),
+          };
+          const resolved = resolveResizeCollision(
+            { x: el.x, y: el.y, width: el.width, height: el.height },
+            proposed,
+            siblings,
+            1
+          );
+          if (
+            resolved.x !== el.x ||
+            resolved.y !== el.y ||
+            resolved.width !== el.width ||
+            resolved.height !== el.height
+          ) {
+            setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, ...resolved } : item)));
+          }
         }}
         onResizeStop={(e, dir, ref, delta, pos) => {
           e.stopPropagation();
-          const nextElements = elements.map((item) =>
-            item.id === el.id
-              ? {
-                  ...item,
-                  width: parseInt(ref.style.width),
-                  height: parseInt(ref.style.height),
-                  x: pos.x,
-                  y: pos.y,
-                }
-              : item
+          const siblings = elements.filter(
+            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
           );
+          const proposed = {
+            x: pos.x,
+            y: pos.y,
+            width: parseInt(ref.style.width),
+            height: parseInt(ref.style.height),
+          };
+          const resolved = resolveResizeCollision(
+            { x: el.x, y: el.y, width: el.width, height: el.height },
+            proposed,
+            siblings,
+            1
+          );
+          const nextElements = elements.map((item) => (item.id === el.id ? { ...item, ...resolved } : item));
           updateElementsAndHistory(nextElements);
         }}
         enableResizing={true}
@@ -791,6 +951,10 @@ export default function AppBoundedCanvas() {
         (p) => p.type === "block" && (p.isGlobal || p.pageId === currentPageId) && isValidParent(el.id, p.id)
       );
       const currentColor = getElementColor(el);
+      const hasChildren = elements.some(
+        (child) => child.parentId === el.id && (child.isGlobal || child.pageId === currentPageId)
+      );
+      const isCollapsed = collapsedIds.has(el.id);
 
       return (
         <div key={el.id} className="space-y-1 my-1" style={{ marginLeft: `${depth * 10}px` }}>
@@ -804,6 +968,26 @@ export default function AppBoundedCanvas() {
             style={{ borderLeftColor: isSelected ? undefined : currentColor }}
           >
             <div className="flex items-center gap-1.5 truncate">
+              {hasChildren ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsedIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(el.id)) next.delete(el.id);
+                      else next.add(el.id);
+                      return next;
+                    });
+                  }}
+                  className={`shrink-0 w-3.5 text-center leading-none ${isSelected ? "text-white" : "text-slate-500"}`}
+                  title={isCollapsed ? "Розгорнути" : "Згорнути"}
+                >
+                  {isCollapsed ? "▶" : "▼"}
+                </button>
+              ) : (
+                <span className="shrink-0 w-3.5" />
+              )}
               <span
                 className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
                 style={{ backgroundColor: currentColor }}
@@ -834,7 +1018,7 @@ export default function AppBoundedCanvas() {
               ))}
             </select>
           </div>
-          {renderSidebarTree(el.id, depth + 1)}
+          {!isCollapsed && renderSidebarTree(el.id, depth + 1)}
         </div>
       );
     });
@@ -933,7 +1117,7 @@ export default function AppBoundedCanvas() {
                 : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"
             }`}
           >
-            🧩 Сітка: {enableGrid ? "УВІМК (10px)" : "ВИМК"}
+            🧩 Сітка: {enableGrid ? "УВІМК (1px)" : "ВИМК"}
           </button>
 
           <div className="flex items-center gap-2">
@@ -1597,7 +1781,7 @@ export default function AppBoundedCanvas() {
               backgroundImage: enableGrid
                 ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)"
                 : "radial-gradient(#e2e8f0 1px, transparent 1px)",
-              backgroundSize: enableGrid ? "10px 10px" : "16px 16px",
+              backgroundSize: enableGrid ? "5px 5px" : "16px 16px",
             }}
           />
           <div className="relative w-full h-full">
