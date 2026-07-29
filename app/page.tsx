@@ -92,19 +92,21 @@ export default function AppBoundedCanvas() {
   const [newContent, setNewContent] = useState<string>("Елемент");
   const [forcedParentId, setForcedParentId] = useState<number | null>(null);
 
-  // НОВІ СТАНТИ: Сітка (Grid Snap) та Історія (Undo/Redo)
+  // СТАНТИ: Сітка (Grid Snap) та Історія (Undo/Redo)
   const [enableGrid, setEnableGrid] = useState<boolean>(true);
   const [history, setHistory] = useState<{ pages: Page[]; elements: CanvasElement[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
+  // Позиція та розмір плаваючої панелі управління (винесена з полотна, щоб не заважала)
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number }>({ x: 24, y: 24 });
+  const [panelSize, setPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 640 });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Функція збереження стану в Історію для Undo/Redo
   const saveToHistory = (newPages: Page[], newElements: CanvasElement[]) => {
     const updatedHistory = history.slice(0, historyIndex + 1);
     updatedHistory.push({ pages: newPages, elements: newElements });
     
-    // Обмежуємо історію останніми 30 кроками
     if (updatedHistory.length > 30) updatedHistory.shift();
     
     setHistory(updatedHistory);
@@ -120,19 +122,27 @@ export default function AppBoundedCanvas() {
     let initialElements = elements;
 
     if (savedPages) {
-      try { 
+      try {
         initialPages = JSON.parse(savedPages);
-        setPages(initialPages); 
+        setPages(initialPages);
       } catch (e) {}
     }
     if (savedElements) {
-      try { 
+      try {
         initialElements = JSON.parse(savedElements);
-        setElements(initialElements); 
+        setElements(initialElements);
       } catch (e) {}
     }
 
-    // Записуємо початковий стан в історію
+    const savedPanelPos = localStorage.getItem("mis_canvas_panel_pos");
+    const savedPanelSize = localStorage.getItem("mis_canvas_panel_size");
+    if (savedPanelPos) {
+      try { setPanelPos(JSON.parse(savedPanelPos)); } catch (e) {}
+    }
+    if (savedPanelSize) {
+      try { setPanelSize(JSON.parse(savedPanelSize)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -141,10 +151,11 @@ export default function AppBoundedCanvas() {
     if (isMounted) {
       localStorage.setItem("mis_canvas_elements_multipage", JSON.stringify(elements));
       localStorage.setItem("mis_canvas_pages_list", JSON.stringify(pages));
+      localStorage.setItem("mis_canvas_panel_pos", JSON.stringify(panelPos));
+      localStorage.setItem("mis_canvas_panel_size", JSON.stringify(panelSize));
     }
-  }, [elements, pages, isMounted]);
+  }, [elements, pages, panelPos, panelSize, isMounted]);
 
-  // ГАРЯЧІ КЛАВІШІ ДЛЯ UNDO / REDO (Ctrl+Z / Ctrl+Y)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
@@ -155,11 +166,14 @@ export default function AppBoundedCanvas() {
         }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
         handleRedo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        handleDuplicateSelected();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [history, historyIndex]);
+  }, [history, historyIndex, selectedIds, elements]);
 
   const handleUndo = () => {
     if (historyIndex > 0) {
@@ -181,7 +195,6 @@ export default function AppBoundedCanvas() {
     }
   };
 
-  // Оновлюємо методи зміни даних, щоб фіксувати кроки в Історії
   const updateElementsAndHistory = (newElements: CanvasElement[]) => {
     setElements(newElements);
     saveToHistory(pages, newElements);
@@ -260,7 +273,6 @@ export default function AppBoundedCanvas() {
     downloadAnchor.remove();
   };
 
-  // ЕКСПОРТ В ГОТОВИЙ HTML / CSS
   const handleExportHTML = () => {
     const renderElementHTML = (el: CanvasElement): string => {
       const children = elements.filter((child) => child.parentId === el.id);
@@ -524,6 +536,59 @@ export default function AppBoundedCanvas() {
     const remaining = elements.filter((el) => !idsToDelete.has(el.id));
     updateElementsAndHistory(remaining);
     setSelectedIds([]);
+  };
+
+  // Клонує елемент разом з усіма його нащадками, видаючи кожному новий унікальний id
+  // та переприв'язуючи parentId дочірніх елементів до клонованих. Корінь дублікату
+  // зміщується на +20/+20, щоб не лежати точно поверх оригіналу.
+  const cloneSubtree = (
+    rootId: number,
+    idMap: Map<number, number>,
+    baseId: number,
+    isRoot: boolean
+  ): CanvasElement[] => {
+    const original = elements.find((el) => el.id === rootId);
+    if (!original) return [];
+
+    const newId = baseId + idMap.size;
+    idMap.set(rootId, newId);
+
+    const remappedParentId =
+      original.parentId !== null && idMap.has(original.parentId)
+        ? idMap.get(original.parentId)!
+        : original.parentId;
+
+    const clone: CanvasElement = {
+      ...original,
+      id: newId,
+      parentId: remappedParentId,
+      x: isRoot ? original.x + 20 : original.x,
+      y: isRoot ? original.y + 20 : original.y,
+    };
+
+    const children = elements.filter((el) => el.parentId === rootId);
+    const clonedChildren = children.flatMap((child) => cloneSubtree(child.id, idMap, baseId, false));
+
+    return [clone, ...clonedChildren];
+  };
+
+  const handleDuplicateSelected = () => {
+    if (selectedIds.length === 0) return;
+
+    const idMap = new Map<number, number>();
+    const baseId = Date.now();
+
+    // Якщо вибрано і батька, і його дитину — дублюємо тільки з батька,
+    // інакше дитина продублюється двічі (один раз сама, один раз як частина дерева батька).
+    const rootIds = selectedIds.filter((id) => {
+      const el = elements.find((e) => e.id === id);
+      return el && !(el.parentId !== null && selectedIds.includes(el.parentId));
+    });
+
+    const duplicated = rootIds.flatMap((id) => cloneSubtree(id, idMap, baseId, true));
+
+    updateElementsAndHistory([...elements, ...duplicated]);
+    setSelectedIds(rootIds.map((id) => idMap.get(id)!).filter((id) => id !== undefined));
   };
 
   const isValidParent = (childId: number, targetParentId: number | null): boolean => {
@@ -893,9 +958,27 @@ export default function AppBoundedCanvas() {
         </div>
       </header>
 
-      <div className="flex flex-1 p-6 gap-6">
-        <aside className="w-80 bg-white p-5 rounded-xl border border-slate-200 shadow-sm shrink-0 flex flex-col gap-6 overflow-y-auto max-h-[85vh]">
-          
+      <div className="relative flex-1 overflow-hidden">
+        <Rnd
+          position={panelPos}
+          size={panelSize}
+          onDragStop={(e, d) => setPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setPanelPos(pos);
+          }}
+          dragHandleClassName="panel-drag-handle"
+          bounds="window"
+          minWidth={260}
+          minHeight={200}
+          style={{ zIndex: 50 }}
+        >
+        <aside className="w-full h-full bg-white rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden">
+          <div className="panel-drag-handle cursor-move bg-slate-900 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center gap-2 shrink-0 select-none">
+            ⠿ Панель управління
+          </div>
+          <div className="flex-1 flex flex-col gap-6 overflow-y-auto p-5">
+
           {/* НАЛАШТУВАННЯ ПОТОЧНОЇ СТОРІНКИ */}
           <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2">
             <span className="font-bold text-[11px] text-blue-900 uppercase block">
@@ -971,12 +1054,21 @@ export default function AppBoundedCanvas() {
                 Параметри {selectedIds.length > 1 && `(${selectedIds.length})`}
               </h2>
               {selectedElements.length > 0 && (
-                <button
-                  onClick={handleDeleteSelected}
-                  className="bg-red-50 text-red-600 border border-red-200 px-2 py-0.5 rounded text-[11px] hover:bg-red-100 font-medium"
-                >
-                  Видалити
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleDuplicateSelected}
+                    className="bg-blue-50 text-blue-600 border border-blue-200 px-2 py-0.5 rounded text-[11px] hover:bg-blue-100 font-medium"
+                    title="Дублювати (Ctrl+D)"
+                  >
+                    Дублювати
+                  </button>
+                  <button
+                    onClick={handleDeleteSelected}
+                    className="bg-red-50 text-red-600 border border-red-200 px-2 py-0.5 rounded text-[11px] hover:bg-red-100 font-medium"
+                  >
+                    Видалити
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1203,12 +1295,32 @@ export default function AppBoundedCanvas() {
                   </div>
                 </div>
 
-                {/* НАЛАШТУВАННЯ ДЛЯ КНОПОК */}
-                {singleSelected?.type === "button" ? (
-                  <>
-                    <div className="p-2.5 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-1.5">
-                      <label className="block text-[11px] font-bold text-emerald-900">
-                        🔗 Дія при кліку (Перехід на сторінку):
+                {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
+                {singleSelected?.type === "button" && (
+                  <div className="p-3 bg-blue-50/60 border border-blue-200 rounded-lg space-y-3">
+                    <span className="font-bold text-[11px] text-blue-900 uppercase block">
+                      🔘 Розширені налаштування кнопки:
+                    </span>
+
+                    {/* Скруглення граней */}
+                    <div>
+                      <label className="block text-[10px] font-semibold text-blue-800 mb-1">
+                        Скруглення кутів (Border Radius px):
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={singleSelected.borderRadius ?? 8}
+                        onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
+                        className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
+                      />
+                    </div>
+
+                    {/* Перехід на сторінку */}
+                    <div className="p-2 bg-white border border-blue-100 rounded-md space-y-1">
+                      <label className="block text-[10px] font-bold text-emerald-900">
+                        🔗 Перехід на сторінку:
                       </label>
                       <select
                         value={singleSelected.targetPageId || ""}
@@ -1224,21 +1336,80 @@ export default function AppBoundedCanvas() {
                       </select>
                     </div>
 
-                    <div className="p-2.5 bg-indigo-50/70 border border-indigo-200 rounded-lg space-y-2">
+                    {/* HOVER СТАН */}
+                    <div className="p-2.5 bg-white border border-blue-200 rounded-md space-y-2">
+                      <span className="font-bold text-[10px] text-blue-800 block border-b pb-1">
+                        ✨ Наведення (Hover state):
+                      </span>
+                      <div>
+                        <label className="block text-[10px] text-slate-600 mb-0.5">Текст при наведенні:</label>
+                        <input
+                          type="text"
+                          value={singleSelected.hoverContent || ""}
+                          placeholder={singleSelected.content}
+                          onChange={(e) => updateSelectedFields("hoverContent", e.target.value)}
+                          className="w-full p-1 border rounded text-xs"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Фон Hover:</label>
+                          <input
+                            type="color"
+                            value={singleSelected.hoverBgColor || "#1d4ed8"}
+                            onChange={(e) => updateSelectedFields("hoverBgColor", e.target.value)}
+                            className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Текст Hover:</label>
+                          <input
+                            type="color"
+                            value={singleSelected.hoverTextColor || "#ffffff"}
+                            onChange={(e) => updateSelectedFields("hoverTextColor", e.target.value)}
+                            className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Колір сяйва:</label>
+                          <input
+                            type="color"
+                            value={singleSelected.glowColor || "#3b82f6"}
+                            onChange={(e) => updateSelectedFields("glowColor", e.target.value)}
+                            className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Размитяття (px):</label>
+                          <input
+                            type="number"
+                            value={singleSelected.glowBlur ?? 8}
+                            onChange={(e) => updateSelectedFields("glowBlur", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ACTIVE / TOGGLE СТАН */}
+                    <div className="p-2.5 bg-white border border-indigo-200 rounded-md space-y-2">
+                      <span className="font-bold text-[10px] text-indigo-800 block border-b pb-1">
+                        🎯 Натискання / Активний стан (Active/Toggle):
+                      </span>
+                      
                       <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-bold text-indigo-900 flex items-center gap-1.5 cursor-pointer">
+                        <label className="text-[10px] font-bold text-indigo-900 flex items-center gap-1.5 cursor-pointer">
                           <input
                             type="checkbox"
                             checked={singleSelected.isToggle ?? false}
                             onChange={(e) => updateSelectedFields("isToggle", e.target.checked)}
                             className="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
                           />
-                          Режим перемикача (Toggle)
+                          Режим Toggle
                         </label>
-                      </div>
-                      {singleSelected.isToggle && (
-                        <div className="flex items-center justify-between pt-1 border-t border-indigo-100">
-                          <span className="text-[10px] text-indigo-700 font-medium">Затиснутий стан:</span>
+                        {singleSelected.isToggle && (
                           <button
                             type="button"
                             onClick={() => updateSelectedFields("isPressed", !singleSelected.isPressed)}
@@ -1248,13 +1419,88 @@ export default function AppBoundedCanvas() {
                                 : "bg-indigo-200 text-indigo-800"
                             }`}
                           >
-                            {singleSelected.isPressed ? "ON (Pressed)" : "OFF (Normal)"}
+                            {singleSelected.isPressed ? "ON" : "OFF"}
                           </button>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-600 mb-0.5">Текст у натиснутому стані:</label>
+                        <input
+                          type="text"
+                          value={singleSelected.activeContent || ""}
+                          placeholder={singleSelected.hoverContent || singleSelected.content}
+                          onChange={(e) => updateSelectedFields("activeContent", e.target.value)}
+                          className="w-full p-1 border rounded text-xs"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Фон Active:</label>
+                          <input
+                            type="color"
+                            value={singleSelected.activeBgColor || "#1e40af"}
+                            onChange={(e) => updateSelectedFields("activeBgColor", e.target.value)}
+                            className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
                         </div>
-                      )}
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Текст Active:</label>
+                          <input
+                            type="color"
+                            value={singleSelected.activeTextColor || "#ffffff"}
+                            onChange={(e) => updateSelectedFields("activeTextColor", e.target.value)}
+                            className="w-full h-6 p-0 border rounded cursor-pointer"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Масштаб (Scale):</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={singleSelected.activeScale ?? 0.96}
+                            onChange={(e) => updateSelectedFields("activeScale", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Зсув Y (px):</label>
+                          <input
+                            type="number"
+                            value={singleSelected.activeOffsetY ?? 1}
+                            onChange={(e) => updateSelectedFields("activeOffsetY", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Розширення W (px):</label>
+                          <input
+                            type="number"
+                            value={singleSelected.activeWidthOffset ?? 0}
+                            onChange={(e) => updateSelectedFields("activeWidthOffset", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Розширення H (px):</label>
+                          <input
+                            type="number"
+                            value={singleSelected.activeHeightOffset ?? 0}
+                            onChange={(e) => updateSelectedFields("activeHeightOffset", Number(e.target.value))}
+                            className="w-full p-1 border rounded text-xs font-mono"
+                          />
+                        </div>
+                      </div>
                     </div>
-                  </>
-                ) : null}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
@@ -1272,25 +1518,27 @@ export default function AppBoundedCanvas() {
               </div>
             )}
           </div>
+          </div>
         </aside>
+        </Rnd>
 
-        {/* Полотно */}
+        {/* Полотно на всю сторінку */}
         <main
           onClick={() => {
             handleSelectElement(null);
             setClickedElementId(null);
           }}
-          className="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm relative overflow-hidden min-h-[800px]"
+          className="absolute inset-0 bg-white overflow-auto"
         >
-          {/* ФОН СІТКИ (Динамічний при увімкненні) */}
-          <div 
+          {/* ФОН СІТКИ (Динамічний) */}
+          <div
             className="absolute inset-0 opacity-60 pointer-events-none transition-all"
             style={{
-              backgroundImage: enableGrid 
-                ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)" 
+              backgroundImage: enableGrid
+                ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)"
                 : "radial-gradient(#e2e8f0 1px, transparent 1px)",
               backgroundSize: enableGrid ? "10px 10px" : "16px 16px",
-            }} 
+            }}
           />
           <div className="relative w-full h-full">
             {elements
