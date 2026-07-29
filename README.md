@@ -1,100 +1,134 @@
-# Навчальний конспект проєкту nextjs-practice
+# Конструктор сторінок (nextjs-practice)
 
-Це навчальний репозиторій для вивчення архітектури Next.js, роботи з контейнерами `<div>`, Single Page Application (SPA) та динамічною зміною блоків.
+Візуальний drag-and-drop конструктор веб-сторінок на Next.js + React + Tailwind CSS. Дозволяє збирати кілька сторінок сайту з блоків, заголовків, тексту та кнопок прямо в браузері, налаштовувати кожен елемент через бічну панель і експортувати результат у JSON або готовий HTML.
 
+Увесь застосунок — це один клієнтський компонент [`AppBoundedCanvas`](app/page.tsx), що рендериться на `/` через [`app/page.tsx`](app/page.tsx).
 
-## 1. Системні файли та конфігурація
+## Демо
 
-### package-lock.json
+Проєкт задеплоєний на Vercel (проєкт `nextjs-practice`).
 
-`package-lock.json` — це автозгенерований технічний файл менеджера пакетів (`npm`), який автоматично створюється або оновлюється під час встановлення чи оновлення бібліотек.
+## Стек
 
-#### Основні функції файла:
-1. **Точна фіксація версій (Locking):** Файл детально описує дерево залежностей та жорстко закриває версію кожного пакета. Це гарантує, що проєкт розгортатиметься абсолютно однаково на будь-якому комп'ютері чи сервері.
-2. **Перевірка безпеки:** Для кожного пакета зберігається контрольний хеш (`integrity`), який перевіряє цілісність файлів при завантаженні.
+- **Next.js 16** (App Router) + **React 19**
+- **TypeScript**
+- **Tailwind CSS 4**
+- **[react-rnd](https://github.com/bokuweb/react-rnd)** — перетягування (drag) і зміна розміру (resize) елементів на полотні
 
-#### Основні залежності нашого проєкту:
-* **Основні бібліотеки (`dependencies`):**
-  * `next` — фреймворк для React.
-  * `react` та `react-dom` — бібліотека для побудови користувацького інтерфейсу (UI).
-* **Інструменти розробника (`devDependencies`):**
-  * `tailwindcss` — фреймворк для стилізації.
-  * `typescript` — мова для типізації коду.
-  * `eslint` — аналізатор для пошуку помилок та дотримання стандартів коду.
+## Можливості
 
-> **Важливо:** Цей файл **ніколи не редагують вручну**. Усі зміни до нього вносяться автоматично через команди термінала.
+### Полотно та елементи
+- 4 типи елементів: **Блок**, **Заголовок**, **Текст**, **Кнопка**
+- Вільне перетягування та зміна розміру (`react-rnd`), прив'язка до сітки 10px (можна вимкнути)
+- Вкладена ієрархія: елементи можна робити дочірніми до блоків; дочірній елемент не може стати батьком свого ж предка (захист від циклів)
+- Батьківський блок не можна зменшити менше, ніж займають його дочірні елементи (`getMinDimensions`)
+- Кольори рівнів вкладеності (5 кольорів по колу) + можливість задати власний колір фону/тексту для кожного елемента
+- Множинне виділення (Shift/Ctrl + клік) і масове редагування спільних полів
 
----
+### Сторінки
+- Кілька сторінок сайту (перемикач у хедері), кожна із власною назвою
+- Елемент можна зробити **глобальним** (`isGlobal`) — тоді він показується на всіх сторінках одночасно (наприклад, шапка сайту)
+- Кнопка може вести на іншу сторінку (`targetPageId`) — клік перемикає активну сторінку
 
-### package.json
+### Тригери появи (Hover / Click)
+- Будь-який елемент можна позначити як **"схований за замовчуванням"** (`isTriggerTarget`)
+- Інші елементи можуть відкривати його при наведенні (`showOnHoverId`) або кліку (`showOnClickId`) — основа для випадаючих меню, підказок, акордеонів
 
-`package.json` — це головний конфігураційний файл («паспорт») Node.js / Next.js проєкту. Він визначає налаштування проєкту, його списки залежностей та скрипти для запуску.
+### Кнопки: розширені стани
+- Окремий текст/фон/колір тексту для **Hover** та **Active/Pressed** станів
+- Світіння (glow) при наведенні — колір і розмиття
+- Режим **Toggle** — кнопка перемикається між ON/OFF і зберігає стан (`isPressed`)
+- Зміна ширини/висоти та зсув по Y у натиснутому стані
 
-#### Основні блоки файла:
-1. **Метадані проєкту (`name`, `version`, `private`):** Вказують назву проєкту, поточну версію та захист від випадкової публікації.
-2. **Скрипти автоматизації (`scripts`):** Набір швидких команд для термінала:
-   * `npm run dev` — запуск проекту в режимі розробника (локальний сервер).
-   * `npm run build` — збірка проєкту для продакшену.
-   * `npm run start` — запуск вже зібраного продакшен-сайту.
-   * `npm run lint` — перевірка коду на наявність помилок.
-3. **Залежності (`dependencies`):** Перелік бібліотек, які необхідні для роботи додатка у браузері (React, Next.js).
-4. **Залежності розробки (`devDependencies`):** Інструменти, які потрібні тільки під час розробки (Tailwind CSS, TypeScript, ESLint).
+### Типографіка
+- Шрифт (кілька пресетів + системний), насиченість (300–900), вирівнювання тексту, розмір шрифту, padding, border-radius (для кнопок)
 
----
+### Історія та збереження
+- **Undo/Redo** до 30 кроків, гарячі клавіші `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`
+- Автозбереження стану (сторінки + елементи) у `localStorage`:
+  - `mis_canvas_elements_multipage`
+  - `mis_canvas_pages_list`
 
-## 2. Структура App Router (папка app/)
+### Імпорт / Експорт
+- **💾 Зберегти JSON** — вивантажує весь проєкт (`{ pages, elements }`)
+- **📂 Завантажити JSON** — імпортує раніше збережений проєкт (підтримує і старий формат — просто масив елементів)
+- **🌐 Експорт в HTML** — генерує самодостатній статичний HTML-файл з інлайн-стилями та JS-функцією перемикання сторінок (без React і Tailwind)
 
-### app/layout.tsx (Root Layout)
+## Модель даних
 
-`app/layout.tsx` — це головний макет (каркас) додатка в Next.js App Router. Він загортає в себе абсолютно всі сторінки та компоненти системи.
-
-#### Код з нашого проєкту:
-```tsx
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-export const metadata: Metadata = {
-  title: "Create Next App",
-  description: "Generated by create next app",
-};
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
-    </html>
-  );
+```ts
+interface Page {
+  id: string;
+  name: string;
 }
-#### Повний розбір layout.tsx
 
-1. **Конфігурація шрифтів (`next/font/google`):**
-   * **`Geist` (пропорційний шрифт):** Призначений для звичайного тексту, заголовків та кнопок. Кожна літера має свою природну ширину.
-   * **`Geist_Mono` (моноширинний шрифт):** Усі символи та цифри мають однакову ширину. Ідеально підходить для коду, таблиць та аналітичних даних, де цифри мають стояти чітко одна під одною.
-   * **Параметр `variable`:** Задає ім'я CSS-змінної (наприклад, `--font-geist-sans`), яку Next.js автоматично підключає до тегу `<html>`.
-   * **Параметр `subsets: ["latin"]`:** Завантажує лише латинський набір символів для зменшення розміру файлу шрифту.
+interface CanvasElement {
+  id: number;
+  pageId: string;
+  isGlobal?: boolean;
+  type: "block" | "heading" | "text" | "button";
+  content: string;
+  width: number; height: number; x: number; y: number;
+  textColor: string; padding: number; borderRadius: number; fontSize: number;
+  parentId: number | null;
+  customBgColor?: string;
 
-2. **Метадані (`metadata`):**
-   * Спеціальна об'єктна зміна `metadata: Metadata`, з якої Next.js автоматично формує теги `<head>` (заголовок вкладки `title` та опис `description` для пошуковиків).
+  // тригери появи
+  showOnHoverId?: number | null;
+  showOnClickId?: number | null;
+  isTriggerTarget?: boolean;
 
-3. **Кореневий макет (`RootLayout`):**
-   * **`export default function RootLayout`:** Головна функція-каркас сайту.
-   * **Проп `{children}`:** Автоматична точка вставки вмісту сторінок (із `page.tsx`).
-   * **Тег `<html>`:** Приймає згенеровані класи шрифтів `${geistSans.variable}${geistMono.variable}`, роблячи CSS-змінні доступними по всьому проєкту.
+  // типографіка
+  fontFamily?: string;
+  fontWeight?: string;
+  textAlign?: "left" | "center" | "right" | "justify";
+
+  // навігація
+  targetPageId?: string | null;
+
+  // hover-стан кнопки
+  hoverContent?: string; hoverBgColor?: string; hoverTextColor?: string;
+  glowColor?: string; glowBlur?: number;
+
+  // active/toggle-стан кнопки
+  activeContent?: string; activeBgColor?: string; activeTextColor?: string;
+  activeScale?: number; activeOffsetY?: number;
+  activeGlowColor?: string; activeGlowBlur?: number;
+  activeWidthOffset?: number; activeHeightOffset?: number;
+  isToggle?: boolean; isPressed?: boolean;
+}
+```
+
+## Структура проєкту
+
+```
+app/
+  layout.tsx    # кореневий layout, шрифти Geist
+  page.tsx      # весь конструктор (AppBoundedCanvas)
+  globals.css   # Tailwind + CSS-змінні теми
+public/         # статичні SVG-іконки (стандартні для create-next-app)
+```
+
+## Запуск
+
+```bash
+npm install
+npm run dev
+```
+
+Відкрити [http://localhost:3000](http://localhost:3000).
+
+Інші команди:
+
+```bash
+npm run build   # production-збірка
+npm run start   # запуск production-збірки
+npm run lint    # ESLint
+```
+
+## Відомі обмеження / напрямки розвитку
+
+- Стан живе лише в `localStorage` браузера — немає бекенду чи мультикористувацького збереження
+- Немає видалення окремої сторінки з підтвердженням через UI-модалку (лише `window.confirm`)
+- Експорт в HTML не переносить hover/active-стани кнопок та тригери появи (тільки базовий вигляд і перехід між сторінками)
+- `updateSelectedFields` типізований через `any` для значення поля — можна звузити типи
