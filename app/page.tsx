@@ -36,6 +36,7 @@ interface CanvasElement {
   fontSize: number;
   parentId: number | null;
   customBgColor?: string;
+  bgOpacity?: number; // 0..1, прозорість фону елемента
 
   // Налаштування появи
   showOnHoverId?: number | null;
@@ -100,6 +101,7 @@ export default function AppBoundedCanvas() {
   // Позиція та розмір плаваючої панелі управління (винесена з полотна, щоб не заважала)
   const [panelPos, setPanelPos] = useState<{ x: number; y: number }>({ x: 24, y: 24 });
   const [panelSize, setPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 640 });
+  const [panelOpacity, setPanelOpacity] = useState<number>(0.8);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -136,11 +138,15 @@ export default function AppBoundedCanvas() {
 
     const savedPanelPos = localStorage.getItem("mis_canvas_panel_pos");
     const savedPanelSize = localStorage.getItem("mis_canvas_panel_size");
+    const savedPanelOpacity = localStorage.getItem("mis_canvas_panel_opacity");
     if (savedPanelPos) {
       try { setPanelPos(JSON.parse(savedPanelPos)); } catch (e) {}
     }
     if (savedPanelSize) {
       try { setPanelSize(JSON.parse(savedPanelSize)); } catch (e) {}
+    }
+    if (savedPanelOpacity) {
+      try { setPanelOpacity(JSON.parse(savedPanelOpacity)); } catch (e) {}
     }
 
     setHistory([{ pages: initialPages, elements: initialElements }]);
@@ -153,8 +159,9 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_pages_list", JSON.stringify(pages));
       localStorage.setItem("mis_canvas_panel_pos", JSON.stringify(panelPos));
       localStorage.setItem("mis_canvas_panel_size", JSON.stringify(panelSize));
+      localStorage.setItem("mis_canvas_panel_opacity", JSON.stringify(panelOpacity));
     }
-  }, [elements, pages, panelPos, panelSize, isMounted]);
+  }, [elements, pages, panelPos, panelSize, panelOpacity, isMounted]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -276,7 +283,7 @@ export default function AppBoundedCanvas() {
   const handleExportHTML = () => {
     const renderElementHTML = (el: CanvasElement): string => {
       const children = elements.filter((child) => child.parentId === el.id);
-      const computedBgColor = el.customBgColor || getElementColor(el);
+      const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
       const isBtn = el.type === "button";
 
       const style = `
@@ -410,6 +417,21 @@ export default function AppBoundedCanvas() {
     if (el.customBgColor) return el.customBgColor;
     const depth = getElementDepth(el.id);
     return LEVEL_COLORS[depth % LEVEL_COLORS.length];
+  };
+
+  // Перетворює hex-колір фону елемента в rgba() з урахуванням його bgOpacity,
+  // щоб прозорість застосовувалась лише до фону, а не до тексту/дочірніх елементів.
+  const applyBgOpacity = (hexColor: string, opacity: number | undefined): string => {
+    if (opacity === undefined || opacity >= 1) return hexColor;
+    const hex = hexColor.replace("#", "");
+    const bigint = parseInt(
+      hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex,
+      16
+    );
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return `rgba(${r}, ${g}, ${b}, ${Math.max(0, opacity)})`;
   };
 
   const selectedElements = elements.filter((el) => selectedIds.includes(el.id));
@@ -618,7 +640,7 @@ export default function AppBoundedCanvas() {
   const renderCanvasNode = (el: CanvasElement) => {
     const children = elements.filter((child) => child.parentId === el.id && (child.isGlobal || child.pageId === currentPageId));
     const isSelected = selectedIds.includes(el.id);
-    const computedBgColor = getElementColor(el);
+    const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
     const isButton = el.type === "button";
 
     const { minWidth, minHeight } = getMinDimensions(el.id);
@@ -973,9 +995,27 @@ export default function AppBoundedCanvas() {
           minHeight={200}
           style={{ zIndex: 50 }}
         >
-        <aside className="w-full h-full bg-white rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden">
-          <div className="panel-drag-handle cursor-move bg-slate-900 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center gap-2 shrink-0 select-none">
-            ⠿ Панель управління
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${panelOpacity})` }}
+        >
+          <div className="panel-drag-handle cursor-move bg-slate-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>⠿ Панель управління</span>
+            <div
+              className="flex items-center gap-1.5 font-normal"
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Прозорість панелі"
+            >
+              <span>👁️</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(panelOpacity * 100)}
+                onChange={(e) => setPanelOpacity(Number(e.target.value) / 100)}
+                className="w-16 cursor-pointer"
+              />
+            </div>
           </div>
           <div className="flex-1 flex flex-col gap-6 overflow-y-auto p-5">
 
@@ -1089,7 +1129,7 @@ export default function AppBoundedCanvas() {
                     </div>
 
                     <div className="space-y-2">
-                      <div className="p-2.5 bg-violet-50 border border-violet-200 rounded-lg">
+                      <div className="p-2.5 bg-violet-50/70 border border-violet-200 rounded-lg">
                         <label className="text-[11px] font-bold text-violet-900 flex items-center gap-2 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1101,7 +1141,7 @@ export default function AppBoundedCanvas() {
                         </label>
                       </div>
 
-                      <div className="p-2.5 bg-cyan-50 border border-cyan-200 rounded-lg">
+                      <div className="p-2.5 bg-cyan-50/70 border border-cyan-200 rounded-lg">
                         <label className="text-[11px] font-bold text-cyan-900 flex items-center gap-2 cursor-pointer">
                           <input
                             type="checkbox"
@@ -1161,7 +1201,7 @@ export default function AppBoundedCanvas() {
                 )}
 
                 {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
-                <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
+                <div className="p-3 bg-slate-50/70 border border-slate-200 rounded-lg space-y-2.5">
                   <span className="font-bold text-[11px] text-slate-700 uppercase block">
                     📏 Позиція та розміри (Live):
                   </span>
@@ -1293,6 +1333,26 @@ export default function AppBoundedCanvas() {
                       className="w-full h-7 p-0 border rounded cursor-pointer"
                     />
                   </div>
+                </div>
+
+                {/* Прозорість фону — застосовується масово до всіх виділених елементів */}
+                <div>
+                  <label className="flex items-center justify-between text-[11px] font-semibold text-slate-600 mb-1">
+                    <span>
+                      Прозорість фону {selectedIds.length > 1 && `(${selectedIds.length} об'єктів)`}:
+                    </span>
+                    <span className="font-mono text-slate-500">
+                      {Math.round((singleSelected?.bgOpacity ?? 1) * 100)}%
+                    </span>
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round((singleSelected?.bgOpacity ?? 1) * 100)}
+                    onChange={(e) => updateSelectedFields("bgOpacity", Number(e.target.value) / 100)}
+                    className="w-full cursor-pointer"
+                  />
                 </div>
 
                 {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
@@ -1513,7 +1573,7 @@ export default function AppBoundedCanvas() {
                 </div>
               </div>
             ) : (
-              <div className="p-4 text-center bg-slate-50 border border-dashed rounded-lg text-slate-400 text-xs">
+              <div className="p-4 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-xs">
                 Виберіть елемент для налаштування
               </div>
             )}
