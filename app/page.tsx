@@ -254,6 +254,41 @@ const renderMeshLayerHTML = (speed?: number, intensity?: number, colors?: string
   `;
 };
 
+// Згорнута/розгорнута кольорова секція всередині вкладки "Параметри" —
+// оголошена ОКРЕМО від AppBoundedCanvas (не інлайн-компонент у рендері),
+// щоб її ідентичність лишалась стабільною між рендерами: якби вона
+// створювалась заново на кожен рендер батька, React перемонтовував би її
+// (і всі контрольовані input-и в children) при кожному натисканні клавіші,
+// скидаючи фокус. Сама секція без внутрішнього стану — isOpen/onToggle
+// підняті в AppBoundedCanvas (openParamSections/toggleParamSection).
+function ParamSection({
+  label,
+  isOpen,
+  onToggle,
+  colorClass,
+  children,
+}: {
+  label: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  colorClass: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`border rounded-lg overflow-hidden ${colorClass}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[11px] font-bold uppercase text-left"
+      >
+        <span>{label}</span>
+        <span className="text-[10px] shrink-0 opacity-70">{isOpen ? "▼" : "▶"}</span>
+      </button>
+      {isOpen && <div className="px-3 pb-3 space-y-2.5">{children}</div>}
+    </div>
+  );
+}
+
 export default function AppBoundedCanvas() {
   const [pages, setPages] = useState<Page[]>([
     { id: "home", name: "Головна" },
@@ -304,6 +339,28 @@ export default function AppBoundedCanvas() {
 
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
+
+  // Вкладки головної панелі управління — замість одного суцільного скролу
+  // (Створити елемент + Ієрархія + Сторінка + Параметри в одному стовпці).
+  // "params" відкривається автоматично при виборі елемента (див. ефект нижче).
+  const [activePanelTab, setActivePanelTab] = useState<"create" | "page" | "params">("create");
+
+  // Які кольорові секції всередині вкладки "Параметри" розгорнуті — акордеон,
+  // не взаємовиключний (можна тримати відкритими кілька одразу). Позиція,
+  // розмір і вигляд відкриті за замовчуванням (найчастіше потрібні), видимість
+  // і тригери — згорнуті, доки не розгорнуть вручну.
+  const DEFAULT_OPEN_PARAM_SECTIONS = ["position", "appearance", "list", "button"];
+  const [openParamSections, setOpenParamSections] = useState<Set<string>>(
+    new Set(DEFAULT_OPEN_PARAM_SECTIONS)
+  );
+  const toggleParamSection = (key: string) => {
+    setOpenParamSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -370,6 +427,11 @@ export default function AppBoundedCanvas() {
       try { setComplexPanelOpacity(JSON.parse(savedComplexPanelOpacity)); } catch (e) {}
     }
 
+    const savedOpenParamSections = localStorage.getItem("mis_canvas_open_param_sections");
+    if (savedOpenParamSections) {
+      try { setOpenParamSections(new Set(JSON.parse(savedOpenParamSections))); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -384,8 +446,20 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_complex_panel_pos", JSON.stringify(complexPanelPos));
       localStorage.setItem("mis_canvas_complex_panel_size", JSON.stringify(complexPanelSize));
       localStorage.setItem("mis_canvas_complex_panel_opacity", JSON.stringify(complexPanelOpacity));
+      localStorage.setItem("mis_canvas_open_param_sections", JSON.stringify(Array.from(openParamSections)));
     }
-  }, [elements, pages, panelPos, panelSize, panelOpacity, complexPanelPos, complexPanelSize, complexPanelOpacity, isMounted]);
+  }, [
+    elements,
+    pages,
+    panelPos,
+    panelSize,
+    panelOpacity,
+    complexPanelPos,
+    complexPanelSize,
+    complexPanelOpacity,
+    openParamSections,
+    isMounted,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1058,6 +1132,13 @@ export default function AppBoundedCanvas() {
       setSelectedComplexObjectId("pill");
     }
   }, [singleSelected?.id, singleSelected?.type]);
+
+  // Вибір елемента (на полотні чи в дереві) одразу перемикає плаваючу панель
+  // управління на вкладку "Параметри" — не треба вручну шукати її серед
+  // "Створити"/"Сторінка", коли щойно клікнули на об'єкт.
+  useEffect(() => {
+    if (selectedIds.length > 0) setActivePanelTab("params");
+  }, [selectedIds]);
 
   const handleSelectElement = (id: number | null, isMultiKey = false) => {
     if (id === null) {
@@ -1896,8 +1977,36 @@ export default function AppBoundedCanvas() {
               />
             </div>
           </div>
-          <div className="flex-1 flex flex-col gap-6 overflow-y-auto p-5">
+          <div className="flex items-center gap-1 px-3 pt-3 shrink-0">
+            {(
+              [
+                { key: "create" as const, label: "🧱 Створити" },
+                { key: "page" as const, label: "📄 Сторінка" },
+                {
+                  key: "params" as const,
+                  label: `⚙️ Параметри${selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}`,
+                },
+              ]
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActivePanelTab(tab.key)}
+                className={`flex-1 text-[11px] font-bold py-1.5 rounded-md transition-colors ${
+                  activePanelTab === tab.key
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
+          <div className="flex-1 flex flex-col gap-4 overflow-y-auto p-5 pt-3">
+
+          {activePanelTab === "page" && (
+          <>
           {/* НАЛАШТУВАННЯ ПОТОЧНОЇ СТОРІНКИ */}
           <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2">
             <span className="font-bold text-[11px] text-blue-900 uppercase block">
@@ -1980,7 +2089,11 @@ export default function AppBoundedCanvas() {
               </button>
             )}
           </div>
+          </>
+          )}
 
+          {activePanelTab === "create" && (
+          <>
           {/* Створення елемента */}
           <form onSubmit={handleAddElement} className="space-y-3 pb-4 border-b">
             <h2 className="font-bold text-slate-900 text-sm">Створити елемент</h2>
@@ -2039,7 +2152,11 @@ export default function AppBoundedCanvas() {
             </h2>
             <div className="space-y-1 text-xs">{renderSidebarTree(null)}</div>
           </div>
+          </>
+          )}
 
+          {activePanelTab === "params" && (
+          <>
           {/* ПАРАМЕТРИ */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -2081,7 +2198,12 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
 
-                    <div className="space-y-2">
+                    <ParamSection
+                      label="👁️ Видимість і каскад"
+                      isOpen={openParamSections.has("visibility")}
+                      onToggle={() => toggleParamSection("visibility")}
+                      colorClass="bg-slate-50 border-slate-200 text-slate-700"
+                    >
                       <div className="p-2.5 bg-violet-50/70 border border-violet-200 rounded-lg">
                         <label className="text-[11px] font-bold text-violet-900 flex items-center gap-2 cursor-pointer">
                           <input
@@ -2159,7 +2281,7 @@ export default function AppBoundedCanvas() {
                           👁️ Схований за замовчуванням (ціль тригера)
                         </label>
                       </div>
-                    </div>
+                    </ParamSection>
                   </>
                 )}
 
@@ -2167,10 +2289,12 @@ export default function AppBoundedCanvas() {
                     та сама кнопка може на одній сторінці показувати один об'єкт,
                     на іншій — інший, а на третій — нічого не викликати взагалі. */}
                 {singleSelected && (
-                  <div className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-lg space-y-2.5">
-                    <span className="font-bold text-[11px] text-indigo-900 uppercase block">
-                      ⚡ Тригери появи — на сторінці «{currentPage?.name}»:
-                    </span>
+                  <ParamSection
+                    label={`⚡ Тригери появи — на сторінці «${currentPage?.name}»`}
+                    isOpen={openParamSections.has("triggers")}
+                    onToggle={() => toggleParamSection("triggers")}
+                    colorClass="bg-indigo-50/60 border-indigo-200 text-indigo-900"
+                  >
                     <div>
                       <label className="block text-[10px] text-indigo-800 mb-1">Показувати при наведенні (Hover):</label>
                       <select
@@ -2217,15 +2341,16 @@ export default function AppBoundedCanvas() {
                     <p className="text-[10px] text-indigo-700/70 leading-snug">
                       Діє лише для сторінки «{currentPage?.name}». На інших сторінках ця сама кнопка може викликати інший об'єкт або нічого.
                     </p>
-                  </div>
+                  </ParamSection>
                 )}
 
                 {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
-                <div className="p-3 bg-slate-50/70 border border-slate-200 rounded-lg space-y-2.5">
-                  <span className="font-bold text-[11px] text-slate-700 uppercase block">
-                    📏 Позиція та розміри (Live):
-                  </span>
-
+                <ParamSection
+                  label="📏 Позиція та розміри (Live)"
+                  isOpen={openParamSections.has("position")}
+                  onToggle={() => toggleParamSection("position")}
+                  colorClass="bg-slate-50/70 border-slate-200 text-slate-700"
+                >
                   <div className="grid grid-cols-2 gap-2 pb-1 border-b border-slate-200">
                     <div className="bg-white p-1.5 border rounded shadow-2xs">
                       <span className="block text-[10px] text-slate-400 font-semibold">Позиція X:</span>
@@ -2261,14 +2386,15 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
                   </div>
-                </div>
+                </ParamSection>
 
-                {/* ТИПОГРАФІКА (ШРИФТИ) */}
-                <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-lg space-y-2.5">
-                  <span className="font-bold text-[11px] text-amber-900 uppercase block">
-                    🔤 Типографіка (Шрифти):
-                  </span>
-
+                {/* ВИГЛЯД: типографіка, кольори, mesh-фон, прозорість, відступи */}
+                <ParamSection
+                  label="🎨 Вигляд (шрифт, кольори, фон, відступи)"
+                  isOpen={openParamSections.has("appearance")}
+                  onToggle={() => toggleParamSection("appearance")}
+                  colorClass="bg-amber-50/60 border-amber-200 text-amber-900"
+                >
                   <div>
                     <label className="block text-[10px] text-amber-800 mb-1">Шрифт (Font Family):</label>
                     <select
@@ -2332,9 +2458,8 @@ export default function AppBoundedCanvas() {
                       className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
                     />
                   </div>
-                </div>
 
-                {/* Основні кольори */}
+                  {/* Основні кольори */}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Фон (Bg):</label>
@@ -2441,13 +2566,25 @@ export default function AppBoundedCanvas() {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
+                  <input
+                    type="number"
+                    value={singleSelected ? singleSelected.padding ?? 0 : ""}
+                    onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
+                    className="w-full p-1.5 border rounded-md"
+                  />
+                </div>
+                </ParamSection>
+
                 {/* ПУНКТИ СПИСКУ — редагування стовпців і рядків прямо в панелі */}
                 {singleSelected?.type === "list" && (
-                  <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg space-y-3">
-                    <span className="font-bold text-[11px] text-emerald-900 uppercase block">
-                      📋 Список:
-                    </span>
-
+                  <ParamSection
+                    label="📋 Список"
+                    isOpen={openParamSections.has("list")}
+                    onToggle={() => toggleParamSection("list")}
+                    colorClass="bg-emerald-50/60 border-emerald-200 text-emerald-900"
+                  >
                     {/* Стовпці — якщо не задано жодного, рядки лишаються звичайним одним текстом */}
                     <div className="space-y-1.5 pb-2 border-b border-emerald-200">
                       <span className="text-[10px] font-bold text-emerald-800 uppercase block">
@@ -2604,16 +2741,17 @@ export default function AppBoundedCanvas() {
                     >
                       + Додати пункт
                     </button>
-                  </div>
+                  </ParamSection>
                 )}
 
                 {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
                 {singleSelected?.type === "button" && (
-                  <div className="p-3 bg-blue-50/60 border border-blue-200 rounded-lg space-y-3">
-                    <span className="font-bold text-[11px] text-blue-900 uppercase block">
-                      🔘 Розширені налаштування кнопки:
-                    </span>
-
+                  <ParamSection
+                    label="🔘 Розширені налаштування кнопки"
+                    isOpen={openParamSections.has("button")}
+                    onToggle={() => toggleParamSection("button")}
+                    colorClass="bg-blue-50/60 border-blue-200 text-blue-900"
+                  >
                     {/* Скруглення граней */}
                     <div>
                       <label className="block text-[10px] font-semibold text-blue-800 mb-1">
@@ -2823,18 +2961,9 @@ export default function AppBoundedCanvas() {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </ParamSection>
                 )}
 
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
-                  <input
-                    type="number"
-                    value={singleSelected ? singleSelected.padding ?? 0 : ""}
-                    onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
-                    className="w-full p-1.5 border rounded-md"
-                  />
-                </div>
               </div>
             ) : (
               <div className="p-4 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-xs">
@@ -2842,6 +2971,8 @@ export default function AppBoundedCanvas() {
               </div>
             )}
           </div>
+          </>
+          )}
           </div>
         </aside>
         </Rnd>
