@@ -53,14 +53,13 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
-  // Розмиття внутрішніх країв — inset-тінь, якою батьківський елемент "занурює"
-  // своїх дітей (тільки коли в елемента вже Є хоч одна дочірня); за
-  // замовчуванням 10px/15% (стара, раніше нерегульована поведінка). Досить
-  // великий радіус розмиття відносно дефолтного відступу дитини від краю
-  // (1px) візуально ховає шов між батьком і дитиною — тінь просто товща за
-  // сам відступ.
-  childEdgeBlur?: number; // px, радіус розмиття inset-тіні
-  childEdgeOpacity?: number; // 0..1, непрозорість inset-тіні
+  // "Отвір у фоні": налаштування живе на БАТЬКОВІ (елемент — поле/отвір), але
+  // фактично малюється як м'яка тінь НАВКОЛО кожної дитини (renderCanvasNode
+  // читає ці поля з el.parentId, не з el самого) — щоб перехід від краю
+  // отвору до вкладеного об'єкта був плавним саме там, де об'єкт лежить, а не
+  // фіксованою рамкою по краю батька. За замовчуванням 10px/15%.
+  childEdgeBlur?: number; // px, радіус розмиття навколо дітей цього елемента
+  childEdgeOpacity?: number; // 0..1, непрозорість цього розмиття
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -1491,8 +1490,18 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
-    const childEdgeBlur = el.childEdgeBlur ?? 10;
-    const childEdgeOpacity = el.childEdgeOpacity ?? 0.15;
+    // "Отвір у фоні": ефект живе на ДИТИНІ, а не на батькові — читаємо
+    // childEdgeBlur/childEdgeOpacity з БАТЬКА (el.parentId), і малюємо
+    // м'яку тінь НАВКОЛО самого el (звичайний, не inset, box-shadow). Вона
+    // виходить за межі el у видиме тло батька й гасне плавно — саме та
+    // "плавна крайка", що обгортає об'єкт там, де він фактично лежить, а не
+    // фіксована рамка по краю батька (що ховалась би під дитиною, якщо та
+    // впритул до країв). overflow:hidden на батьківському шарі дітей
+    // природно обрізає цю тінь, якщо вона виходить за межі самого отвору.
+    const parentForEdgeHalo = el.parentId !== null ? elements.find((p) => p.id === el.parentId) : null;
+    const edgeHaloShadow = parentForEdgeHalo
+      ? `0 0 ${parentForEdgeHalo.childEdgeBlur ?? 10}px rgba(0, 0, 0, ${parentForEdgeHalo.childEdgeOpacity ?? 0.15})`
+      : null;
 
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
@@ -1578,7 +1587,8 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed ? activeShadow : "none",
+              boxShadow:
+                [el.isPressed ? activeShadow : null, edgeHaloShadow].filter(Boolean).join(", ") || "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -1710,23 +1720,6 @@ export default function AppBoundedCanvas() {
             </div>
           )}
 
-          {/* Розмиття внутрішніх країв — окремий шар ПІСЛЯ дітей (а не
-              box-shadow на фоні самого батька), тому що діти рендеряться
-              своїми непрозорими блоками ПОВЕРХ фону батька і ховали б звичайну
-              inset-тінь під собою. Цей шар навпаки лежить НАД дітьми
-              (z-index вищий за їхні 10/40) — тінь дійсно "закриває" їхні краї,
-              а не губиться під ними. pointer-events:none — не заважає
-              перетягувати/клікати дітей під собою. */}
-          {children.length > 0 && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
-                boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
-                zIndex: 50,
-              }}
-            />
-          )}
         </div>
       </Rnd>
     );
@@ -2572,13 +2565,16 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* РОЗМИТТЯ ВНУТРІШНІХ КРАЇВ — inset-тінь, якою батько "занурює"
-                    дітей; показуємо лише коли в обраного елемента дійсно Є
-                    дочірні (саме тоді ця тінь узагалі малюється, renderCanvasNode). */}
+                {/* РОЗМИТТЯ ВНУТРІШНІХ КРАЇВ — уяви поле як отвір у фоні: ці
+                    налаштування визначають, наскільки плавно розмитий край
+                    отвору "накриває" об'єкт, який у нього вкладено. Малюється
+                    навколо кожної дитини (renderCanvasNode бере ці значення з
+                    БАТЬКА, не з дитини), тож показуємо лише коли в обраного
+                    елемента дійсно Є дочірні. */}
                 {singleSelected && elements.some((c) => c.parentId === singleSelected.id) && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <span className="text-[10px] font-bold text-slate-700 uppercase block">
-                      🌫️ Розмиття внутрішніх країв (для вкладених):
+                      🌫️ Розмиття краю отвору (навколо вкладених):
                     </span>
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
@@ -2611,7 +2607,7 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
                     <p className="text-[10px] text-slate-500 leading-snug">
-                      За замовчуванням дочірній елемент має відступ 1px від краю. Досить великий радіус тут (30–60px) робить тінь набагато товщою за цей відступ — шов між батьком і дитиною візуально зникає.
+                      Тінь малюється навколо кожного вкладеного об'єкта (не рамкою по краю поля), тож плавно огортає його там, де він фактично лежить — навіть якщо він не впритул до країв поля.
                     </p>
                   </div>
                 )}
