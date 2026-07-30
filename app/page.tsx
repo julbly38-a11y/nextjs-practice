@@ -1713,45 +1713,63 @@ export default function AppBoundedCanvas() {
               <div className="relative w-full h-full pointer-events-auto">
                 {children.map((child) => renderCanvasNode(child))}
               </div>
+
+              {/* "blur" — на відміну від "shadow" (суцільна рамка по краю
+                  БАТЬКА), цей режим малює окремий шар НА КОЖНУ дитину
+                  окремо, розширений за її межі на margin=childEdgeBlur px —
+                  тобто зона розмиття завжди сидить точно на межі об'єкт/фон,
+                  де б той об'єкт не був у батькові (а не лише біля країв
+                  самого батька). backdrop-filter реально розмиває (змішує
+                  кольори) те, що під шаром — і фон, і краєчок об'єкта;
+                  радіальна маска лишає центр об'єкта різким. Клас
+                  overflow-hidden предка (вище) природно обрізає той шар,
+                  якщо він виходить за межі самого батька. */}
+              {el.childEdgeStyle === "blur" &&
+                children.map((child) => {
+                  const margin = childEdgeBlur;
+                  const innerStopPercent = Math.round((1 - childEdgeOpacity) * 100);
+                  return (
+                    <div
+                      key={`edge-blur-${child.id}`}
+                      className="absolute pointer-events-none"
+                      style={
+                        {
+                          left: child.x - margin,
+                          top: child.y - margin,
+                          width: child.width + margin * 2,
+                          height: child.height + margin * 2,
+                          backdropFilter: `blur(${childEdgeBlur}px)`,
+                          WebkitBackdropFilter: `blur(${childEdgeBlur}px)`,
+                          maskImage: `radial-gradient(ellipse at center, transparent ${innerStopPercent}%, black 100%)`,
+                          WebkitMaskImage: `radial-gradient(ellipse at center, transparent ${innerStopPercent}%, black 100%)`,
+                          zIndex: 45,
+                        } as React.CSSProperties
+                      }
+                    />
+                  );
+                })}
             </div>
           )}
 
-          {/* Розмиття внутрішніх країв — окремий шар ПІСЛЯ дітей (а не
-              box-shadow/filter на фоні самого батька), тому що діти
-              рендеряться своїми непрозорими блоками ПОВЕРХ фону батька і
-              ховали б ефект під собою. Цей шар навпаки лежить НАД дітьми
-              (z-index вищий за їхні 10/40) — ефект дійсно "закриває" їхні
-              краї, а не губиться під ними. pointer-events:none — не заважає
-              перетягувати/клікати дітей під собою.
-              Два варіанти (childEdgeStyle):
-              - "shadow" (за замовчуванням) — темна inset-тінь, як і раніше.
-              - "blur" — СПРАВЖНЄ розмиття (backdrop-filter: blur) того, що
-                під цим шаром (фон батька й краї дітей), з радіальною маскою
-                (прозоро — тобто різко — в центрі, суцільно — тобто розмито —
-                по краю), замість затемнення. */}
-          {children.length > 0 && (
+          {/* "shadow" — темна inset-тінь суцільною рамкою по периметру
+              БАТЬКА, окремим шаром ПІСЛЯ дітей (а не box-shadow на фоні
+              самого батька — діти рендеряться своїми непрозорими блоками
+              ПОВЕРХ фону батька і ховали б ефект під собою). z-index вищий
+              за дітей (10/40) — тінь дійсно "закриває" їхні краї там, де
+              вони торкаються країв поля, а не губиться під ними.
+              pointer-events:none — не заважає перетягувати/клікати дітей.
+              Для "blur"-режиму це не потрібно (той малюється на кожну
+              дитину окремо вище), крім типу "list" — там діти рендеряться
+              плоским списком без x/y, тож для нього лишаємо той самий
+              рамковий ефект незалежно від обраного стилю. */}
+          {children.length > 0 && (el.childEdgeStyle !== "blur" || el.type === "list") && (
             <div
               className="absolute inset-0 pointer-events-none"
-              style={
-                el.childEdgeStyle === "blur"
-                  ? ({
-                      borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
-                      backdropFilter: `blur(${childEdgeBlur}px)`,
-                      WebkitBackdropFilter: `blur(${childEdgeBlur}px)`,
-                      maskImage: `radial-gradient(ellipse at center, transparent ${Math.round(
-                        (1 - childEdgeOpacity) * 100
-                      )}%, black 100%)`,
-                      WebkitMaskImage: `radial-gradient(ellipse at center, transparent ${Math.round(
-                        (1 - childEdgeOpacity) * 100
-                      )}%, black 100%)`,
-                      zIndex: 50,
-                    } as React.CSSProperties)
-                  : {
-                      borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
-                      boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
-                      zIndex: 50,
-                    }
-              }
+              style={{
+                borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+                boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
+                zIndex: 50,
+              }}
             />
           )}
         </div>
