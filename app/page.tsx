@@ -769,6 +769,99 @@ export default function AppBoundedCanvas() {
     fileInputRef.current?.click();
   };
 
+  // Тягне канонічний список відділень з Supabase (схема lpz, /api/departments)
+  // і створює з нього елемент "Список" зі стовпцями — по одному рядку на
+  // відділення, з обох лікарень (org_edrpou), той самий канон, що й у qwerty.
+  const handleImportDepartments = async () => {
+    try {
+      const res = await fetch("/api/departments");
+      const data = await res.json();
+      if (!res.ok || !data.departments) {
+        alert(`Помилка завантаження відділень: ${data.error || res.statusText}`);
+        return;
+      }
+
+      type Department = {
+        structure_id: string;
+        org_edrpou: string;
+        name: string;
+        type_code: string | null;
+        direction: string | null;
+        block: string | null;
+        beds: number | null;
+      };
+      const departments: Department[] = data.departments;
+
+      const columns: ListColumn[] = [
+        { id: "org", label: "ЛПЗ", width: 1 },
+        { id: "name", label: "Відділення", width: 3 },
+        { id: "direction", label: "Напрямок", width: 1.5 },
+        { id: "beds", label: "Ліжка", width: 1 },
+      ];
+
+      const listId = Date.now();
+      const listElement: CanvasElement = {
+        id: listId,
+        pageId: currentPageId,
+        isGlobal: false,
+        isTriggerTarget: false,
+        showOnHoverId: null,
+        showOnClickId: null,
+        type: "list",
+        content: "Відділення (Supabase, схема lpz)",
+        width: 640,
+        height: 420,
+        x: 1,
+        y: 1,
+        textColor: "#ffffff",
+        padding: 8,
+        borderRadius: 0,
+        fontSize: 12,
+        fontFamily: "inherit",
+        fontWeight: "500",
+        textAlign: "left",
+        parentId: forcedParentId,
+        targetPageId: null,
+        columns,
+      };
+
+      const rowElements: CanvasElement[] = departments.map((dept, i) => ({
+        id: listId + 1 + i,
+        pageId: currentPageId,
+        isGlobal: false,
+        isTriggerTarget: false,
+        showOnHoverId: null,
+        showOnClickId: null,
+        type: "text",
+        content: dept.name,
+        width: 120,
+        height: 30,
+        x: 1,
+        y: 1,
+        textColor: "#000000",
+        padding: 4,
+        borderRadius: 0,
+        fontSize: 13,
+        fontFamily: "inherit",
+        fontWeight: "500",
+        textAlign: "left",
+        parentId: listId,
+        targetPageId: null,
+        columnValues: {
+          org: dept.org_edrpou,
+          name: dept.name,
+          direction: dept.direction || "—",
+          beds: dept.beds != null ? String(dept.beds) : "—",
+        },
+      }));
+
+      updateElementsAndHistory([...elements, listElement, ...rowElements]);
+      handleSelectElement(listId);
+    } catch (err) {
+      alert("Не вдалося завантажити відділення — перевір, чи запущений сервер і чи налаштований Supabase.");
+    }
+  };
+
   const getElementDepth = (id: number): number => {
     let depth = 0;
     let current = elements.find((el) => el.id === id);
@@ -1462,6 +1555,14 @@ export default function AppBoundedCanvas() {
               className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors"
             >
               📂 Завантажити JSON
+            </button>
+
+            <button
+              onClick={handleImportDepartments}
+              className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors"
+              title="Створити елемент 'Список' з відділеннями з Supabase (схема lpz)"
+            >
+              🏥 Завантажити відділення
             </button>
 
             <input
