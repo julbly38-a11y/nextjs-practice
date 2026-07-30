@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Rnd } from "react-rnd";
 
-type ElementType = "block" | "heading" | "text" | "button";
+type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
 
 const LEVEL_COLORS = [
   "#2563eb", // 1 рівень
@@ -18,12 +18,23 @@ const TYPE_LABELS: Record<ElementType, string> = {
   heading: "Заголовок",
   text: "Текст",
   button: "Кнопка",
+  list: "Список",
+  clock: "Годинник",
 };
+
+interface ListColumn {
+  id: string;
+  label: string;
+  width?: number; // відносна вага (flex-grow), за замовчуванням 1
+}
 
 interface CanvasElement {
   id: number;
   pageId: string;
   isGlobal?: boolean;
+  cascadeGlobal?: boolean; // якщо true — усі вкладені елементи успадковують видимість ЦЬОГО елемента (і на "всіх сторінках", і на конкретних extraPageIds)
+  extraPageIds?: string[]; // додаткові конкретні сторінки (крім власної pageId), де показувати елемент, без isGlobal
+  excludeFromCascade?: boolean; // розірвати каскад від предків саме тут — цей елемент і все вкладене в нього більше не успадковує їхню видимість
   type: ElementType;
   content: string;
   width: number;
@@ -37,10 +48,21 @@ interface CanvasElement {
   parentId: number | null;
   customBgColor?: string;
   bgOpacity?: number; // 0..1, прозорість фону елемента
+  meshBg?: boolean; // анімований mesh-фон замість звичайного суцільного фону (перекриває customBgColor)
+  meshSpeed?: number; // множник швидкості анімації (1 = дефолт, 18с/26с як в оригіналі)
+  meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
+  meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
+
+  // "Список" (type: "list") — конфігурація стовпців таблиці
+  columns?: ListColumn[];
+  // Рядок списку (дитина list-елемента зі стовпцями) — значення по кожному стовпцю
+  columnValues?: Record<string, string>;
 
   // Налаштування появи
-  showOnHoverId?: number | null;
+  showOnHoverId?: number | null; // ціль за замовчуванням, якщо для сторінки немає власного запису в *TargetByPage
   showOnClickId?: number | null;
+  hoverTargetByPage?: Record<string, number | null>; // pageId -> ціль (null = свідомо нічого не викликати саме на цій сторінці)
+  clickTargetByPage?: Record<string, number | null>;
   isTriggerTarget?: boolean;
 
   // Налаштування шрифтів
@@ -73,7 +95,67 @@ interface CanvasElement {
 interface Page {
   id: string;
   name: string;
+  meshBackground?: boolean; // анімований mesh-фон замість звичайного білого полотна
+  meshSpeed?: number;
+  meshIntensity?: number;
+  meshColors?: string[];
 }
+
+// Дефолтна тепла палітра mesh-фону Хотина (ті самі 5 кольорів, що й фолбеки
+// в globals.css/HTML-експорті), просто без альфи — для color-піддерів у панелі.
+const DEFAULT_MESH_COLORS = ["#d69696", "#96beb4", "#c8b4d2", "#b4c8cd", "#e6c8b9"];
+
+const hexToRgba = (hex: string, alpha: number): string => {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16) || 0;
+  const g = parseInt(h.substring(2, 4), 16) || 0;
+  const b = parseInt(h.substring(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+// Живий (React) mesh-шар — використовується і для фону сторінки (в <main>), і
+// для фону окремого блоку (в renderCanvasNode). speed: множник швидкості
+// (1 = оригінальні 18с/26с), intensity: 0..100 (загальна непрозорість шару),
+// colors: 1-5 кастомних кольорів замість дефолтної палітри.
+// zIndex: не задаємо явно для фону сторінки (тоді працює як і в оригінальному
+// класі — z-index:0, стек визначається порядком у DOM) — і задаємо -1 для
+// фону окремого блоку, де поряд є нестатично не позиційований контент
+// (текст кнопки/заголовка), який інакше опинився б під mesh-шаром.
+const renderMeshLayer = (speed?: number, intensity?: number, colors?: string[], zIndex?: number) => {
+  const spd = speed ?? 1;
+  const opacity = (intensity ?? 100) / 100;
+  const meshVars: Record<string, string> = {};
+  (colors ?? []).forEach((c, i) => {
+    if (i < 5) meshVars[`--mesh-${i + 1}`] = hexToRgba(c, 0.4);
+  });
+
+  return (
+    <div
+      className="absolute inset-0 overflow-hidden pointer-events-none"
+      style={{ ...meshVars, opacity, ...(zIndex !== undefined ? { zIndex } : {}) } as React.CSSProperties}
+    >
+      <div className="ctor-mesh-bg" style={{ animationDuration: `${18 / spd}s` }} />
+      <div className="ctor-mesh-bg2" style={{ animationDuration: `${26 / spd}s` }} />
+    </div>
+  );
+};
+
+// Той самий mesh-шар, але як HTML-рядок — для статичного експорту.
+const renderMeshLayerHTML = (speed?: number, intensity?: number, colors?: string[], zIndex?: number): string => {
+  const spd = speed ?? 1;
+  const opacity = (intensity ?? 100) / 100;
+  const meshVarsCSS = (colors ?? [])
+    .slice(0, 5)
+    .map((c, i) => `--mesh-${i + 1}:${hexToRgba(c, 0.4)};`)
+    .join("");
+
+  return `
+    <div style="position:absolute;inset:0;overflow:hidden;pointer-events:none;opacity:${opacity};${zIndex !== undefined ? `z-index:${zIndex};` : ""}${meshVarsCSS}">
+      <div class="ctor-mesh-bg" style="animation-duration:${18 / spd}s;"></div>
+      <div class="ctor-mesh-bg2" style="animation-duration:${26 / spd}s;"></div>
+    </div>
+  `;
+};
 
 export default function AppBoundedCanvas() {
   const [pages, setPages] = useState<Page[]>([
@@ -86,11 +168,22 @@ export default function AppBoundedCanvas() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isMounted, setIsMounted] = useState(false);
 
+  // Живий час для елементів "Годинник" — тікає раз на секунду, доки на
+  // сторінці є хоч один такий елемент; null до монтування (без розбіжності
+  // серверного/клієнтського рендеру).
+  const [clockNow, setClockNow] = useState<Date | null>(null);
+  useEffect(() => {
+    setClockNow(new Date());
+    const timer = setInterval(() => setClockNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
   const [clickedElementId, setClickedElementId] = useState<number | null>(null);
 
   const [newType, setNewType] = useState<ElementType>("block");
   const [newContent, setNewContent] = useState<string>("Елемент");
+  const [newCount, setNewCount] = useState<number>(1);
   const [forcedParentId, setForcedParentId] = useState<number | null>(null);
 
   // СТАНТИ: Сітка (Grid Snap) та Історія (Undo/Redo)
@@ -130,6 +223,12 @@ export default function AppBoundedCanvas() {
       try {
         initialPages = JSON.parse(savedPages);
         setPages(initialPages);
+        // Якщо збережені сторінки не містять поточної currentPageId (напр. дефолтної
+        // "home" з першого запуску) — переходимо на першу реальну сторінку зі списку,
+        // інакше після завантаження показувались би лише глобальні елементи.
+        if (initialPages.length > 0 && !initialPages.some((p: Page) => p.id === currentPageId)) {
+          setCurrentPageId(initialPages[0].id);
+        }
       } catch (e) {}
     }
     if (savedElements) {
@@ -231,6 +330,16 @@ export default function AppBoundedCanvas() {
     updatePagesAndHistory(nextPages);
   };
 
+  const handleToggleMeshBackground = (checked: boolean) => {
+    const nextPages = pages.map((p) => (p.id === currentPageId ? { ...p, meshBackground: checked } : p));
+    updatePagesAndHistory(nextPages);
+  };
+
+  const handleUpdateCurrentPageMeshField = (field: "meshSpeed" | "meshIntensity" | "meshColors", value: number | string[]) => {
+    const nextPages = pages.map((p) => (p.id === currentPageId ? { ...p, [field]: value } : p));
+    updatePagesAndHistory(nextPages);
+  };
+
   const handleDeleteCurrentPage = () => {
     if (pages.length <= 1) {
       alert("Неможливо видалити останню сторінку!");
@@ -250,8 +359,58 @@ export default function AppBoundedCanvas() {
 
   const currentPage = pages.find((p) => p.id === currentPageId) || pages[0];
 
+  // Чи видимий елемент на сторінці pageId — власна сторінка, власний isGlobal,
+  // конкретно вибрана додаткова сторінка (extraPageIds), або каскад від предка.
+  const isVisibleOnPage = (el: CanvasElement, pageId: string): boolean => {
+    if (el.isGlobal === true || el.pageId === pageId || (el.extraPageIds?.includes(pageId) ?? false)) {
+      return true;
+    }
+    return hasVisibleCascadingAncestor(el, pageId);
+  };
+
+  // Йдемо вгору по предках. Якщо предок сам видимий на pageId (з будь-якої
+  // причини — 🌍, конкретна сторінка, або теж каскадом від когось вище) і має
+  // увімкнений cascadeGlobal — усі його нащадки успадковують цю саму видимість
+  // на pageId. Каскад працює з будь-якого рівня ієрархії, не лише з кореня.
+  // Якщо на шляху трапляється предок з excludeFromCascade — каскад від усього,
+  // що вище нього, обривається саме тут, разом з усім вкладеним нижче.
+  const hasVisibleCascadingAncestor = (el: CanvasElement, pageId: string): boolean => {
+    // Сам елемент вийшов з каскаду — не отримує видимість від жодного предка.
+    if (el.excludeFromCascade) return false;
+
+    let current = elements.find((p) => p.id === el.parentId);
+    while (current) {
+      if (current.excludeFromCascade) return false;
+      if (current.cascadeGlobal && isVisibleOnPage(current, pageId)) return true;
+      current = elements.find((p) => p.id === current!.parentId);
+    }
+    return false;
+  };
+
+  // Ціль hover/click-тригера саме на сторінці pageId: якщо для цієї сторінки є
+  // власний запис у *TargetByPage (навіть null) — використовуємо його, інакше
+  // падаємо назад на старе "глобальне" значення showOnHoverId/showOnClickId.
+  // Так та сама кнопка може на одній сторінці показувати один об'єкт, на іншій —
+  // інший, а на третій — нічого не викликати взагалі.
+  const getHoverTargetId = (el: CanvasElement, pageId: string): number | null => {
+    if (el.hoverTargetByPage && pageId in el.hoverTargetByPage) return el.hoverTargetByPage[pageId];
+    return el.showOnHoverId ?? null;
+  };
+  const getClickTargetId = (el: CanvasElement, pageId: string): number | null => {
+    if (el.clickTargetByPage && pageId in el.clickTargetByPage) return el.clickTargetByPage[pageId];
+    return el.showOnClickId ?? null;
+  };
+
   const getMinDimensions = (parentId: number) => {
-    const children = elements.filter((el) => el.parentId === parentId && (el.isGlobal || el.pageId === currentPageId));
+    // "Список" сам шикує дітей вертикально (не вільне позиціонування) —
+    // x/y дочірніх елементів для нього нічого не означають, тому рахувати
+    // мінімум за їхніми координатами тут не можна.
+    const parentEl = elements.find((e) => e.id === parentId);
+    if (parentEl?.type === "list") {
+      return { minWidth: 100, minHeight: 60 };
+    }
+
+    const children = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
     if (children.length === 0) {
       return { minWidth: 20, minHeight: 20 };
     }
@@ -272,65 +431,6 @@ export default function AppBoundedCanvas() {
     };
   };
 
-  // Одновимірний "slab" тест: рух точки з p0 в p1 проти відрізка [boxMin, boxMax].
-  // Повертає [entry, exit] — частку шляху (t), на якій рух входить/виходить із відрізка.
-  const sweepAxis = (p0: number, p1: number, boxMin: number, boxMax: number): [number, number] => {
-    const d = p1 - p0;
-    if (Math.abs(d) < 1e-9) {
-      return p0 >= boxMin && p0 <= boxMax ? [-Infinity, Infinity] : [Infinity, -Infinity];
-    }
-    let t1 = (boxMin - p0) / d;
-    let t2 = (boxMax - p0) / d;
-    if (t1 > t2) [t1, t2] = [t2, t1];
-    return [t1, t2];
-  };
-
-  // Не дає елементу під час перетягування підійти до сусіда (того ж рівня/батька)
-  // ближче ніж на minGap пікселів. Це swept-AABB перевірка: рухому коробку розглядаємо
-  // як точку, а перешкоду "роздуваємо" на розмір рухомої коробки + minGap, і шукаємо
-  // найранішу частку шляху (t) від (fromX, fromY) до (toX, toY), на якій відбувається
-  // зіткнення. Перевірка лише кінцевої точки пропускає "проскакування" через сусіда
-  // одним великим стрибком (тунелювання) — тут перевіряється весь шлях цілком,
-  // однаково для дрібних елементів і великих батьківських блоків.
-  const resolveCollision = (
-    fromX: number,
-    fromY: number,
-    toX: number,
-    toY: number,
-    width: number,
-    height: number,
-    siblings: CanvasElement[],
-    minGap: number
-  ) => {
-    if (siblings.length === 0) {
-      return { x: toX, y: toY };
-    }
-
-    let earliestT = 1;
-
-    siblings.forEach((sib) => {
-      const expMinX = sib.x - minGap - width;
-      const expMaxX = sib.x + sib.width + minGap;
-      const expMinY = sib.y - minGap - height;
-      const expMaxY = sib.y + sib.height + minGap;
-
-      const [txEntry, txExit] = sweepAxis(fromX, toX, expMinX, expMaxX);
-      const [tyEntry, tyExit] = sweepAxis(fromY, toY, expMinY, expMaxY);
-
-      const entry = Math.max(txEntry, tyEntry, 0);
-      const exit = Math.min(txExit, tyExit, 1);
-
-      if (entry <= exit && entry < earliestT) {
-        earliestT = entry;
-      }
-    });
-
-    return {
-      x: Math.round(fromX + (toX - fromX) * earliestT),
-      y: Math.round(fromY + (toY - fromY) * earliestT),
-    };
-  };
-
   const boxesOverlap = (
     x: number,
     y: number,
@@ -344,6 +444,45 @@ export default function AppBoundedCanvas() {
     const sx2 = sib.x + sib.width + minGap;
     const sy2 = sib.y + sib.height + minGap;
     return x < sx2 && x + width > sx1 && y < sy2 && y + height > sy1;
+  };
+
+  // М'яке підштовхування: рух під час drag/resize тепер повністю вільний (без
+  // блокування по шляху), а це викликається лише ОДИН раз — коли мишу відпустили.
+  // Перевіряє лише кінцеву позицію; якщо вона з кимось перекривається ближче ніж
+  // на minGap — відсуває по осі найменшого проникнення, щоб мінімальний відступ
+  // 1px гарантовано лишався в результаті, навіть якщо сам рух ніхто не блокував.
+  const pushOutOfOverlap = (
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    siblings: CanvasElement[],
+    minGap: number
+  ) => {
+    let resultX = x;
+    let resultY = y;
+
+    siblings.forEach((sib) => {
+      if (!boxesOverlap(resultX, resultY, width, height, sib, minGap)) return;
+
+      const sx1 = sib.x - minGap;
+      const sy1 = sib.y - minGap;
+      const sx2 = sib.x + sib.width + minGap;
+      const sy2 = sib.y + sib.height + minGap;
+
+      const pushLeft = resultX + width - sx1;
+      const pushRight = sx2 - resultX;
+      const pushUp = resultY + height - sy1;
+      const pushDown = sy2 - resultY;
+      const minPush = Math.min(pushLeft, pushRight, pushUp, pushDown);
+
+      if (minPush === pushLeft) resultX -= pushLeft;
+      else if (minPush === pushRight) resultX += pushRight;
+      else if (minPush === pushUp) resultY -= pushUp;
+      else resultY += pushDown;
+    });
+
+    return { x: Math.round(resultX), y: Math.round(resultY) };
   };
 
   // Те саме, що resolveCollision, але для зміни розміру: тут "рухається" не лише
@@ -409,7 +548,7 @@ export default function AppBoundedCanvas() {
         top: ${el.y}px;
         width: ${el.width}px;
         height: ${el.height}px;
-        background-color: ${computedBgColor};
+        background-color: ${el.meshBg ? "#f0ece8" : computedBgColor};
         color: ${el.textColor || "#ffffff"};
         padding: ${el.padding || 0}px;
         border-radius: ${isBtn ? (el.borderRadius ?? 8) : 0}px;
@@ -421,20 +560,73 @@ export default function AppBoundedCanvas() {
       `;
 
       let contentHTML = "";
+      let innerChildrenHTML = "";
+
       if (el.type === "button") {
         contentHTML = `<button style="width:100%;height:100%;border:none;background:transparent;color:inherit;font:inherit;cursor:pointer;" ${
           el.targetPageId ? `onclick="switchPage('${el.targetPageId}')"` : ""
         }>${el.content}</button>`;
+        innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
       } else if (el.type === "heading") {
         contentHTML = `<h2 style="margin:0;font-size:inherit;">${el.content}</h2>`;
+        innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
+      } else if (el.type === "list") {
+        // "Список" сам шикує дітей вертикально зі скролом — на відміну від
+        // інших типів, тут діти НЕ рендеряться через звичайний
+        // position:absolute (їхні x/y для списку не мають сенсу). Якщо задані
+        // стовпці (el.columns) — кожен рядок ділиться на комірки-стовпці.
+        const hasColumns = el.columns && el.columns.length > 0;
+        const headerHTML = hasColumns
+          ? `<div style="display:flex;gap:8px;padding-bottom:4px;border-bottom:1px solid rgba(0,0,0,0.15);">${el.columns!
+              .map(
+                (col) =>
+                  `<span style="flex-grow:${col.width ?? 1};flex-basis:0;min-width:0;font-size:10px;font-weight:700;text-transform:uppercase;opacity:.7;">${col.label}</span>`
+              )
+              .join("")}</div>`
+          : "";
+        const itemsHTML = children
+          .map((c) => {
+            const rowContent = hasColumns
+              ? el.columns!
+                  .map(
+                    (col) =>
+                      `<span style="flex-grow:${col.width ?? 1};flex-basis:0;min-width:0;">${(c.columnValues && c.columnValues[col.id]) || ""}</span>`
+                  )
+                  .join("")
+              : c.content;
+            return `
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid rgba(0,0,0,0.1);color:${c.textColor || "#000000"};background-color:${c.customBgColor || "transparent"};font-size:${c.fontSize || 12}px;font-family:${c.fontFamily || "inherit"};font-weight:${c.fontWeight || "500"};">${rowContent}</div>
+        `;
+          })
+          .join("");
+        contentHTML = `
+          <div style="display:flex;flex-direction:column;width:100%;height:100%;box-sizing:border-box;">
+            ${el.content ? `<div style="flex-shrink:0;font-weight:600;text-transform:uppercase;padding-bottom:4px;">${el.content}</div>` : ""}
+            ${headerHTML}
+            <div style="flex:1;min-height:0;overflow-y:auto;">${itemsHTML}</div>
+          </div>
+        `;
+      } else if (el.type === "clock") {
+        // Живий час у статичному HTML-експорті — тікає через скрипт
+        // updateClocks() унизу сторінки, а не через React-стан.
+        contentHTML = `
+          <div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:4px;box-sizing:border-box;">
+            <div class="constructor-clock-time" style="font-weight:700;font-size:${(el.fontSize || 12) * 1.7}px;"></div>
+            <div class="constructor-clock-date" style="opacity:.8;text-transform:capitalize;font-size:${el.fontSize || 12}px;"></div>
+          </div>
+        `;
       } else {
         contentHTML = `<div>${el.content}</div>`;
+        innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
       }
 
-      const innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
+      const meshHTML = el.meshBg
+        ? renderMeshLayerHTML(el.meshSpeed, el.meshIntensity, el.meshColors, -1)
+        : "";
 
       return `
         <div id="el-${el.id}" style="${style}">
+          ${meshHTML}
           ${contentHTML}
           ${innerChildrenHTML}
         </div>
@@ -444,10 +636,14 @@ export default function AppBoundedCanvas() {
     const pagesHTML = pages
       .map((p) => {
         const topElements = elements.filter(
-          (el) => el.parentId === null && (el.isGlobal || el.pageId === p.id)
+          (el) => el.parentId === null && isVisibleOnPage(el, p.id)
         );
+        const pageMeshHTML = p.meshBackground
+          ? renderMeshLayerHTML(p.meshSpeed, p.meshIntensity, p.meshColors)
+          : "";
         return `
-        <div id="page-${p.id}" class="page-container" style="display: ${p.id === currentPageId ? "block" : "none"}; position: relative; width: 100%; min-height: 800px;">
+        <div id="page-${p.id}" class="page-container" style="display: ${p.id === currentPageId ? "block" : "none"}; position: relative; width: 100%; min-height: 800px; background: ${p.meshBackground ? "#f0ece8" : "#ffffff"};">
+          ${pageMeshHTML}
           ${topElements.map((el) => renderElementHTML(el)).join("")}
         </div>
       `;
@@ -464,6 +660,39 @@ export default function AppBoundedCanvas() {
         <style>
           body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
           .page-container { position: relative; max-width: 1200px; margin: 0 auto; background: #ffffff; min-height: 100vh; }
+
+          .ctor-mesh-bg, .ctor-mesh-bg2 {
+            position: absolute; inset: -10%; z-index: 0; pointer-events: none;
+            filter: blur(40px); will-change: transform;
+          }
+          .ctor-mesh-bg {
+            background:
+              radial-gradient(40% 45% at 30% 80%, rgba(214,150,150,0.45), transparent 70%),
+              radial-gradient(38% 42% at 70% 75%, rgba(150,190,180,0.40), transparent 70%),
+              radial-gradient(45% 50% at 80% 25%, rgba(200,180,210,0.35), transparent 70%),
+              radial-gradient(40% 45% at 15% 30%, rgba(180,200,205,0.35), transparent 70%),
+              radial-gradient(50% 55% at 50% 55%, rgba(230,200,185,0.40), transparent 75%);
+            animation: ctor-meshmove 18s ease-in-out infinite alternate;
+          }
+          .ctor-mesh-bg2 {
+            background:
+              radial-gradient(42% 48% at 60% 30%, rgba(214,150,150,0.38), transparent 70%),
+              radial-gradient(40% 45% at 25% 65%, rgba(150,190,180,0.36), transparent 70%),
+              radial-gradient(46% 52% at 85% 70%, rgba(200,180,210,0.32), transparent 72%),
+              radial-gradient(44% 50% at 40% 85%, rgba(230,200,185,0.36), transparent 75%);
+            animation: ctor-meshmove2 26s ease-in-out infinite alternate;
+            mix-blend-mode: soft-light; opacity: 0.9;
+          }
+          @keyframes ctor-meshmove {
+            0%   { transform: translate(-4%, -3%) scale(1.05) rotate(0deg); }
+            50%  { transform: translate(4%, 3%)   scale(1.12) rotate(4deg); }
+            100% { transform: translate(-2%, 4%)  scale(1.06) rotate(-3deg); }
+          }
+          @keyframes ctor-meshmove2 {
+            0%   { transform: translate(3%, 4%)   scale(1.08) rotate(0deg); }
+            50%  { transform: translate(-4%, -3%) scale(1.0)  rotate(-5deg); }
+            100% { transform: translate(4%, -4%)  scale(1.1)  rotate(3deg); }
+          }
         </style>
       </head>
       <body>
@@ -474,6 +703,16 @@ export default function AppBoundedCanvas() {
             const target = document.getElementById('page-' + pageId);
             if(target) target.style.display = 'block';
           }
+
+          function updateClocks() {
+            const now = new Date();
+            const time = now.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const date = now.toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+            document.querySelectorAll('.constructor-clock-time').forEach(el => el.textContent = time);
+            document.querySelectorAll('.constructor-clock-date').forEach(el => el.textContent = date);
+          }
+          updateClocks();
+          setInterval(updateClocks, 1000);
         </script>
       </body>
       </html>
@@ -568,7 +807,7 @@ export default function AppBoundedCanvas() {
     } else {
       setSelectedIds([id]);
       const el = elements.find((item) => item.id === id);
-      if (el && el.type === "block") {
+      if (el && (el.type === "block" || el.type === "list")) {
         setForcedParentId(id);
       }
     }
@@ -578,8 +817,9 @@ export default function AppBoundedCanvas() {
     e.stopPropagation();
     handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
 
-    if (el.showOnClickId) {
-      setClickedElementId((prev) => (prev === el.showOnClickId ? null : (el.showOnClickId ?? null)));
+    const clickTargetId = getClickTargetId(el, currentPageId);
+    if (clickTargetId) {
+      setClickedElementId((prev) => (prev === clickTargetId ? null : clickTargetId));
     }
 
     if (el.type === "button") {
@@ -600,18 +840,32 @@ export default function AppBoundedCanvas() {
   const handleAddElement = (e: React.FormEvent) => {
     e.preventDefault();
     const isButton = newType === "button";
-    const newElement: CanvasElement = {
-      id: Date.now(),
+    const isClock = newType === "clock";
+    const width = isButton ? 120 : isClock ? 220 : forcedParentId ? 120 : 240;
+    const height = isButton ? 40 : isClock ? 70 : forcedParentId ? 60 : 140;
+    const count = Math.max(1, Math.min(50, newCount || 1));
+    const gap = 8; // відступ між елементами, коли створюємо кілька в ряд
+
+    // Новий елемент(и) ставимо одразу після останнього сусіда в цьому ж
+    // батьку/рівні (а не завжди в лівому верхньому куті) — інакше кожне
+    // повторне створення накладалось би на вже існуючі елементи.
+    const siblings = elements.filter(
+      (el) => el.parentId === forcedParentId && isVisibleOnPage(el, currentPageId)
+    );
+    const startX = siblings.length > 0 ? Math.max(...siblings.map((s) => s.x + s.width)) + gap : 1;
+
+    const newElements: CanvasElement[] = Array.from({ length: count }, (_, i) => ({
+      id: Date.now() + i,
       pageId: currentPageId,
       isGlobal: false,
       isTriggerTarget: false,
       showOnHoverId: null,
       showOnClickId: null,
       type: newType,
-      content: newContent,
-      width: isButton ? 120 : forcedParentId ? 120 : 240,
-      height: isButton ? 40 : forcedParentId ? 60 : 140,
-      x: 1,
+      content: count > 1 ? `${newContent} ${i + 1}` : newContent,
+      width,
+      height,
+      x: 1 + i * (width + gap),
       y: 1,
       textColor: "#ffffff",
       padding: isButton ? 4 : 8,
@@ -638,10 +892,11 @@ export default function AppBoundedCanvas() {
       activeHeightOffset: 0,
       isToggle: false,
       isPressed: false,
-    };
-    const nextElements = [...elements, newElement];
+    }));
+
+    const nextElements = [...elements, ...newElements];
     updateElementsAndHistory(nextElements);
-    handleSelectElement(newElement.id);
+    setSelectedIds(newElements.map((el) => el.id));
   };
 
   const updateSelectedFields = (field: keyof CanvasElement, value: any) => {
@@ -755,7 +1010,7 @@ export default function AppBoundedCanvas() {
   };
 
   const renderCanvasNode = (el: CanvasElement) => {
-    const children = elements.filter((child) => child.parentId === el.id && (child.isGlobal || child.pageId === currentPageId));
+    const children = elements.filter((child) => child.parentId === el.id && isVisibleOnPage(child, currentPageId));
     const isSelected = selectedIds.includes(el.id);
     const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
     const isButton = el.type === "button";
@@ -773,10 +1028,11 @@ export default function AppBoundedCanvas() {
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
-    const isTargetOfHover = elements.some((item) => item.showOnHoverId === el.id);
-    const isTargetOfClick = elements.some((item) => item.showOnClickId === el.id);
+    const isTargetOfHover = elements.some((item) => getHoverTargetId(item, currentPageId) === el.id);
+    const isTargetOfClick = elements.some((item) => getClickTargetId(item, currentPageId) === el.id);
 
-    const isHoverTriggered = hoveredElementId !== null && elements.find((item) => item.id === hoveredElementId)?.showOnHoverId === el.id;
+    const hoveredSourceEl = hoveredElementId !== null ? elements.find((item) => item.id === hoveredElementId) : undefined;
+    const isHoverTriggered = !!hoveredSourceEl && getHoverTargetId(hoveredSourceEl, currentPageId) === el.id;
     const isClickTriggered = clickedElementId === el.id;
 
     const shouldHide = el.isTriggerTarget && (isTargetOfHover || isTargetOfClick) && !isHoverTriggered && !isClickTriggered && !isSelected;
@@ -799,53 +1055,19 @@ export default function AppBoundedCanvas() {
             handleSelectElement(el.id, false);
           }
         }}
-        onDrag={(e, d) => {
-          const siblings = elements.filter(
-            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
-          );
-          const resolved = resolveCollision(el.x, el.y, d.x, d.y, currentWidth, currentHeight, siblings, 1);
-          if (resolved.x !== el.x || resolved.y !== el.y) {
-            setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, x: resolved.x, y: resolved.y } : item)));
-          }
-        }}
         onDragStop={(e, d) => {
           e.stopPropagation();
           const siblings = elements.filter(
-            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
+            (other) => other.id !== el.id && other.parentId === el.parentId && isVisibleOnPage(other, currentPageId)
           );
-          const resolved = resolveCollision(el.x, el.y, d.x, d.y, currentWidth, currentHeight, siblings, 1);
+          const resolved = pushOutOfOverlap(d.x, d.y, currentWidth, currentHeight, siblings, 1);
           const nextElements = elements.map((item) => (item.id === el.id ? { ...item, x: resolved.x, y: resolved.y } : item));
           updateElementsAndHistory(nextElements);
-        }}
-        onResize={(e, dir, ref, delta, pos) => {
-          const siblings = elements.filter(
-            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
-          );
-          const proposed = {
-            x: pos.x,
-            y: pos.y,
-            width: parseInt(ref.style.width),
-            height: parseInt(ref.style.height),
-          };
-          const resolved = resolveResizeCollision(
-            { x: el.x, y: el.y, width: el.width, height: el.height },
-            proposed,
-            siblings,
-            1
-          );
-          if (
-            resolved.x !== el.x ||
-            resolved.y !== el.y ||
-            resolved.width !== el.width ||
-            resolved.height !== el.height
-          ) {
-            setElements((prev) => prev.map((item) => (item.id === el.id ? { ...item, ...resolved } : item)));
-          }
         }}
         onResizeStop={(e, dir, ref, delta, pos) => {
           e.stopPropagation();
           const siblings = elements.filter(
-            (other) => other.id !== el.id && other.parentId === el.parentId && (other.isGlobal || other.pageId === currentPageId)
+            (other) => other.id !== el.id && other.parentId === el.parentId && isVisibleOnPage(other, currentPageId)
           );
           const proposed = {
             x: pos.x,
@@ -871,7 +1093,9 @@ export default function AppBoundedCanvas() {
           onClick={(e) => handleButtonClick(e, el)}
           style={
             {
-              backgroundColor: el.isPressed
+              backgroundColor: el.meshBg
+                ? "#f0ece8"
+                : el.isPressed
                 ? (el.activeBgColor || el.hoverBgColor || computedBgColor)
                 : computedBgColor,
               color: el.isPressed
@@ -885,7 +1109,11 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed ? activeShadow : "none",
+              boxShadow: el.isPressed
+                ? activeShadow
+                : children.length > 0
+                ? "inset 0 0 10px rgba(0, 0, 0, 0.15)"
+                : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -905,9 +1133,11 @@ export default function AppBoundedCanvas() {
           } ${
             isSelected
               ? "ring-4 ring-amber-400 ring-offset-1 shadow-lg"
-              : "border border-black/15 shadow-sm"
+              : "shadow-[0_0_6px_rgba(0,0,0,0.18)]"
           }`}
         >
+          {el.meshBg && renderMeshLayer(el.meshSpeed, el.meshIntensity, el.meshColors, -1)}
+
           {el.type === "button" && (
             <div className="font-bold truncate pointer-events-none opacity-90 w-full text-center px-1">
               {el.isPressed
@@ -931,28 +1161,106 @@ export default function AppBoundedCanvas() {
             </div>
           )}
 
-          <div className="absolute inset-0 overflow-hidden pointer-events-none">
-            <div className="relative w-full h-full pointer-events-auto">
-              {children.map((child) => renderCanvasNode(child))}
+          {el.type === "clock" && clockNow && (
+            <div className="pointer-events-none w-full h-full flex flex-col items-center justify-center text-center leading-tight gap-1 px-1">
+              <div className="font-bold tabular-nums" style={{ fontSize: `${(el.fontSize || 12) * 1.7}px` }}>
+                {clockNow.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </div>
+              <div className="opacity-80 capitalize truncate w-full" style={{ fontSize: `${el.fontSize || 12}px` }}>
+                {clockNow.toLocaleDateString("uk-UA", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+              </div>
             </div>
-          </div>
+          )}
+
+          {el.type === "list" ? (
+            <div className="absolute inset-0 flex flex-col pointer-events-auto">
+              {el.content && (
+                <div
+                  className="shrink-0 px-1 pb-1 font-semibold uppercase tracking-wide truncate pointer-events-none"
+                  style={{ fontSize: `${el.fontSize || 12}px` }}
+                >
+                  {el.content}
+                </div>
+              )}
+              {el.columns && el.columns.length > 0 && (
+                <div className="shrink-0 flex items-center gap-2 px-1 pb-1 border-b border-black/15 pointer-events-none">
+                  {el.columns.map((col) => (
+                    <span
+                      key={col.id}
+                      className="truncate text-[10px] font-bold uppercase opacity-70"
+                      style={{ flexGrow: col.width ?? 1, flexBasis: 0, minWidth: 0 }}
+                    >
+                      {col.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                {children.length === 0 ? (
+                  <div className="px-1 py-2 text-[11px] opacity-50 pointer-events-none">
+                    Порожньо — виберіть цей список і додайте елемент
+                  </div>
+                ) : (
+                  children.map((child) => (
+                    <div
+                      key={child.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectElement(child.id, e.shiftKey || e.ctrlKey);
+                      }}
+                      className={`flex items-center gap-2 px-1 py-1.5 border-b border-black/10 last:border-b-0 cursor-pointer ${
+                        selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""
+                      }`}
+                      style={{
+                        color: child.textColor || "#000000",
+                        backgroundColor: child.customBgColor || "transparent",
+                        fontSize: `${child.fontSize || 12}px`,
+                        fontFamily: child.fontFamily || "inherit",
+                        fontWeight: child.fontWeight || "500",
+                      }}
+                    >
+                      {el.columns && el.columns.length > 0 ? (
+                        el.columns.map((col) => (
+                          <span
+                            key={col.id}
+                            className="truncate"
+                            style={{ flexGrow: col.width ?? 1, flexBasis: 0, minWidth: 0 }}
+                          >
+                            {child.columnValues?.[col.id] || ""}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="truncate">{child.content}</span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              <div className="relative w-full h-full pointer-events-auto">
+                {children.map((child) => renderCanvasNode(child))}
+              </div>
+            </div>
+          )}
         </div>
       </Rnd>
     );
   };
 
   const renderSidebarTree = (parentId: number | null, depth = 0) => {
-    const children = elements.filter((el) => el.parentId === parentId && (el.isGlobal || el.pageId === currentPageId));
+    const children = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
     if (children.length === 0) return null;
 
     return children.map((el) => {
       const isSelected = selectedIds.includes(el.id);
       const possibleParents = elements.filter(
-        (p) => p.type === "block" && (p.isGlobal || p.pageId === currentPageId) && isValidParent(el.id, p.id)
+        (p) => (p.type === "block" || p.type === "list") && isVisibleOnPage(p, currentPageId) && isValidParent(el.id, p.id)
       );
       const currentColor = getElementColor(el);
       const hasChildren = elements.some(
-        (child) => child.parentId === el.id && (child.isGlobal || child.pageId === currentPageId)
+        (child) => child.parentId === el.id && isVisibleOnPage(child, currentPageId)
       );
       const isCollapsed = collapsedIds.has(el.id);
 
@@ -994,7 +1302,10 @@ export default function AppBoundedCanvas() {
               />
               <span className="truncate">
                 <span className="text-[10px] opacity-60 mr-1 font-semibold">
-                  [{TYPE_LABELS[el.type]}] {el.isGlobal ? "(🌍)" : ""} {el.isTriggerTarget ? "(👁️)" : ""}
+                  [{TYPE_LABELS[el.type]}] {el.isGlobal ? "(🌍)" : ""}{" "}
+                  {!el.isGlobal && el.extraPageIds && el.extraPageIds.length > 0 ? "(📌)" : ""}{" "}
+                  {el.cascadeGlobal ? "(➡️)" : ""} {el.excludeFromCascade ? "(🚫)" : ""}{" "}
+                  {el.isTriggerTarget ? "(👁️)" : ""}
                 </span>
                 {el.content}
               </span>
@@ -1217,6 +1528,65 @@ export default function AppBoundedCanvas() {
                 className="w-full p-1.5 border rounded-md text-xs bg-white font-semibold text-blue-900"
               />
             </div>
+            <label className="text-[11px] font-bold text-blue-900 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={currentPage.meshBackground ?? false}
+                onChange={(e) => handleToggleMeshBackground(e.target.checked)}
+                className="rounded border-blue-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+              />
+              🌈 Анімований mesh-фон полотна
+            </label>
+            {currentPage.meshBackground && (
+              <div className="pl-1 space-y-2 border-t border-blue-200 pt-2">
+                <div>
+                  <label className="flex items-center justify-between text-[10px] text-blue-800 mb-1">
+                    <span>Швидкість:</span>
+                    <span className="font-mono">{(currentPage.meshSpeed ?? 1).toFixed(1)}×</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={20}
+                    max={300}
+                    value={Math.round((currentPage.meshSpeed ?? 1) * 100)}
+                    onChange={(e) => handleUpdateCurrentPageMeshField("meshSpeed", Number(e.target.value) / 100)}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-[10px] text-blue-800 mb-1">
+                    <span>Інтенсивність:</span>
+                    <span className="font-mono">{Math.round(currentPage.meshIntensity ?? 100)}%</span>
+                  </label>
+                  <input
+                    type="range"
+                    min={10}
+                    max={100}
+                    value={currentPage.meshIntensity ?? 100}
+                    onChange={(e) => handleUpdateCurrentPageMeshField("meshIntensity", Number(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-blue-800 mb-1">Кольори:</label>
+                  <div className="flex gap-1">
+                    {(currentPage.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
+                      <input
+                        key={i}
+                        type="color"
+                        value={c}
+                        onChange={(e) => {
+                          const next = [...(currentPage.meshColors ?? DEFAULT_MESH_COLORS)];
+                          next[i] = e.target.value;
+                          handleUpdateCurrentPageMeshField("meshColors", next);
+                        }}
+                        className="w-7 h-7 p-0 border rounded cursor-pointer"
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             {pages.length > 1 && (
               <button
                 onClick={handleDeleteCurrentPage}
@@ -1242,6 +1612,8 @@ export default function AppBoundedCanvas() {
                   <option value="heading">Заголовок</option>
                   <option value="text">Текст</option>
                   <option value="button">Кнопка</option>
+                  <option value="list">Список</option>
+                  <option value="clock">Годинник</option>
                 </select>
               </div>
               <div>
@@ -1255,11 +1627,24 @@ export default function AppBoundedCanvas() {
                 />
               </div>
             </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                Кількість (створити відразу в ряд):
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={newCount}
+                onChange={(e) => setNewCount(Number(e.target.value))}
+                className="w-full p-1.5 border rounded-md text-xs"
+              />
+            </div>
             <button
               type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
             >
-              + Створити елемент
+              + Створити елемент{newCount > 1 ? `и (${newCount})` : ""}
             </button>
           </form>
 
@@ -1323,7 +1708,61 @@ export default function AppBoundedCanvas() {
                           />
                           🌍 Показувати на всіх сторінках
                         </label>
+                        {!singleSelected.isGlobal && pages.length > 1 && (
+                          <div className="mt-2 pl-1 space-y-1 border-t border-violet-200 pt-2">
+                            <span className="text-[10px] font-bold text-violet-700 uppercase block mb-1">
+                              📌 Показувати додатково на сторінках:
+                            </span>
+                            {pages
+                              .filter((p) => p.id !== singleSelected.pageId)
+                              .map((p) => (
+                                <label
+                                  key={p.id}
+                                  className="flex items-center gap-2 text-[11px] text-violet-800 cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={singleSelected.extraPageIds?.includes(p.id) ?? false}
+                                    onChange={(e) => {
+                                      const current = singleSelected.extraPageIds ?? [];
+                                      const next = e.target.checked
+                                        ? [...current, p.id]
+                                        : current.filter((id) => id !== p.id);
+                                      updateSelectedFields("extraPageIds", next);
+                                    }}
+                                    className="rounded border-violet-300 text-violet-600 focus:ring-violet-500 h-3.5 w-3.5"
+                                  />
+                                  {p.name}
+                                </label>
+                              ))}
+                          </div>
+                        )}
+                        {(singleSelected.isGlobal || (singleSelected.extraPageIds && singleSelected.extraPageIds.length > 0)) && (
+                          <label className="mt-2 pl-1 text-[11px] font-bold text-violet-800 flex items-center gap-2 cursor-pointer border-t border-violet-200 pt-2">
+                            <input
+                              type="checkbox"
+                              checked={singleSelected.cascadeGlobal ?? false}
+                              onChange={(e) => updateSelectedFields("cascadeGlobal", e.target.checked)}
+                              className="rounded border-violet-300 text-violet-600 focus:ring-violet-500 h-4 w-4"
+                            />
+                            🌍➡️ Каскадом на всіх вкладених (успадковують ту саму видимість)
+                          </label>
+                        )}
                       </div>
+
+                      {singleSelected.parentId !== null && (
+                        <div className="p-2.5 bg-rose-50/70 border border-rose-200 rounded-lg">
+                          <label className="text-[11px] font-bold text-rose-900 flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={singleSelected.excludeFromCascade ?? false}
+                              onChange={(e) => updateSelectedFields("excludeFromCascade", e.target.checked)}
+                              className="rounded border-rose-300 text-rose-600 focus:ring-rose-500 h-4 w-4"
+                            />
+                            🚫 Виключити з каскаду предків (разом із вкладеними)
+                          </label>
+                        </div>
+                      )}
 
                       <div className="p-2.5 bg-cyan-50/70 border border-cyan-200 rounded-lg">
                         <label className="text-[11px] font-bold text-cyan-900 flex items-center gap-2 cursor-pointer">
@@ -1340,22 +1779,28 @@ export default function AppBoundedCanvas() {
                   </>
                 )}
 
-                {/* НАЛАШТУВАННЯ ТРИГЕРІВ (HOVER ТА CLICK) */}
+                {/* НАЛАШТУВАННЯ ТРИГЕРІВ (HOVER ТА CLICK) — окремо для кожної сторінки:
+                    та сама кнопка може на одній сторінці показувати один об'єкт,
+                    на іншій — інший, а на третій — нічого не викликати взагалі. */}
                 {singleSelected && (
                   <div className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-lg space-y-2.5">
                     <span className="font-bold text-[11px] text-indigo-900 uppercase block">
-                      ⚡ Тригери появи елементів:
+                      ⚡ Тригери появи — на сторінці «{currentPage?.name}»:
                     </span>
                     <div>
                       <label className="block text-[10px] text-indigo-800 mb-1">Показувати при наведенні (Hover):</label>
                       <select
-                        value={singleSelected.showOnHoverId || ""}
-                        onChange={(e) => updateSelectedFields("showOnHoverId", e.target.value === "" ? null : Number(e.target.value))}
+                        value={getHoverTargetId(singleSelected, currentPageId) ?? ""}
+                        onChange={(e) => {
+                          const nextId = e.target.value === "" ? null : Number(e.target.value);
+                          const nextMap = { ...(singleSelected.hoverTargetByPage ?? {}), [currentPageId]: nextId };
+                          updateSelectedFields("hoverTargetByPage", nextMap);
+                        }}
                         className="w-full p-1.5 border rounded-md text-xs bg-white font-medium text-indigo-900"
                       >
                         <option value="">(Немає)</option>
                         {elements
-                          .filter((el) => el.id !== singleSelected.id)
+                          .filter((el) => el.id !== singleSelected.id && isVisibleOnPage(el, currentPageId))
                           .map((el) => (
                             <option key={el.id} value={el.id}>
                               [{TYPE_LABELS[el.type]}] {el.content}
@@ -1367,13 +1812,17 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-indigo-800 mb-1">Показувати при кліку (Click):</label>
                       <select
-                        value={singleSelected.showOnClickId || ""}
-                        onChange={(e) => updateSelectedFields("showOnClickId", e.target.value === "" ? null : Number(e.target.value))}
+                        value={getClickTargetId(singleSelected, currentPageId) ?? ""}
+                        onChange={(e) => {
+                          const nextId = e.target.value === "" ? null : Number(e.target.value);
+                          const nextMap = { ...(singleSelected.clickTargetByPage ?? {}), [currentPageId]: nextId };
+                          updateSelectedFields("clickTargetByPage", nextMap);
+                        }}
                         className="w-full p-1.5 border rounded-md text-xs bg-white font-medium text-indigo-900"
                       >
                         <option value="">(Немає)</option>
                         {elements
-                          .filter((el) => el.id !== singleSelected.id)
+                          .filter((el) => el.id !== singleSelected.id && isVisibleOnPage(el, currentPageId))
                           .map((el) => (
                             <option key={el.id} value={el.id}>
                               [{TYPE_LABELS[el.type]}] {el.content}
@@ -1381,6 +1830,9 @@ export default function AppBoundedCanvas() {
                           ))}
                       </select>
                     </div>
+                    <p className="text-[10px] text-indigo-700/70 leading-snug">
+                      Діє лише для сторінки «{currentPage?.name}». На інших сторінках ця сама кнопка може викликати інший об'єкт або нічого.
+                    </p>
                   </div>
                 )}
 
@@ -1519,6 +1971,68 @@ export default function AppBoundedCanvas() {
                   </div>
                 </div>
 
+                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                  <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={singleSelected.meshBg ?? false}
+                      onChange={(e) => updateSelectedFields("meshBg", e.target.checked)}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
+                    />
+                    🌈 Анімований mesh-фон (замість кольору вище)
+                  </label>
+                )}
+                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && singleSelected.meshBg && (
+                  <div className="pl-1 space-y-2 border-t border-slate-200 pt-2">
+                    <div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                        <span>Швидкість:</span>
+                        <span className="font-mono">{(singleSelected.meshSpeed ?? 1).toFixed(1)}×</span>
+                      </label>
+                      <input
+                        type="range"
+                        min={20}
+                        max={300}
+                        value={Math.round((singleSelected.meshSpeed ?? 1) * 100)}
+                        onChange={(e) => updateSelectedFields("meshSpeed", Number(e.target.value) / 100)}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                        <span>Інтенсивність:</span>
+                        <span className="font-mono">{Math.round(singleSelected.meshIntensity ?? 100)}%</span>
+                      </label>
+                      <input
+                        type="range"
+                        min={10}
+                        max={100}
+                        value={singleSelected.meshIntensity ?? 100}
+                        onChange={(e) => updateSelectedFields("meshIntensity", Number(e.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-600 mb-1">Кольори:</label>
+                      <div className="flex gap-1">
+                        {(singleSelected.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
+                          <input
+                            key={i}
+                            type="color"
+                            value={c}
+                            onChange={(e) => {
+                              const next = [...(singleSelected.meshColors ?? DEFAULT_MESH_COLORS)];
+                              next[i] = e.target.value;
+                              updateSelectedFields("meshColors", next);
+                            }}
+                            className="w-7 h-7 p-0 border rounded cursor-pointer"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Прозорість фону — застосовується масово до всіх виділених елементів */}
                 <div>
                   <label className="flex items-center justify-between text-[11px] font-semibold text-slate-600 mb-1">
@@ -1538,6 +2052,172 @@ export default function AppBoundedCanvas() {
                     className="w-full cursor-pointer"
                   />
                 </div>
+
+                {/* ПУНКТИ СПИСКУ — редагування стовпців і рядків прямо в панелі */}
+                {singleSelected?.type === "list" && (
+                  <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg space-y-3">
+                    <span className="font-bold text-[11px] text-emerald-900 uppercase block">
+                      📋 Список:
+                    </span>
+
+                    {/* Стовпці — якщо не задано жодного, рядки лишаються звичайним одним текстом */}
+                    <div className="space-y-1.5 pb-2 border-b border-emerald-200">
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase block">
+                        Стовпці:
+                      </span>
+                      {(singleSelected.columns || []).map((col) => (
+                        <div key={col.id} className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={col.label}
+                            onChange={(e) => {
+                              const nextColumns = (singleSelected.columns || []).map((c) =>
+                                c.id === col.id ? { ...c, label: e.target.value } : c
+                              );
+                              updateSelectedFields("columns", nextColumns);
+                            }}
+                            placeholder="Назва стовпця"
+                            className="flex-1 p-1 border rounded text-xs bg-white min-w-0"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            value={col.width ?? 1}
+                            onChange={(e) => {
+                              const nextColumns = (singleSelected.columns || []).map((c) =>
+                                c.id === col.id ? { ...c, width: Number(e.target.value) } : c
+                              );
+                              updateSelectedFields("columns", nextColumns);
+                            }}
+                            title="Відносна ширина стовпця"
+                            className="w-12 shrink-0 p-1 border rounded text-xs bg-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextColumns = (singleSelected.columns || []).filter((c) => c.id !== col.id);
+                              updateSelectedFields("columns", nextColumns);
+                            }}
+                            className="shrink-0 text-red-500 hover:text-red-700 text-xs px-1.5 py-1 rounded hover:bg-red-50"
+                            title="Видалити стовпець"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextColumns = [
+                            ...(singleSelected.columns || []),
+                            {
+                              id: `col-${Date.now()}`,
+                              label: `Стовпець ${(singleSelected.columns?.length || 0) + 1}`,
+                              width: 1,
+                            },
+                          ];
+                          updateSelectedFields("columns", nextColumns);
+                        }}
+                        className="w-full bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[11px] font-medium py-1 rounded"
+                      >
+                        + Додати стовпець
+                      </button>
+                    </div>
+
+                    {/* Рядки */}
+                    <div className="space-y-1.5">
+                      {elements
+                        .filter(
+                          (item) =>
+                            item.parentId === singleSelected.id &&
+                            isVisibleOnPage(item, currentPageId)
+                        )
+                        .map((item) => (
+                          <div key={item.id} className="flex items-center gap-1.5">
+                            {singleSelected.columns && singleSelected.columns.length > 0 ? (
+                              <div className="flex-1 flex items-center gap-1 min-w-0">
+                                {singleSelected.columns.map((col) => (
+                                  <input
+                                    key={col.id}
+                                    type="text"
+                                    value={item.columnValues?.[col.id] || ""}
+                                    onChange={(e) => {
+                                      const nextValues = { ...(item.columnValues || {}), [col.id]: e.target.value };
+                                      const next = elements.map((el) =>
+                                        el.id === item.id ? { ...el, columnValues: nextValues } : el
+                                      );
+                                      updateElementsAndHistory(next);
+                                    }}
+                                    placeholder={col.label}
+                                    className="p-1 border rounded text-xs bg-white min-w-0"
+                                    style={{ flexGrow: col.width ?? 1, flexBasis: 0 }}
+                                  />
+                                ))}
+                              </div>
+                            ) : (
+                              <input
+                                type="text"
+                                value={item.content}
+                                onChange={(e) => {
+                                  const next = elements.map((el) =>
+                                    el.id === item.id ? { ...el, content: e.target.value } : el
+                                  );
+                                  updateElementsAndHistory(next);
+                                }}
+                                className="flex-1 p-1 border rounded text-xs bg-white"
+                              />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = elements.filter((el) => el.id !== item.id);
+                                updateElementsAndHistory(next);
+                              }}
+                              className="shrink-0 text-red-500 hover:text-red-700 text-xs px-1.5 py-1 rounded hover:bg-red-50"
+                              title="Видалити пункт"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newItem: CanvasElement = {
+                          id: Date.now(),
+                          pageId: currentPageId,
+                          isGlobal: false,
+                          isTriggerTarget: false,
+                          showOnHoverId: null,
+                          showOnClickId: null,
+                          type: "text",
+                          content: "Новий пункт",
+                          width: 120,
+                          height: 30,
+                          x: 1,
+                          y: 1,
+                          textColor: "#000000",
+                          padding: 4,
+                          borderRadius: 0,
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          fontWeight: "500",
+                          textAlign: "left",
+                          parentId: singleSelected.id,
+                          targetPageId: null,
+                          columnValues: singleSelected.columns
+                            ? Object.fromEntries(singleSelected.columns.map((c) => [c.id, ""]))
+                            : undefined,
+                        };
+                        updateElementsAndHistory([...elements, newItem]);
+                      }}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-medium py-1.5 rounded"
+                    >
+                      + Додати пункт
+                    </button>
+                  </div>
+                )}
 
                 {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
                 {singleSelected?.type === "button" && (
@@ -1772,8 +2452,12 @@ export default function AppBoundedCanvas() {
             handleSelectElement(null);
             setClickedElementId(null);
           }}
-          className="absolute inset-0 bg-white overflow-auto"
+          className="absolute inset-0 overflow-auto"
+          style={{ backgroundColor: currentPage.meshBackground ? "#f0ece8" : "#ffffff" }}
         >
+          {currentPage.meshBackground &&
+            renderMeshLayer(currentPage.meshSpeed, currentPage.meshIntensity, currentPage.meshColors)}
+
           {/* ФОН СІТКИ (Динамічний) */}
           <div
             className="absolute inset-0 opacity-60 pointer-events-none transition-all"
@@ -1786,7 +2470,7 @@ export default function AppBoundedCanvas() {
           />
           <div className="relative w-full h-full">
             {elements
-              .filter((el) => el.parentId === null && (el.isGlobal || el.pageId === currentPageId))
+              .filter((el) => el.parentId === null && isVisibleOnPage(el, currentPageId))
               .map((el) => renderCanvasNode(el))}
           </div>
         </main>
