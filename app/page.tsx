@@ -1578,11 +1578,7 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed
-                ? activeShadow
-                : children.length > 0
-                ? `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`
-                : "none",
+              boxShadow: el.isPressed ? activeShadow : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -1712,6 +1708,24 @@ export default function AppBoundedCanvas() {
                 {children.map((child) => renderCanvasNode(child))}
               </div>
             </div>
+          )}
+
+          {/* Розмиття внутрішніх країв — окремий шар ПІСЛЯ дітей (а не
+              box-shadow на фоні самого батька), тому що діти рендеряться
+              своїми непрозорими блоками ПОВЕРХ фону батька і ховали б звичайну
+              inset-тінь під собою. Цей шар навпаки лежить НАД дітьми
+              (z-index вищий за їхні 10/40) — тінь дійсно "закриває" їхні краї,
+              а не губиться під ними. pointer-events:none — не заважає
+              перетягувати/клікати дітей під собою. */}
+          {children.length > 0 && (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+                boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
+                zIndex: 50,
+              }}
+            />
           )}
         </div>
       </Rnd>
