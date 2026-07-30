@@ -59,8 +59,14 @@ interface CanvasElement {
   // великий радіус розмиття відносно дефолтного відступу дитини від краю
   // (1px) візуально ховає шов між батьком і дитиною — тінь просто товща за
   // сам відступ.
-  childEdgeBlur?: number; // px, радіус розмиття inset-тіні
-  childEdgeOpacity?: number; // 0..1, непрозорість inset-тіні
+  childEdgeBlur?: number; // px, радіус розмиття inset-тіні (style: "shadow") або filter: blur() (style: "blur")
+  childEdgeOpacity?: number; // 0..1 — непрозорість тіні (style: "shadow") або наскільки далеко розмиття "заходить" до центру (style: "blur")
+  // "shadow" (за замовчуванням, стара поведінка) — темна inset-тінь по
+  // периметру. "blur" — інший варіант: замість тіні реальний
+  // filter/backdrop-filter blur() на самому фоні/об'єкті під краєм, з
+  // радіальною маскою (різкий центр, розмитий край) — тобто буквально
+  // розмиті краї оточення, а не затемнення.
+  childEdgeStyle?: "shadow" | "blur";
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -1711,20 +1717,41 @@ export default function AppBoundedCanvas() {
           )}
 
           {/* Розмиття внутрішніх країв — окремий шар ПІСЛЯ дітей (а не
-              box-shadow на фоні самого батька), тому що діти рендеряться
-              своїми непрозорими блоками ПОВЕРХ фону батька і ховали б звичайну
-              inset-тінь під собою. Цей шар навпаки лежить НАД дітьми
-              (z-index вищий за їхні 10/40) — тінь дійсно "закриває" їхні краї,
-              а не губиться під ними. pointer-events:none — не заважає
-              перетягувати/клікати дітей під собою. */}
+              box-shadow/filter на фоні самого батька), тому що діти
+              рендеряться своїми непрозорими блоками ПОВЕРХ фону батька і
+              ховали б ефект під собою. Цей шар навпаки лежить НАД дітьми
+              (z-index вищий за їхні 10/40) — ефект дійсно "закриває" їхні
+              краї, а не губиться під ними. pointer-events:none — не заважає
+              перетягувати/клікати дітей під собою.
+              Два варіанти (childEdgeStyle):
+              - "shadow" (за замовчуванням) — темна inset-тінь, як і раніше.
+              - "blur" — СПРАВЖНЄ розмиття (backdrop-filter: blur) того, що
+                під цим шаром (фон батька й краї дітей), з радіальною маскою
+                (прозоро — тобто різко — в центрі, суцільно — тобто розмито —
+                по краю), замість затемнення. */}
           {children.length > 0 && (
             <div
               className="absolute inset-0 pointer-events-none"
-              style={{
-                borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
-                boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
-                zIndex: 50,
-              }}
+              style={
+                el.childEdgeStyle === "blur"
+                  ? ({
+                      borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+                      backdropFilter: `blur(${childEdgeBlur}px)`,
+                      WebkitBackdropFilter: `blur(${childEdgeBlur}px)`,
+                      maskImage: `radial-gradient(ellipse at center, transparent ${Math.round(
+                        (1 - childEdgeOpacity) * 100
+                      )}%, black 100%)`,
+                      WebkitMaskImage: `radial-gradient(ellipse at center, transparent ${Math.round(
+                        (1 - childEdgeOpacity) * 100
+                      )}%, black 100%)`,
+                      zIndex: 50,
+                    } as React.CSSProperties)
+                  : {
+                      borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+                      boxShadow: `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`,
+                      zIndex: 50,
+                    }
+              }
             />
           )}
         </div>
@@ -2578,8 +2605,34 @@ export default function AppBoundedCanvas() {
                 {singleSelected && elements.some((c) => c.parentId === singleSelected.id) && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <span className="text-[10px] font-bold text-slate-700 uppercase block">
-                      🌫️ Розмиття внутрішніх країв (для вкладених):
+                      🌫️ Внутрішні краї (для вкладених):
                     </span>
+
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {(
+                        [
+                          { key: "shadow" as const, label: "Тінь" },
+                          { key: "blur" as const, label: "Розмиття" },
+                        ]
+                      ).map((opt) => {
+                        const active = (singleSelected.childEdgeStyle ?? "shadow") === opt.key;
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => updateSelectedFields("childEdgeStyle", opt.key)}
+                            className={`py-1 rounded text-[10px] font-bold transition-colors ${
+                              active
+                                ? "bg-slate-700 text-white"
+                                : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-100"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                         <span>Радіус розмиття:</span>
@@ -2596,7 +2649,11 @@ export default function AppBoundedCanvas() {
                     </div>
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                        <span>Інтенсивність:</span>
+                        <span>
+                          {(singleSelected.childEdgeStyle ?? "shadow") === "blur"
+                            ? "Наскільки далеко розмиття заходить:"
+                            : "Інтенсивність:"}
+                        </span>
                         <span className="font-mono">
                           {Math.round((singleSelected.childEdgeOpacity ?? 0.15) * 100)}%
                         </span>
@@ -2611,7 +2668,9 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
                     <p className="text-[10px] text-slate-500 leading-snug">
-                      За замовчуванням дочірній елемент має відступ 1px від краю. Досить великий радіус тут (30–60px) робить тінь набагато товщою за цей відступ — шов між батьком і дитиною візуально зникає.
+                      {(singleSelected.childEdgeStyle ?? "shadow") === "blur"
+                        ? "«Розмиття» — це реальний ефект нефокусу (backdrop-blur) фону/об'єкта під краєм, а не темна тінь: центр лишається різким, а до країв усе плавно розмивається."
+                        : "«Тінь» — темна inset-тінь по периметру. За замовчуванням дитина має відступ 1px від краю; великий радіус (30–60px) робить тінь товщою за цей відступ, і шов візуально зникає."}
                     </p>
                   </div>
                 )}
