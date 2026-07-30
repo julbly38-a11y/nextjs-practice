@@ -53,6 +53,15 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
+  // Розмиття внутрішніх країв — inset-тінь, якою батьківський елемент "занурює"
+  // своїх дітей (тільки коли в елемента вже Є хоч одна дочірня); за
+  // замовчуванням 10px/15% (стара, раніше нерегульована поведінка). Досить
+  // великий радіус розмиття відносно дефолтного відступу дитини від краю
+  // (1px) візуально ховає шов між батьком і дитиною — тінь просто товща за
+  // сам відступ.
+  childEdgeBlur?: number; // px, радіус розмиття inset-тіні
+  childEdgeOpacity?: number; // 0..1, непрозорість inset-тіні
+
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
   // Рядок списку (дитина list-елемента зі стовпцями) — значення по кожному стовпцю
@@ -1482,6 +1491,9 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
+    const childEdgeBlur = el.childEdgeBlur ?? 10;
+    const childEdgeOpacity = el.childEdgeOpacity ?? 0.15;
+
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
@@ -1569,7 +1581,7 @@ export default function AppBoundedCanvas() {
               boxShadow: el.isPressed
                 ? activeShadow
                 : children.length > 0
-                ? "inset 0 0 10px rgba(0, 0, 0, 0.15)"
+                ? `inset 0 0 ${childEdgeBlur}px rgba(0, 0, 0, ${childEdgeOpacity})`
                 : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
@@ -2543,6 +2555,50 @@ export default function AppBoundedCanvas() {
                         ))}
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {/* РОЗМИТТЯ ВНУТРІШНІХ КРАЇВ — inset-тінь, якою батько "занурює"
+                    дітей; показуємо лише коли в обраного елемента дійсно Є
+                    дочірні (саме тоді ця тінь узагалі малюється, renderCanvasNode). */}
+                {singleSelected && elements.some((c) => c.parentId === singleSelected.id) && (
+                  <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
+                    <span className="text-[10px] font-bold text-slate-700 uppercase block">
+                      🌫️ Розмиття внутрішніх країв (для вкладених):
+                    </span>
+                    <div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                        <span>Радіус розмиття:</span>
+                        <span className="font-mono">{singleSelected.childEdgeBlur ?? 10}px</span>
+                      </label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={60}
+                        value={singleSelected.childEdgeBlur ?? 10}
+                        onChange={(e) => updateSelectedFields("childEdgeBlur", Number(e.target.value))}
+                        className="w-full cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                        <span>Інтенсивність:</span>
+                        <span className="font-mono">
+                          {Math.round((singleSelected.childEdgeOpacity ?? 0.15) * 100)}%
+                        </span>
+                      </label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={Math.round((singleSelected.childEdgeOpacity ?? 0.15) * 100)}
+                        onChange={(e) => updateSelectedFields("childEdgeOpacity", Number(e.target.value) / 100)}
+                        className="w-full cursor-pointer"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-snug">
+                      За замовчуванням дочірній елемент має відступ 1px від краю. Досить великий радіус тут (30–60px) робить тінь набагато товщою за цей відступ — шов між батьком і дитиною візуально зникає.
+                    </p>
                   </div>
                 )}
 
