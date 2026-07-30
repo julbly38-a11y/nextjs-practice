@@ -123,7 +123,52 @@ interface ComplexObjectTemplate {
   description: string;
   defaults: Partial<CanvasElement>;
   fields: ComplexObjectField[];
+  // Якщо задано — цей пресет створює одразу ГРУПУ кнопок (по одній на кожен
+  // рядок тут), а не одну кнопку: кожен елемент отримує однаковий стиль
+  // (template.defaults + чернетка), свій текст із groupItems[i] і власну
+  // ширину під довжину цього тексту (як .ypill-month у hospital-analytics —
+  // авто-ширина замість фіксованих 60px в .ypill).
+  groupItems?: string[];
 }
+
+// Повні назви місяців (називний відмінок, ВЕЛИКИМИ) — 1:1 з MONTH_PILL_NAMES
+// у public/js/utils.js (пігулки місяців під роками в hospital-analytics).
+const MONTH_PILL_LABELS = [
+  "СІЧЕНЬ", "ЛЮТИЙ", "БЕРЕЗЕНЬ", "КВІТЕНЬ", "ТРАВЕНЬ", "ЧЕРВЕНЬ",
+  "ЛИПЕНЬ", "СЕРПЕНЬ", "ВЕРЕСЕНЬ", "ЖОВТЕНЬ", "ЛИСТОПАД", "ГРУДЕНЬ",
+];
+
+// Стиль спільний для одиночної пігулки й блоку пігулок-місяців — той самий
+// .ypill з hospital-analytics (форма/кольори/стани), щоб обидва пресети
+// лишались візуально ідентичними, навіть якщо один з них зміниться.
+const PILL_STYLE_DEFAULTS: Partial<CanvasElement> = {
+  type: "button",
+  borderRadius: 14,
+  isToggle: true,
+  groupExclusive: true,
+  customBgColor: "#ffffff",
+  textColor: "#3a3a3a",
+  hoverBgColor: "#f3d9df",
+  hoverTextColor: "#3a3a3a",
+  activeBgColor: "#3a3a3a",
+  activeTextColor: "#ffffff",
+  glowColor: "#b27c8b",
+  glowBlur: 0,
+  fontSize: 13,
+  fontFamily: "'Helvetica Neue', Arial, sans-serif",
+};
+
+const PILL_STYLE_FIELDS: ComplexObjectField[] = [
+  { key: "customBgColor", label: "Фон", type: "color" },
+  { key: "textColor", label: "Текст", type: "color" },
+  { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
+  { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
+  { key: "activeBgColor", label: "Фон (активна)", type: "color" },
+  { key: "activeTextColor", label: "Текст (активна)", type: "color" },
+  { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
+  { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
+  { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+];
 
 const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
   {
@@ -132,37 +177,28 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     description:
       "Кругла кнопка-перемикач як фільтр років у старому проекті — заокруглена форма, підсвітка при наведенні, заливка при активності, групова ексклюзивність (лише одна активна серед сестер у блоці).",
     defaults: {
-      type: "button",
+      ...PILL_STYLE_DEFAULTS,
       content: "Пігулка",
       width: 60,
       height: 30,
-      borderRadius: 14,
-      isToggle: true,
-      groupExclusive: true,
-      customBgColor: "#ffffff",
-      textColor: "#3a3a3a",
-      hoverBgColor: "#f3d9df",
-      hoverTextColor: "#3a3a3a",
-      activeBgColor: "#3a3a3a",
-      activeTextColor: "#ffffff",
-      glowColor: "#b27c8b",
-      glowBlur: 0,
-      fontSize: 13,
-      fontFamily: "'Helvetica Neue', Arial, sans-serif",
     },
     fields: [
-      { key: "customBgColor", label: "Фон", type: "color" },
-      { key: "textColor", label: "Текст", type: "color" },
-      { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
-      { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
-      { key: "activeBgColor", label: "Фон (активна)", type: "color" },
-      { key: "activeTextColor", label: "Текст (активна)", type: "color" },
-      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
-      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
-      { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+      ...PILL_STYLE_FIELDS,
       { key: "width", label: "Ширина (px)", type: "number" },
       { key: "height", label: "Висота (px)", type: "number" },
     ],
+  },
+  {
+    id: "pillMonths",
+    label: "🔘 Блок пігулок (місяці)",
+    description:
+      "Одразу 12 пігулок з назвами місяців (СІЧЕНЬ…ГРУДЕНЬ) у ТОЧНО тому ж стилі, що й пігулка вище — форма, кольори, підсвітка й групова ексклюзивність (активний лише один місяць одночасно). Ширина кожної пігулки підлаштовується під довжину назви, як пігулки місяців у старому проекті.",
+    defaults: {
+      ...PILL_STYLE_DEFAULTS,
+      height: 30,
+    },
+    fields: [...PILL_STYLE_FIELDS, { key: "height", label: "Висота (px)", type: "number" }],
+    groupItems: MONTH_PILL_LABELS,
   },
 ];
 
@@ -1137,52 +1173,103 @@ export default function AppBoundedCanvas() {
     setSelectedIds(newElements.map((el) => el.id));
   };
 
-  // Створює елемент з обраного пресету "складного об'єкта" (панель "Складні
-  // об'єкти") — базові поля кнопки + defaults пресету + те, що донастроєно
-  // в complexObjectDraft (підсвітка/кольори/розміри тощо).
+  // Спільні поля кнопки, ще не зачеплені жодним пресетом — розумні
+  // "нульові" значення, поверх яких handleAddComplexObject накладає
+  // template.defaults + complexObjectDraft (і, для груп, власний x/width на
+  // кожен елемент).
+  const buildComplexObjectBase = (id: number, content: string): CanvasElement => ({
+    id,
+    pageId: currentPageId,
+    isGlobal: false,
+    isTriggerTarget: false,
+    showOnHoverId: null,
+    showOnClickId: null,
+    type: "button",
+    content,
+    width: 60,
+    height: 30,
+    x: 0,
+    y: 0,
+    textColor: "#ffffff",
+    padding: 4,
+    borderRadius: 8,
+    fontSize: 12,
+    fontFamily: "inherit",
+    fontWeight: "500",
+    textAlign: "left",
+    parentId: forcedParentId,
+    targetPageId: null,
+    hoverContent: "",
+    activeContent: "",
+    activeScale: 1,
+    activeOffsetY: 0,
+    activeGlowColor: "#60a5fa",
+    activeGlowBlur: 14,
+    activeWidthOffset: 0,
+    activeHeightOffset: 0,
+    isToggle: false,
+    isPressed: false,
+  });
+
+  // Створює елемент(и) з обраного пресету "складного об'єкта" (панель
+  // "Складні об'єкти") — базові поля кнопки + defaults пресету + те, що
+  // донастроєно в complexObjectDraft (підсвітка/кольори/розміри тощо).
+  // Пресети з groupItems (напр. "Блок пігулок (місяці)") створюють одразу
+  // весь ряд кнопок — по одній на кожен рядок groupItems, тим самим стилем,
+  // але кожна зі своєю шириною під довжину власного тексту.
   const handleAddComplexObject = () => {
     const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId);
     if (!template) return;
+
+    if (template.groupItems && template.groupItems.length > 0) {
+      const gap = 8;
+      const height =
+        (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
+      // Авто-ширина під довжину тексту (як .ypill-month: padding 0 14px
+      // навколо тексту), а не однакова фіксована ширина для всіх пігулок.
+      const itemWidths = template.groupItems.map((label) =>
+        Math.max(60, Math.round(label.length * 9 + 32))
+      );
+      const totalWidth = itemWidths.reduce((sum, w) => sum + w, 0) + gap * (itemWidths.length - 1);
+      const freePos = findFreePosition(forcedParentId, totalWidth, height);
+
+      let cursorX = freePos.x;
+      const newElements: CanvasElement[] = template.groupItems.map((label, i) => {
+        const width = itemWidths[i];
+        const base = buildComplexObjectBase(Date.now() + i, label);
+        const el: CanvasElement = {
+          ...base,
+          ...template.defaults,
+          ...complexObjectDraft,
+          id: base.id,
+          content: label,
+          width,
+          height,
+          x: cursorX,
+          y: freePos.y,
+        };
+        cursorX += width + gap;
+        return el;
+      });
+
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds(newElements.map((el) => el.id));
+      return;
+    }
 
     const width = (complexObjectDraft.width as number) ?? (template.defaults.width as number) ?? 60;
     const height = (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
     const freePos = findFreePosition(forcedParentId, width, height);
 
-    const base: CanvasElement = {
-      id: Date.now(),
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
-      type: "button",
-      content: template.label.replace(/^\S+\s*/, ""),
-      width: 60,
-      height: 30,
+    const base = buildComplexObjectBase(Date.now(), template.label.replace(/^\S+\s*/, ""));
+    const newElement: CanvasElement = {
+      ...base,
+      ...template.defaults,
+      ...complexObjectDraft,
+      id: base.id,
       x: freePos.x,
       y: freePos.y,
-      textColor: "#ffffff",
-      padding: 4,
-      borderRadius: 8,
-      fontSize: 12,
-      fontFamily: "inherit",
-      fontWeight: "500",
-      textAlign: "left",
-      parentId: forcedParentId,
-      targetPageId: null,
-      hoverContent: "",
-      activeContent: "",
-      activeScale: 1,
-      activeOffsetY: 0,
-      activeGlowColor: "#60a5fa",
-      activeGlowBlur: 14,
-      activeWidthOffset: 0,
-      activeHeightOffset: 0,
-      isToggle: false,
-      isPressed: false,
     };
-
-    const newElement: CanvasElement = { ...base, ...template.defaults, ...complexObjectDraft, id: base.id };
 
     updateElementsAndHistory([...elements, newElement]);
     handleSelectElement(newElement.id);
@@ -2904,7 +2991,8 @@ export default function AppBoundedCanvas() {
                         onClick={handleAddComplexObject}
                         className="w-full bg-teal-600 hover:bg-teal-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                       >
-                        ➕ Додати на полотно{forcedParentId ? "" : " (у корінь сторінки)"}
+                        ➕ {template.groupItems ? `Додати всі ${template.groupItems.length} на полотно` : "Додати на полотно"}
+                        {forcedParentId ? "" : " (у корінь сторінки)"}
                       </button>
                     )}
                   </div>
