@@ -657,7 +657,17 @@ export default function AppBoundedCanvas() {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Сгенерована сторінка</title>
+        <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300&subset=cyrillic&display=swap" rel="stylesheet">
         <style>
+          @font-face {
+            font-family: 'ITFLight';
+            src: url('/ITFDevanagari-Light.ttf') format('truetype');
+            font-display: block;
+          }
+          :root {
+            --font-itf-light: 'ITFLight';
+            --font-cormorant: 'Cormorant Garamond';
+          }
           body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; }
           .page-container { position: relative; max-width: 1200px; margin: 0 auto; background: #ffffff; min-height: 100vh; }
 
@@ -1899,6 +1909,10 @@ export default function AppBoundedCanvas() {
                       <option value="Inter, sans-serif">Inter</option>
                       <option value="Roboto, sans-serif">Roboto</option>
                       <option value="Georgia, serif">Georgia</option>
+                      <option value="var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif">
+                        ITFLight (лікарняний дашборд)
+                      </option>
+                      <option value="var(--font-cormorant), serif">Cormorant Garamond</option>
                     </select>
                   </div>
 

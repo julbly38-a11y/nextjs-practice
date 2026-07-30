@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Cormorant_Garamond } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -10,6 +11,21 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// Перенесено з hospital-analytics (public/doctor-cabinet.html та ін.) —
+// основний шрифт дашбордів (@font-face 'ITFLight') і акцентний Cormorant
+// Garamond, ті самі, що й у kabinet.html/head-cabinet.html/khotyn_slide.html.
+const itfLight = localFont({
+  src: "./fonts/ITFDevanagari-Light.ttf",
+  variable: "--font-itf-light",
+  display: "block",
+});
+
+const cormorantGaramond = Cormorant_Garamond({
+  variable: "--font-cormorant",
+  subsets: ["cyrillic", "latin"],
+  weight: "300",
 });
 
 export const metadata: Metadata = {
@@ -25,7 +41,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${itfLight.variable} ${cormorantGaramond.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
