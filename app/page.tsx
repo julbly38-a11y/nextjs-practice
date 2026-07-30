@@ -1714,15 +1714,15 @@ export default function AppBoundedCanvas() {
                 {children.map((child) => renderCanvasNode(child))}
               </div>
 
-              {/* "blur" — на відміну від "shadow" (суцільна рамка по краю
-                  БАТЬКА), цей режим малює окремий шар НА КОЖНУ дитину
-                  окремо, розширений за її межі на margin=childEdgeBlur px —
-                  тобто зона розмиття завжди сидить точно на межі об'єкт/фон,
-                  де б той об'єкт не був у батькові (а не лише біля країв
-                  самого батька). backdrop-filter реально розмиває (змішує
-                  кольори) те, що під шаром — і фон, і краєчок об'єкта;
-                  радіальна маска лишає центр об'єкта різким. Клас
-                  overflow-hidden предка (вище) природно обрізає той шар,
+              {/* "blur" — НЕ оптичне розмиття (backdrop-filter), а прямий
+                  ПЕРЕХІД КОЛЬОРУ: колір країв батька (computedBgColor)
+                  плавно переходить у колір країв дитини. Шар на кожну дитину
+                  окремо, розширений за її межі на margin=childEdgeBlur px, —
+                  сам він прозорий у центрі (справжній колір/вміст дитини
+                  видно як є) і поступово стає суцільним кольором БАТЬКА до
+                  зовнішнього краю; ніякого дефокусу вмісту, лише плавний
+                  color-fade точно на межі об'єкт/фон, де б той об'єкт не був.
+                  Клас overflow-hidden предка (вище) природно обрізає шар,
                   якщо він виходить за межі самого батька. */}
               {el.childEdgeStyle === "blur" &&
                 children.map((child) => {
@@ -1732,19 +1732,14 @@ export default function AppBoundedCanvas() {
                     <div
                       key={`edge-blur-${child.id}`}
                       className="absolute pointer-events-none"
-                      style={
-                        {
-                          left: child.x - margin,
-                          top: child.y - margin,
-                          width: child.width + margin * 2,
-                          height: child.height + margin * 2,
-                          backdropFilter: `blur(${childEdgeBlur}px)`,
-                          WebkitBackdropFilter: `blur(${childEdgeBlur}px)`,
-                          maskImage: `radial-gradient(ellipse at center, transparent ${innerStopPercent}%, black 100%)`,
-                          WebkitMaskImage: `radial-gradient(ellipse at center, transparent ${innerStopPercent}%, black 100%)`,
-                          zIndex: 45,
-                        } as React.CSSProperties
-                      }
+                      style={{
+                        left: child.x - margin,
+                        top: child.y - margin,
+                        width: child.width + margin * 2,
+                        height: child.height + margin * 2,
+                        background: `radial-gradient(ellipse at center, transparent ${innerStopPercent}%, ${computedBgColor} 100%)`,
+                        zIndex: 45,
+                      }}
                     />
                   );
                 })}
