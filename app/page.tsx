@@ -88,8 +88,9 @@ interface CanvasElement {
   activeWidthOffset?: number;  
   activeHeightOffset?: number; 
 
-  isToggle?: boolean;         
-  isPressed?: boolean;        
+  isToggle?: boolean;
+  isPressed?: boolean;
+  groupExclusive?: boolean; // клік активує лише цю кнопку — всі сестри з тим самим parentId і groupExclusive=true втрачають isPressed (як пігулки років у старому проекті)
 }
 
 interface Page {
@@ -104,6 +105,66 @@ interface Page {
 // Дефолтна тепла палітра mesh-фону Хотина (ті самі 5 кольорів, що й фолбеки
 // в globals.css/HTML-експорті), просто без альфи — для color-піддерів у панелі.
 const DEFAULT_MESH_COLORS = ["#d69696", "#96beb4", "#c8b4d2", "#b4c8cd", "#e6c8b9"];
+
+// "Складні об'єкти" — готові пресети кнопок із власним дизайном/поведінкою
+// (підсвітка, кольори станів, анімація через CSS transition вже вбудована в
+// саму кнопку), які можна донастроїти в окремій панелі перед тим, як додати
+// на полотно. Перший пресет — 1:1 перенесення .ypill з hospital-analytics
+// (public/shared/layout.css + utils.js:renderHeaderBlock): кругла кнопка з
+// груповою ексклюзивністю (лише одна активна серед сестер у блоці).
+interface ComplexObjectField {
+  key: keyof CanvasElement;
+  label: string;
+  type: "color" | "number";
+}
+interface ComplexObjectTemplate {
+  id: string;
+  label: string;
+  description: string;
+  defaults: Partial<CanvasElement>;
+  fields: ComplexObjectField[];
+}
+
+const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
+  {
+    id: "pill",
+    label: "🔘 Пігулка (Pill)",
+    description:
+      "Кругла кнопка-перемикач як фільтр років у старому проекті — заокруглена форма, підсвітка при наведенні, заливка при активності, групова ексклюзивність (лише одна активна серед сестер у блоці).",
+    defaults: {
+      type: "button",
+      content: "Пігулка",
+      width: 60,
+      height: 30,
+      borderRadius: 14,
+      isToggle: true,
+      groupExclusive: true,
+      customBgColor: "#ffffff",
+      textColor: "#3a3a3a",
+      hoverBgColor: "#f3d9df",
+      hoverTextColor: "#3a3a3a",
+      activeBgColor: "#3a3a3a",
+      activeTextColor: "#ffffff",
+      glowColor: "#b27c8b",
+      glowBlur: 0,
+      fontSize: 13,
+      fontFamily: "'Helvetica Neue', Arial, sans-serif",
+    },
+    fields: [
+      { key: "customBgColor", label: "Фон", type: "color" },
+      { key: "textColor", label: "Текст", type: "color" },
+      { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
+      { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
+      { key: "activeBgColor", label: "Фон (активна)", type: "color" },
+      { key: "activeTextColor", label: "Текст (активна)", type: "color" },
+      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
+      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
+      { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+  },
+];
 
 const hexToRgba = (hex: string, alpha: number): string => {
   const h = hex.replace("#", "");
@@ -196,6 +257,15 @@ export default function AppBoundedCanvas() {
   const [panelSize, setPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 640 });
   const [panelOpacity, setPanelOpacity] = useState<number>(0.8);
 
+  // Окрема плаваюча панель "Складні об'єкти" — список пресетів (пігулка тощо),
+  // при виборі відкриває поля налаштувань (підсвітка/кольори/розміри), перед
+  // тим як додати готовий елемент на полотно.
+  const [complexPanelPos, setComplexPanelPos] = useState<{ x: number; y: number }>({ x: 380, y: 24 });
+  const [complexPanelSize, setComplexPanelSize] = useState<{ width: number; height: number }>({ width: 300, height: 480 });
+  const [complexPanelOpacity, setComplexPanelOpacity] = useState<number>(0.9);
+  const [selectedComplexObjectId, setSelectedComplexObjectId] = useState<string | null>(null);
+  const [complexObjectDraft, setComplexObjectDraft] = useState<Partial<CanvasElement>>({});
+
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
 
@@ -251,6 +321,19 @@ export default function AppBoundedCanvas() {
       try { setPanelOpacity(JSON.parse(savedPanelOpacity)); } catch (e) {}
     }
 
+    const savedComplexPanelPos = localStorage.getItem("mis_canvas_complex_panel_pos");
+    const savedComplexPanelSize = localStorage.getItem("mis_canvas_complex_panel_size");
+    const savedComplexPanelOpacity = localStorage.getItem("mis_canvas_complex_panel_opacity");
+    if (savedComplexPanelPos) {
+      try { setComplexPanelPos(JSON.parse(savedComplexPanelPos)); } catch (e) {}
+    }
+    if (savedComplexPanelSize) {
+      try { setComplexPanelSize(JSON.parse(savedComplexPanelSize)); } catch (e) {}
+    }
+    if (savedComplexPanelOpacity) {
+      try { setComplexPanelOpacity(JSON.parse(savedComplexPanelOpacity)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -262,8 +345,11 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_panel_pos", JSON.stringify(panelPos));
       localStorage.setItem("mis_canvas_panel_size", JSON.stringify(panelSize));
       localStorage.setItem("mis_canvas_panel_opacity", JSON.stringify(panelOpacity));
+      localStorage.setItem("mis_canvas_complex_panel_pos", JSON.stringify(complexPanelPos));
+      localStorage.setItem("mis_canvas_complex_panel_size", JSON.stringify(complexPanelSize));
+      localStorage.setItem("mis_canvas_complex_panel_opacity", JSON.stringify(complexPanelOpacity));
     }
-  }, [elements, pages, panelPos, panelSize, panelOpacity, isMounted]);
+  }, [elements, pages, panelPos, panelSize, panelOpacity, complexPanelPos, complexPanelSize, complexPanelOpacity, isMounted]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -444,6 +530,37 @@ export default function AppBoundedCanvas() {
     const sx2 = sib.x + sib.width + minGap;
     const sy2 = sib.y + sib.height + minGap;
     return x < sx2 && x + width > sx1 && y < sy2 && y + height > sy1;
+  };
+
+  // Шукає вільне від сусідів місце для нового елемента (width×height) у межах
+  // батьківського поля parentId (чи умовного простору полотна, якщо parentId
+  // null) — скановує кандидатів зліва направо, зверху вниз, крок 10px, і бере
+  // перший, що не перекриває жодного видимого на поточній сторінці сестринського
+  // елемента (з тим самим minGap=1px, що й pushOutOfOverlap). Якщо вільного
+  // місця в межах батька не лишилось — падає назад на продовження рядка праворуч
+  // від останнього сусіда (стара поведінка), щоб елемент завжди десь з'явився.
+  const findFreePosition = (parentId: number | null, width: number, height: number): { x: number; y: number } => {
+    const siblings = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
+    const gap = 8;
+    const minGap = 1;
+
+    if (siblings.length === 0) return { x: 1, y: 1 };
+
+    const parentEl = parentId !== null ? elements.find((e) => e.id === parentId) : null;
+    const boundsWidth = parentEl ? Math.max(parentEl.width - 2, width) : 1900;
+    const boundsHeight = parentEl ? Math.max(parentEl.height - 2, height) : 1000;
+
+    const step = 10;
+    for (let y = 1; y + height <= boundsHeight; y += step) {
+      for (let x = 1; x + width <= boundsWidth; x += step) {
+        const overlaps = siblings.some((sib) => boxesOverlap(x, y, width, height, sib, minGap));
+        if (!overlaps) return { x, y };
+      }
+    }
+
+    // Вільного місця в межах батька не знайшлось — продовжуємо рядок праворуч.
+    const startX = Math.max(...siblings.map((s) => s.x + s.width)) + gap;
+    return { x: startX, y: 1 };
   };
 
   // М'яке підштовхування: рух під час drag/resize тепер повністю вільний (без
@@ -896,6 +1013,16 @@ export default function AppBoundedCanvas() {
   const selectedElements = elements.filter((el) => selectedIds.includes(el.id));
   const singleSelected = selectedElements.length === 1 ? selectedElements[0] : null;
 
+  // Зворотний зв'язок: клік на будь-яку кнопку на полотні (навіть створену
+  // задовго до появи панелі "Складні об'єкти" — не лише через неї) відкриває
+  // в цій панелі налаштування пігулки з РЕАЛЬНИМИ значеннями обраної кнопки,
+  // готовими редагувати напряму (isEditingExistingButton нижче).
+  useEffect(() => {
+    if (singleSelected?.type === "button") {
+      setSelectedComplexObjectId("pill");
+    }
+  }, [singleSelected?.id, singleSelected?.type]);
+
   const handleSelectElement = (id: number | null, isMultiKey = false) => {
     if (id === null) {
       setSelectedIds([]);
@@ -932,9 +1059,19 @@ export default function AppBoundedCanvas() {
       }
 
       if (el.isToggle) {
-        const nextElements = elements.map((item) =>
-          item.id === el.id ? { ...item, isPressed: !item.isPressed } : item
-        );
+        const nextElements = elements.map((item) => {
+          if (item.id === el.id) {
+            // У груповому режимі клік завжди активує саме цю кнопку (як
+            // пігулка року — не можна клікнути й зняти активність із усіх).
+            return { ...item, isPressed: el.groupExclusive ? true : !item.isPressed };
+          }
+          // Сестри в тому самому блоці з groupExclusive=true втрачають
+          // активність — лише одна пігулка в групі активна одночасно.
+          if (el.groupExclusive && item.groupExclusive && item.parentId === el.parentId) {
+            return { ...item, isPressed: false };
+          }
+          return item;
+        });
         updateElementsAndHistory(nextElements);
       }
     }
@@ -949,13 +1086,11 @@ export default function AppBoundedCanvas() {
     const count = Math.max(1, Math.min(50, newCount || 1));
     const gap = 8; // відступ між елементами, коли створюємо кілька в ряд
 
-    // Новий елемент(и) ставимо одразу після останнього сусіда в цьому ж
-    // батьку/рівні (а не завжди в лівому верхньому куті) — інакше кожне
-    // повторне створення накладалось би на вже існуючі елементи.
-    const siblings = elements.filter(
-      (el) => el.parentId === forcedParentId && isVisibleOnPage(el, currentPageId)
-    );
-    const startX = siblings.length > 0 ? Math.max(...siblings.map((s) => s.x + s.width)) + gap : 1;
+    // Перший елемент — у вільне від сусідів місце в межах батьківського поля
+    // (findFreePosition), а не завжди в лівий верхній кут — інакше кожне
+    // повторне створення накладалось би на вже існуючі елементи. Решта (якщо
+    // count > 1) шикуються рядком праворуч від нього, як і раніше.
+    const freePos = findFreePosition(forcedParentId, width, height);
 
     const newElements: CanvasElement[] = Array.from({ length: count }, (_, i) => ({
       id: Date.now() + i,
@@ -968,8 +1103,8 @@ export default function AppBoundedCanvas() {
       content: count > 1 ? `${newContent} ${i + 1}` : newContent,
       width,
       height,
-      x: 1 + i * (width + gap),
-      y: 1,
+      x: freePos.x + i * (width + gap),
+      y: freePos.y,
       textColor: "#ffffff",
       padding: isButton ? 4 : 8,
       borderRadius: isButton ? 8 : 0,
@@ -1000,6 +1135,57 @@ export default function AppBoundedCanvas() {
     const nextElements = [...elements, ...newElements];
     updateElementsAndHistory(nextElements);
     setSelectedIds(newElements.map((el) => el.id));
+  };
+
+  // Створює елемент з обраного пресету "складного об'єкта" (панель "Складні
+  // об'єкти") — базові поля кнопки + defaults пресету + те, що донастроєно
+  // в complexObjectDraft (підсвітка/кольори/розміри тощо).
+  const handleAddComplexObject = () => {
+    const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId);
+    if (!template) return;
+
+    const width = (complexObjectDraft.width as number) ?? (template.defaults.width as number) ?? 60;
+    const height = (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
+    const freePos = findFreePosition(forcedParentId, width, height);
+
+    const base: CanvasElement = {
+      id: Date.now(),
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "button",
+      content: template.label.replace(/^\S+\s*/, ""),
+      width: 60,
+      height: 30,
+      x: freePos.x,
+      y: freePos.y,
+      textColor: "#ffffff",
+      padding: 4,
+      borderRadius: 8,
+      fontSize: 12,
+      fontFamily: "inherit",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: forcedParentId,
+      targetPageId: null,
+      hoverContent: "",
+      activeContent: "",
+      activeScale: 1,
+      activeOffsetY: 0,
+      activeGlowColor: "#60a5fa",
+      activeGlowBlur: 14,
+      activeWidthOffset: 0,
+      activeHeightOffset: 0,
+      isToggle: false,
+      isPressed: false,
+    };
+
+    const newElement: CanvasElement = { ...base, ...template.defaults, ...complexObjectDraft, id: base.id };
+
+    updateElementsAndHistory([...elements, newElement]);
+    handleSelectElement(newElement.id);
   };
 
   const updateSelectedFields = (field: keyof CanvasElement, value: any) => {
@@ -2463,6 +2649,18 @@ export default function AppBoundedCanvas() {
                         )}
                       </div>
 
+                      {singleSelected.isToggle && (
+                        <label className="text-[10px] font-bold text-indigo-900 flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={singleSelected.groupExclusive ?? false}
+                            onChange={(e) => updateSelectedFields("groupExclusive", e.target.checked)}
+                            className="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5"
+                          />
+                          🔘 Групова ексклюзивність (лише одна активна в блоці, як пігулки років)
+                        </label>
+                      )}
+
                       <div>
                         <label className="block text-[10px] text-slate-600 mb-0.5">Текст у натиснутому стані:</label>
                         <input
@@ -2557,6 +2755,161 @@ export default function AppBoundedCanvas() {
               </div>
             )}
           </div>
+          </div>
+        </aside>
+        </Rnd>
+
+        {/* Окрема плаваюча панель "Складні об'єкти" — список пресетів, при
+            виборі відкриваються поля налаштувань (підсвітка/кольори/розміри
+            тощо), перед тим як додати готовий елемент на полотно. */}
+        <Rnd
+          position={complexPanelPos}
+          size={complexPanelSize}
+          onDragStop={(e, d) => setComplexPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setComplexPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setComplexPanelPos(pos);
+          }}
+          dragHandleClassName="complex-panel-drag-handle"
+          bounds="window"
+          minWidth={240}
+          minHeight={200}
+          style={{ zIndex: 45 }}
+        >
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${complexPanelOpacity})` }}
+        >
+          <div className="complex-panel-drag-handle cursor-move bg-teal-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>🧩 Складні об'єкти</span>
+            <div
+              className="flex items-center gap-1.5 font-normal"
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Прозорість панелі"
+            >
+              <span>👁️</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(complexPanelOpacity * 100)}
+                onChange={(e) => setComplexPanelOpacity(Number(e.target.value) / 100)}
+                className="w-16 cursor-pointer"
+              />
+            </div>
+          </div>
+          <div className="flex-1 flex flex-col gap-3 overflow-y-auto p-4">
+            <div className="space-y-1.5">
+              {COMPLEX_OBJECTS.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => {
+                    setSelectedComplexObjectId(tpl.id);
+                    setComplexObjectDraft({ ...tpl.defaults });
+                  }}
+                  className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                    selectedComplexObjectId === tpl.id
+                      ? "bg-teal-600 border-teal-600 text-white"
+                      : "bg-white border-slate-200 text-slate-700 hover:bg-teal-50"
+                  }`}
+                >
+                  <div className="font-bold">{tpl.label}</div>
+                  <div
+                    className={`text-[10px] mt-0.5 ${
+                      selectedComplexObjectId === tpl.id ? "text-teal-100" : "text-slate-500"
+                    }`}
+                  >
+                    {tpl.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {selectedComplexObjectId &&
+              (() => {
+                const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
+                // Редагування вже існуючої кнопки на полотні (обрана через
+                // клік/дерево) — поля показують і одразу правлять її РЕАЛЬНІ
+                // значення (updateSelectedFields), а не чернетку для створення.
+                const editingEl = singleSelected?.type === "button" ? singleSelected : null;
+
+                const getFieldValue = (field: ComplexObjectField) =>
+                  editingEl
+                    ? ((editingEl[field.key] as any) ?? (field.type === "number" ? 0 : "#000000"))
+                    : ((complexObjectDraft[field.key] as any) ??
+                      (template.defaults[field.key] as any) ??
+                      (field.type === "number" ? 0 : "#000000"));
+
+                const setFieldValue = (field: ComplexObjectField, raw: string) => {
+                  const value = field.type === "number" ? Number(raw) : raw;
+                  if (editingEl) {
+                    updateSelectedFields(field.key, value);
+                  } else {
+                    setComplexObjectDraft((prev) => ({ ...prev, [field.key]: value }));
+                  }
+                };
+
+                const groupExclusiveValue = editingEl
+                  ? editingEl.groupExclusive ?? false
+                  : complexObjectDraft.groupExclusive ?? false;
+
+                const setGroupExclusive = (checked: boolean) => {
+                  if (editingEl) {
+                    updateSelectedFields("groupExclusive", checked);
+                    if (checked && !editingEl.isToggle) updateSelectedFields("isToggle", true);
+                  } else {
+                    setComplexObjectDraft((prev) => ({
+                      ...prev,
+                      groupExclusive: checked,
+                      isToggle: checked ? true : prev.isToggle,
+                    }));
+                  }
+                };
+
+                return (
+                  <div className="p-3 bg-teal-50/70 border border-teal-200 rounded-lg space-y-2.5">
+                    <span className="font-bold text-[11px] text-teal-900 uppercase block">
+                      {editingEl ? `✏️ Редагування: «${editingEl.content}»` : "⚙️ Налаштування:"}
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      {template.fields.map((field) => (
+                        <div key={String(field.key)}>
+                          <label className="block text-[10px] text-teal-800 mb-1">{field.label}:</label>
+                          <input
+                            type={field.type}
+                            value={getFieldValue(field)}
+                            onChange={(e) => setFieldValue(field, e.target.value)}
+                            className={
+                              field.type === "color"
+                                ? "w-full h-7 p-0 border rounded cursor-pointer"
+                                : "w-full p-1.5 border rounded-md text-xs font-mono bg-white"
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    <label className="text-[11px] font-bold text-teal-900 flex items-center gap-2 cursor-pointer pt-2 border-t border-teal-200">
+                      <input
+                        type="checkbox"
+                        checked={groupExclusiveValue}
+                        onChange={(e) => setGroupExclusive(e.target.checked)}
+                        className="rounded border-teal-300 text-teal-600 focus:ring-teal-500 h-4 w-4"
+                      />
+                      🔘 Групова ексклюзивність
+                    </label>
+
+                    {!editingEl && (
+                      <button
+                        onClick={handleAddComplexObject}
+                        className="w-full bg-teal-600 hover:bg-teal-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                      >
+                        ➕ Додати на полотно{forcedParentId ? "" : " (у корінь сторінки)"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
           </div>
         </aside>
         </Rnd>
