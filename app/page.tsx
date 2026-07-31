@@ -298,20 +298,49 @@ function ParamSection({
 }
 
 // Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
-// "який я маю радіус" і "який колір навколо мене (фон батьківського поля)",
-// і малює м'який перехід свого власного краю в цей колір. Розширюється на
-// radius px НАЗОВНІ від меж самого об'єкта (inset: -radius), тож перехід
-// сидить точно на межі об'єкт/поле незалежно від того, де в батькові цей
-// об'єкт розташований. overflow-hidden батьківського шару (вище по дереву)
-// природно обрізає цю обгортку, якщо вона виходить за межі самого поля.
-function ObjectEdgeFade({ radius, fadeToColor }: { radius: number; fadeToColor: string }) {
+// "який я маю радіус", "який колір навколо мене (фон батьківського поля)" і
+// власні width/height, і малює м'який перехід свого власного краю в цей
+// колір. Розширюється на radius px НАЗОВНІ від меж самого об'єкта
+// (inset: -radius), тож перехід сидить точно на межі об'єкт/поле незалежно
+// від того, де в батькові цей об'єкт розташований. overflow-hidden
+// батьківського шару (вище по дереву) природно обрізає цю обгортку, якщо
+// вона виходить за межі самого поля.
+//
+// Форма переходу — ПРЯМОКУТНА РАМКА навколо об'єкта, а не еліпс від центру:
+// об'єкт майже завжди прямокутний, і круглий градієнт від середини не
+// відповідає його реальним прямим краям (кути й середини сторін гаснуть
+// по-різному, невідповідно формі). Тому тут два лінійні градієнти —
+// горизонтальний (гасить ліву/праву сторони) і вертикальний (верх/низ),
+// накладені один на одного: кожен суцільного кольору точно на своєму краю
+// рамки (0%/100%) і прозорий у широкій середині. Там, де вони накладаються
+// (кути рамки), верхній шар просто суцільний — кут виходить рівним
+// кольором без огріхів; у центрі обидва прозорі — сам об'єкт лишається
+// різким.
+function ObjectEdgeFade({
+  radius,
+  fadeToColor,
+  objectWidth,
+  objectHeight,
+}: {
+  radius: number;
+  fadeToColor: string;
+  objectWidth: number;
+  objectHeight: number;
+}) {
   if (radius <= 0) return null;
+  const totalWidth = objectWidth + radius * 2;
+  const totalHeight = objectHeight + radius * 2;
+  const xPct = Math.min(50, (radius / totalWidth) * 100);
+  const yPct = Math.min(50, (radius / totalHeight) * 100);
   return (
     <div
       className="absolute pointer-events-none"
       style={{
         inset: -radius,
-        background: `radial-gradient(ellipse at center, transparent 35%, ${fadeToColor} 100%)`,
+        background: [
+          `linear-gradient(to right, ${fadeToColor} 0%, transparent ${xPct}%, transparent ${100 - xPct}%, ${fadeToColor} 100%)`,
+          `linear-gradient(to bottom, ${fadeToColor} 0%, transparent ${yPct}%, transparent ${100 - yPct}%, ${fadeToColor} 100%)`,
+        ].join(", "),
       }}
     />
   );
@@ -1736,7 +1765,12 @@ export default function AppBoundedCanvas() {
           )}
 
           {edgeFadeColor && (
-            <ObjectEdgeFade radius={el.edgeFadeRadius ?? 20} fadeToColor={edgeFadeColor} />
+            <ObjectEdgeFade
+              radius={el.edgeFadeRadius ?? 20}
+              fadeToColor={edgeFadeColor}
+              objectWidth={currentWidth}
+              objectHeight={currentHeight}
+            />
           )}
         </div>
       </Rnd>
