@@ -1267,6 +1267,12 @@ export default function AppBoundedCanvas() {
 
   const selectedElements = elements.filter((el) => selectedIds.includes(el.id));
   const singleSelected = selectedElements.length === 1 ? selectedElements[0] : null;
+  // Перший з виділених — лише для ВІДОБРАЖЕННЯ поточного значення в
+  // контролах, що можна застосовувати масово (кілька виділених елементів
+  // одразу). updateSelectedFields вже й так пише в УСІ selectedIds, тож
+  // масове редагування — це питання лише того, чи показувати контрол,
+  // коли singleSelected === null (виділено більше одного).
+  const bulkSelected = selectedElements.length > 0 ? selectedElements[0] : null;
 
   // Зворотний зв'язок: клік на будь-яку кнопку на полотні (навіть створену
   // задовго до появи панелі "Складні об'єкти" — не лише через неї) відкриває
@@ -1633,6 +1639,17 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
+    // Виділення малюється як звичайний INLINE box-shadow (а не Tailwind
+    // ring-* клас), бо нижче на цьому ж вузлі вже стоїть інлайновий
+    // boxShadow (для isPressed/glow) — інлайн-стилі завжди переважають
+    // класи з stylesheet, тож ring-4/shadow-lg класи ніколи не малювались
+    // би. inset (а не звичайна тінь назовні) — щоб рамка виділення завжди
+    // лишалась у власних межах об'єкта і не обрізалась overflow:hidden
+    // батьківського поля, коли дитина впритул до його краю.
+    const restShadow = isSelected
+      ? "inset 0 0 0 3px #fbbf24, 0 10px 15px -3px rgba(0,0,0,0.15), 0 4px 6px -4px rgba(0,0,0,0.15)"
+      : "0 0 6px rgba(0,0,0,0.18)";
+
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
@@ -1717,7 +1734,7 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed ? activeShadow : "none",
+              boxShadow: el.isPressed ? activeShadow : restShadow,
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -1734,10 +1751,6 @@ export default function AppBoundedCanvas() {
           }
           className={`interactive-node relative box-border transition-all duration-75 cursor-pointer select-none ${
             isButton ? "is-button-element flex items-center justify-center" : ""
-          } ${
-            isSelected
-              ? "ring-4 ring-amber-400 ring-offset-1 shadow-lg"
-              : "shadow-[0_0_6px_rgba(0,0,0,0.18)]"
           }`}
         >
           {el.meshBg && renderMeshLayer(el.meshSpeed, el.meshIntensity, el.meshColors, -1)}
@@ -2342,6 +2355,11 @@ export default function AppBoundedCanvas() {
 
             {selectedElements.length > 0 ? (
               <div className="space-y-4 text-xs">
+                {selectedElements.length > 1 && (
+                  <p className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded-md px-2 py-1.5 leading-snug">
+                    🔗 Масове редагування: {selectedElements.length} об'єктів. Нижче — лише параметри, спільні для всіх (шрифт, кольори, рамка тощо); зміни застосовуються одразу до всіх виділених.
+                  </p>
+                )}
                 {singleSelected && (
                   <>
                     <div>
@@ -2530,7 +2548,7 @@ export default function AppBoundedCanvas() {
                       <input
                         type="number"
                         min={1}
-                        value={singleSelected ? singleSelected.width : ""}
+                        value={bulkSelected ? bulkSelected.width : ""}
                         onChange={(e) => updateSelectedFields("width", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
                       />
@@ -2540,7 +2558,7 @@ export default function AppBoundedCanvas() {
                       <input
                         type="number"
                         min={1}
-                        value={singleSelected ? singleSelected.height : ""}
+                        value={bulkSelected ? bulkSelected.height : ""}
                         onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
                       />
@@ -2558,7 +2576,7 @@ export default function AppBoundedCanvas() {
                   <div>
                     <label className="block text-[10px] text-amber-800 mb-1">Шрифт (Font Family):</label>
                     <select
-                      value={singleSelected?.fontFamily || "inherit"}
+                      value={bulkSelected?.fontFamily || "inherit"}
                       onChange={(e) => updateSelectedFields("fontFamily", e.target.value)}
                       className="w-full p-1.5 border rounded-md text-xs bg-white font-medium"
                     >
@@ -2580,7 +2598,7 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-amber-800 mb-1">Насиченість (Weight):</label>
                       <select
-                        value={singleSelected?.fontWeight || "500"}
+                        value={bulkSelected?.fontWeight || "500"}
                         onChange={(e) => updateSelectedFields("fontWeight", e.target.value)}
                         className="w-full p-1.5 border rounded-md text-xs bg-white"
                       >
@@ -2595,7 +2613,7 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-amber-800 mb-1">Вирівнювання:</label>
                       <select
-                        value={singleSelected?.textAlign || "left"}
+                        value={bulkSelected?.textAlign || "left"}
                         onChange={(e) => updateSelectedFields("textAlign", e.target.value)}
                         className="w-full p-1.5 border rounded-md text-xs bg-white"
                       >
@@ -2613,7 +2631,7 @@ export default function AppBoundedCanvas() {
                       type="number"
                       min="8"
                       max="120"
-                      value={singleSelected ? singleSelected.fontSize ?? 12 : 12}
+                      value={bulkSelected ? bulkSelected.fontSize ?? 12 : 12}
                       onChange={(e) => updateSelectedFields("fontSize", Number(e.target.value))}
                       className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
                     />
@@ -2626,8 +2644,8 @@ export default function AppBoundedCanvas() {
                     <input
                       type="color"
                       value={
-                        singleSelected?.customBgColor ||
-                        (singleSelected ? getElementColor(singleSelected) : "#2563eb")
+                        bulkSelected?.customBgColor ||
+                        (bulkSelected ? getElementColor(bulkSelected) : "#2563eb")
                       }
                       onChange={(e) => updateSelectedFields("customBgColor", e.target.value)}
                       className="w-full h-7 p-0 border rounded cursor-pointer"
@@ -2637,7 +2655,7 @@ export default function AppBoundedCanvas() {
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Текст:</label>
                     <input
                       type="color"
-                      value={singleSelected ? singleSelected.textColor || "#ffffff" : "#ffffff"}
+                      value={bulkSelected ? bulkSelected.textColor || "#ffffff" : "#ffffff"}
                       onChange={(e) => updateSelectedFields("textColor", e.target.value)}
                       className="w-full h-7 p-0 border rounded cursor-pointer"
                     />
@@ -2646,47 +2664,49 @@ export default function AppBoundedCanvas() {
 
                 {/* Округлення кутів самого поля (блок/список) — раніше
                     borderRadius застосовувався лише до кнопок; тепер поле
-                    теж може мати заокруглені кути незалежно від "рамки". */}
-                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                    теж може мати заокруглені кути незалежно від "рамки".
+                    Показуємо і при масовому виділенні (кілька блоків/списків
+                    одразу) — updateSelectedFields однаково пише в усі. */}
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && (
                   <div>
                     <label className="flex items-center justify-between text-[10px] font-semibold text-slate-600 mb-1">
                       <span>Округлення кутів поля:</span>
-                      <span className="font-mono text-slate-500">{singleSelected.borderRadius ?? 0}px</span>
+                      <span className="font-mono text-slate-500">{bulkSelected.borderRadius ?? 0}px</span>
                     </label>
                     <input
                       type="range"
                       min={0}
                       max={100}
-                      value={singleSelected.borderRadius ?? 0}
+                      value={bulkSelected.borderRadius ?? 0}
                       onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
                       className="w-full cursor-pointer"
                     />
                   </div>
                 )}
 
-                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && (
                   <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={singleSelected.meshBg ?? false}
+                      checked={bulkSelected.meshBg ?? false}
                       onChange={(e) => updateSelectedFields("meshBg", e.target.checked)}
                       className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
                     />
                     🌈 Анімований mesh-фон (замість кольору вище)
                   </label>
                 )}
-                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && singleSelected.meshBg && (
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && bulkSelected.meshBg && (
                   <div className="pl-1 space-y-2 border-t border-slate-200 pt-2">
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                         <span>Швидкість:</span>
-                        <span className="font-mono">{(singleSelected.meshSpeed ?? 1).toFixed(1)}×</span>
+                        <span className="font-mono">{(bulkSelected.meshSpeed ?? 1).toFixed(1)}×</span>
                       </label>
                       <input
                         type="range"
                         min={20}
                         max={300}
-                        value={Math.round((singleSelected.meshSpeed ?? 1) * 100)}
+                        value={Math.round((bulkSelected.meshSpeed ?? 1) * 100)}
                         onChange={(e) => updateSelectedFields("meshSpeed", Number(e.target.value) / 100)}
                         className="w-full"
                       />
@@ -2694,13 +2714,13 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                         <span>Інтенсивність:</span>
-                        <span className="font-mono">{Math.round(singleSelected.meshIntensity ?? 100)}%</span>
+                        <span className="font-mono">{Math.round(bulkSelected.meshIntensity ?? 100)}%</span>
                       </label>
                       <input
                         type="range"
                         min={10}
                         max={100}
-                        value={singleSelected.meshIntensity ?? 100}
+                        value={bulkSelected.meshIntensity ?? 100}
                         onChange={(e) => updateSelectedFields("meshIntensity", Number(e.target.value))}
                         className="w-full"
                       />
@@ -2708,13 +2728,13 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-slate-600 mb-1">Кольори:</label>
                       <div className="flex gap-1">
-                        {(singleSelected.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
+                        {(bulkSelected.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
                           <input
                             key={i}
                             type="color"
                             value={c}
                             onChange={(e) => {
-                              const next = [...(singleSelected.meshColors ?? DEFAULT_MESH_COLORS)];
+                              const next = [...(bulkSelected.meshColors ?? DEFAULT_MESH_COLORS)];
                               next[i] = e.target.value;
                               updateSelectedFields("meshColors", next);
                             }}
@@ -2728,31 +2748,36 @@ export default function AppBoundedCanvas() {
 
                 {/* ДИНАМІЧНА РАМКА — перемикач + товщина + крутизна
                     експоненційного згасання прозорості на КОЖНОМУ елементі
-                    окремо (не властивість батька), тому показуємо лише коли
-                    в обраного елемента дійсно Є батько. */}
-                {singleSelected && singleSelected.parentId !== null && (
+                    окремо, тому показуємо лише коли в УСІХ виділених дійсно
+                    Є батько (інакше рамці нема з чийого кольору малюватись).
+                    Працює й при масовому виділенні — updateSelectedFields
+                    вмикає рамку одразу всім позначеним об'єктам. */}
+                {bulkSelected && selectedElements.every((el) => el.parentId !== null) && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={singleSelected.frame ?? false}
+                        checked={bulkSelected.frame ?? false}
                         onChange={(e) => updateSelectedFields("frame", e.target.checked)}
                         className="rounded border-slate-300 text-slate-600 focus:ring-slate-500 h-4 w-4"
                       />
                       🖼️ Динамічна рамка кольору поля
+                      {selectedElements.length > 1 && (
+                        <span className="font-normal text-slate-400">— {selectedElements.length} об'єктів</span>
+                      )}
                     </label>
-                    {singleSelected.frame && (
+                    {bulkSelected.frame && (
                       <>
                         <div>
                           <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                             <span>Товщина рамки:</span>
-                            <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
+                            <span className="font-mono">{bulkSelected.frameThickness ?? 10}px</span>
                           </label>
                           <input
                             type="range"
                             min={0}
                             max={40}
-                            value={singleSelected.frameThickness ?? 10}
+                            value={bulkSelected.frameThickness ?? 10}
                             onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
                             className="w-full cursor-pointer"
                           />
@@ -2760,14 +2785,14 @@ export default function AppBoundedCanvas() {
                         <div>
                           <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                             <span>Крутизна згасання:</span>
-                            <span className="font-mono">{singleSelected.frameFade ?? 3}</span>
+                            <span className="font-mono">{bulkSelected.frameFade ?? 3}</span>
                           </label>
                           <input
                             type="range"
                             min={0}
                             max={10}
                             step={0.5}
-                            value={singleSelected.frameFade ?? 3}
+                            value={bulkSelected.frameFade ?? 3}
                             onChange={(e) => updateSelectedFields("frameFade", Number(e.target.value))}
                             className="w-full cursor-pointer"
                           />
@@ -2787,14 +2812,14 @@ export default function AppBoundedCanvas() {
                       Прозорість фону {selectedIds.length > 1 && `(${selectedIds.length} об'єктів)`}:
                     </span>
                     <span className="font-mono text-slate-500">
-                      {Math.round((singleSelected?.bgOpacity ?? 1) * 100)}%
+                      {Math.round((bulkSelected?.bgOpacity ?? 1) * 100)}%
                     </span>
                   </label>
                   <input
                     type="range"
                     min={0}
                     max={100}
-                    value={Math.round((singleSelected?.bgOpacity ?? 1) * 100)}
+                    value={Math.round((bulkSelected?.bgOpacity ?? 1) * 100)}
                     onChange={(e) => updateSelectedFields("bgOpacity", Number(e.target.value) / 100)}
                     className="w-full cursor-pointer"
                   />
@@ -2804,7 +2829,7 @@ export default function AppBoundedCanvas() {
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
                   <input
                     type="number"
-                    value={singleSelected ? singleSelected.padding ?? 0 : ""}
+                    value={bulkSelected ? bulkSelected.padding ?? 0 : ""}
                     onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
                     className="w-full p-1.5 border rounded-md"
                   />
