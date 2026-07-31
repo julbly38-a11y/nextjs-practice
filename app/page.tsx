@@ -54,19 +54,18 @@ interface CanvasElement {
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
   // Динамічна рамка — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + товщина + розмиття переходу на
-  // КОЖНОМУ елементі окремо (а не властивість батька) — суцільна рамка
-  // кольору батьківського поля, накладена на власні зовнішні
-  // frameThickness px елемента. Округлення кутів рамки НЕ своє — береться
-  // з borderRadius самого батьківського поля (renderCanvasNode:
-  // framePar?.borderRadius), щоб рамка завжди повторювала форму поля, а не
-  // мала окрему розсинхронізовану ручку. frameBlur (0 за замовчуванням —
-  // чіткий контур, як і раніше) розмиває ВНУТРІШНІЙ перехід рамки в сам
-  // об'єкт; зовнішній край від цього візуально не змінюється, бо він і так
-  // уже кольору поля навколо (ObjectFrame нижче).
+  // (parentId !== null). Перемикач + товщина + крутизна переходу на
+  // КОЖНОМУ елементі окремо (а не властивість батька) — рамка кольору
+  // батьківського поля, накладена на власні зовнішні frameThickness px
+  // елемента, що згасає в прозорість градієнтом по експоненті (від повного
+  // кольору поля на зовнішньому краї до повної прозорості на внутрішньому
+  // контурі). Округлення кутів рамки НЕ своє — береться з borderRadius
+  // самого батьківського поля (renderCanvasNode: framePar?.borderRadius),
+  // щоб рамка завжди повторювала форму поля, а не мала окрему
+  // розсинхронізовану ручку.
   frame?: boolean;
   frameThickness?: number; // px
-  frameBlur?: number; // px, розмиття внутрішнього переходу
+  frameFade?: number; // крутизна експоненційного згасання прозорості (0 = лінійно)
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -329,43 +328,107 @@ function frameClipPath(width: number, height: number, thickness: number, radius:
   return `path(evenodd, "${outer} ${inner}")`;
 }
 
+// Розбирає колір рамки (hex від getElementColor або "rgba(r, g, b, a)" від
+// applyBgOpacity) на числові канали, щоб можна було сконструювати з нього
+// градієнт прозорості з тим самим кольором, але власною альфою на кожному
+// стопі.
+function parseFrameColor(color: string): [number, number, number, number] {
+  if (color.startsWith("#")) {
+    const hex = color.length === 4
+      ? color.slice(1).split("").map((c) => c + c).join("")
+      : color.slice(1);
+    const bigint = parseInt(hex, 16);
+    return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255, 1];
+  }
+  const nums = color.replace(/rgba?\(|\)/g, "").split(",").map((s) => parseFloat(s.trim()));
+  return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0, nums[3] ?? 1];
+}
+
+// Нормалізована крива згасання прозорості: f=0 (зовнішній край рамки) -> 1
+// (повний колір поля), f=1 (внутрішній контур, де рамка межує з об'єктом) ->
+// 0 (повна прозорість). При steepness→0 формула вироджується в звичайний
+// лінійний перехід (1-f) — це границя виразу, тож окремого "лінійного
+// режиму" не потрібно. Більший steepness — колір спадає різко одразу біля
+// зовнішнього краю і довгим ледь помітним хвостом тягнеться до внутрішнього.
+function expFadeOpacity(f: number, steepness: number): number {
+  const k = Math.max(0, steepness);
+  if (k < 0.0001) return 1 - f;
+  return (Math.exp(-k * f) - Math.exp(-k)) / (1 - Math.exp(-k));
+}
+
+// Один "прохід" градієнта по осі: колір поля на 0%, що спадає по експоненті
+// в прозорість на frac*100% (frac — частка thickness від повної сторони), і
+// дзеркально — з прозорості назад у колір поля між (100-frac*100)% і 100%.
+// Середина (від frac*100% до (100-frac*100)%) лишається повністю прозорою —
+// там видно сам об'єкт як є, і саме цю зону однаково вирізає внутрішній
+// (заокруглений) контур frameClipPath.
+function frameAxisGradient(
+  direction: string,
+  rgb: [number, number, number],
+  alpha: number,
+  frac: number,
+  steepness: number
+): string {
+  const steps = 14;
+  const colorAt = (a: number) => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a.toFixed(3)})`;
+  const stops: string[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const f = i / steps;
+    stops.push(`${colorAt(expFadeOpacity(f, steepness) * alpha)} ${(f * frac * 100).toFixed(3)}%`);
+  }
+  for (let i = steps; i >= 0; i--) {
+    const f = i / steps;
+    stops.push(`${colorAt(expFadeOpacity(f, steepness) * alpha)} ${(100 - f * frac * 100).toFixed(3)}%`);
+  }
+  return `linear-gradient(${direction}, ${stops.join(", ")})`;
+}
+
+// Двовісний (горизонтальний + вертикальний, накладені один на одного як два
+// шари background) градієнт прозорості кольору поля навколо рамки. Дає той
+// самий ефект "рамка кольору поля", але замість різкого внутрішнього краю —
+// плавне згасання в прозорість по експоненті на глибину thickness px.
+function frameFadeBackground(color: string, width: number, height: number, thickness: number, steepness: number): string {
+  const [r, g, b, a] = parseFrameColor(color);
+  const rgb: [number, number, number] = [r, g, b];
+  const fracW = Math.min(thickness / Math.max(width, 1), 0.5);
+  const fracH = Math.min(thickness / Math.max(height, 1), 0.5);
+  return [
+    frameAxisGradient("to right", rgb, a, fracW, steepness),
+    frameAxisGradient("to bottom", rgb, a, fracH, steepness),
+  ].join(", ");
+}
+
 // Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
-// "яка в мене товщина", "яке розмиття переходу", "який колір навколо мене
-// (фон батьківського поля)" і власні width/height. Суцільна рамка кольору
-// поля, товщиною thickness px, накладена НА САМ об'єкт: зовнішні thickness
-// px самого об'єкта перефарбовуються в колір поля.
-//
-// blur > 0 робить ПЕРЕХІД плавним замість різкого обрізу: filter: blur()
-// на всій цій рамці. Ключовий трюк — зовнішній край рамки й так уже того ж
-// кольору, що й поле навколо (розмиття там просто непомітне, нема різниці
-// кольору, яку можна було б побачити), а от внутрішній край (де колір
-// рамки межує з ІНШИМ кольором самого об'єкта) — там розмиття справді
-// видно як плавний перехід. Тобто одна властивість природно дає "зовнішній
-// край = колір поля, внутрішній — розмитий", без окремої логіки на кожен
-// край.
+// "яка в мене товщина", "яка крутизна згасання", "який колір навколо мене
+// (фон батьківського поля)" і власні width/height. Рамка кольору поля,
+// товщиною thickness px, накладена НА САМ об'єкт: зовнішні thickness px
+// самого об'єкта перефарбовуються в колір поля й плавно (по експоненті)
+// згасають у прозорість до внутрішнього (заокругленого за formою поля)
+// контуру. Градієнти не "розтікаються" за межі власного шару (на відміну
+// від filter: blur()), тож окремого overflow:hidden-контейнера для
+// обрізання зовнішнього краю більше не потрібно.
 function ObjectFrame({
   thickness,
   color,
   radius,
   width,
   height,
-  blur,
+  fade,
 }: {
   thickness: number;
   color: string;
   radius: number;
   width: number;
   height: number;
-  blur: number;
+  fade: number;
 }) {
   if (thickness <= 0) return null;
   return (
     <div
       className="absolute inset-0 pointer-events-none"
       style={{
-        background: color,
+        background: frameFadeBackground(color, width, height, thickness, fade),
         clipPath: frameClipPath(width, height, thickness, radius),
-        filter: blur > 0 ? `blur(${blur}px)` : undefined,
       }}
     />
   );
@@ -1793,7 +1856,7 @@ export default function AppBoundedCanvas() {
               radius={framePar?.borderRadius ?? 0}
               width={currentWidth}
               height={currentHeight}
-              blur={el.frameBlur ?? 0}
+              fade={el.frameFade ?? 3}
             />
           )}
         </div>
@@ -2663,10 +2726,10 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* ДИНАМІЧНА РАМКА — перемикач + товщина + розмиття
-                    переходу на КОЖНОМУ елементі окремо (не властивість
-                    батька), тому показуємо лише коли в обраного елемента
-                    дійсно Є батько. */}
+                {/* ДИНАМІЧНА РАМКА — перемикач + товщина + крутизна
+                    експоненційного згасання прозорості на КОЖНОМУ елементі
+                    окремо (не властивість батька), тому показуємо лише коли
+                    в обраного елемента дійсно Є батько. */}
                 {singleSelected && singleSelected.parentId !== null && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
@@ -2696,20 +2759,21 @@ export default function AppBoundedCanvas() {
                         </div>
                         <div>
                           <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                            <span>Розмиття переходу:</span>
-                            <span className="font-mono">{singleSelected.frameBlur ?? 0}px</span>
+                            <span>Крутизна згасання:</span>
+                            <span className="font-mono">{singleSelected.frameFade ?? 3}</span>
                           </label>
                           <input
                             type="range"
                             min={0}
-                            max={30}
-                            value={singleSelected.frameBlur ?? 0}
-                            onChange={(e) => updateSelectedFields("frameBlur", Number(e.target.value))}
+                            max={10}
+                            step={0.5}
+                            value={singleSelected.frameFade ?? 3}
+                            onChange={(e) => updateSelectedFields("frameFade", Number(e.target.value))}
                             className="w-full cursor-pointer"
                           />
                         </div>
                         <p className="text-[10px] text-slate-500 leading-snug">
-                          Зовнішній край рамки — колір поля (і так непомітний на його ж фоні). "Розмиття переходу" плавно розмиває лише внутрішній край, де рамка межує з самим об'єктом. Округлення кутів повторює округлення самого поля (батька).
+                          Рамка — це градієнт прозорості кольору поля: на зовнішньому краї (межа об'єкта) колір поля повний, до внутрішнього контуру (де рамка переходить в сам об'єкт) він плавно згасає в повну прозорість по експоненті. "Крутизна" — 0 дає рівномірний (лінійний) перехід, більші значення — різке згасання одразу біля краю з довгим ледь помітним хвостом. Округлення внутрішнього контуру повторює округлення самого поля (батька).
                         </p>
                       </>
                     )}
