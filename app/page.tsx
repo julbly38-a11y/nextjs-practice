@@ -429,14 +429,6 @@ function ObjectFrame({
       style={{
         background: frameFadeBackground(color, width, height, thickness, fade),
         clipPath: frameClipPath(width, height, thickness, radius),
-        // Дочірні елементи рендеряться через власний <Rnd> з явним
-        // zIndex 10 (40 якщо виділені) — позитивний z-index завжди
-        // малюється ПОВЕРХ будь-якого сусіда з auto/0 (яким без цього був
-        // би цей шар), незалежно від порядку в DOM. Тож якщо дитина лежить
-        // під самою рамкою (в межах її товщини), без явного zIndex тут
-        // дитина перекривала б рамку, а не навпаки. 45 — вище за
-        // максимальний zIndex дитини (40).
-        zIndex: 45,
       }}
     />
   );
