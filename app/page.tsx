@@ -1607,7 +1607,7 @@ export default function AppBoundedCanvas() {
                 : (el.textColor || "#ffffff"),
               width: "100%",
               height: "100%",
-              borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+              borderRadius: `${el.borderRadius ?? (isButton ? 8 : 0)}px`,
               padding: `${el.padding || 0}px`,
               fontSize: `${el.fontSize || 12}px`,
               fontFamily: el.fontFamily || "inherit",
@@ -2536,6 +2536,26 @@ export default function AppBoundedCanvas() {
                     />
                   </div>
                 </div>
+
+                {/* Округлення кутів самого поля (блок/список) — раніше
+                    borderRadius застосовувався лише до кнопок; тепер поле
+                    теж може мати заокруглені кути незалежно від "рамки". */}
+                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-semibold text-slate-600 mb-1">
+                      <span>Округлення кутів поля:</span>
+                      <span className="font-mono text-slate-500">{singleSelected.borderRadius ?? 0}px</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={singleSelected.borderRadius ?? 0}
+                      onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
+                      className="w-full cursor-pointer"
+                    />
+                  </div>
+                )}
 
                 {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
                   <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
