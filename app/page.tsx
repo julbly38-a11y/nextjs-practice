@@ -53,6 +53,14 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
+  // Плавний перехід країв — тільки для елементів, вкладених у батька
+  // (parentId !== null). Перемикач + радіус на КОЖНОМУ елементі окремо (а
+  // не властивість батька) — колір власного краю цього елемента плавно
+  // переходить у колір фону батьківського поля, на всю ширину radius px
+  // назовні від власних меж елемента.
+  edgeFade?: boolean;
+  edgeFadeRadius?: number; // px
+
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
   // Рядок списку (дитина list-елемента зі стовпцями) — значення по кожному стовпцю
@@ -286,6 +294,26 @@ function ParamSection({
       </button>
       {isOpen && <div className="px-3 pb-3 space-y-2.5">{children}</div>}
     </div>
+  );
+}
+
+// Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
+// "який я маю радіус" і "який колір навколо мене (фон батьківського поля)",
+// і малює м'який перехід свого власного краю в цей колір. Розширюється на
+// radius px НАЗОВНІ від меж самого об'єкта (inset: -radius), тож перехід
+// сидить точно на межі об'єкт/поле незалежно від того, де в батькові цей
+// об'єкт розташований. overflow-hidden батьківського шару (вище по дереву)
+// природно обрізає цю обгортку, якщо вона виходить за межі самого поля.
+function ObjectEdgeFade({ radius, fadeToColor }: { radius: number; fadeToColor: string }) {
+  if (radius <= 0) return null;
+  return (
+    <div
+      className="absolute pointer-events-none"
+      style={{
+        inset: -radius,
+        background: `radial-gradient(ellipse at center, transparent 35%, ${fadeToColor} 100%)`,
+      }}
+    />
   );
 }
 
@@ -1472,6 +1500,15 @@ export default function AppBoundedCanvas() {
     const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
     const isButton = el.type === "button";
 
+    // Перемикач "Плавний перехід країв" живе на САМОМУ el (не на батькові) —
+    // тож тут рахуємо колір ЙОГО батька, у який має плавно перейти власний
+    // край el (ObjectEdgeFade нижче).
+    const edgeFadeParent =
+      el.edgeFade && el.parentId !== null ? elements.find((p) => p.id === el.parentId) : undefined;
+    const edgeFadeColor = edgeFadeParent
+      ? applyBgOpacity(getElementColor(edgeFadeParent), edgeFadeParent.bgOpacity)
+      : null;
+
     const { minWidth, minHeight } = getMinDimensions(el.id);
 
     const glowBlur = el.glowBlur || 0;
@@ -1696,6 +1733,10 @@ export default function AppBoundedCanvas() {
                 {children.map((child) => renderCanvasNode(child))}
               </div>
             </div>
+          )}
+
+          {edgeFadeColor && (
+            <ObjectEdgeFade radius={el.edgeFadeRadius ?? 20} fadeToColor={edgeFadeColor} />
           )}
         </div>
       </Rnd>
@@ -2539,6 +2580,39 @@ export default function AppBoundedCanvas() {
                         ))}
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {/* ПЛАВНИЙ ПЕРЕХІД КРАЇВ — перемикач + радіус на КОЖНОМУ
+                    елементі окремо (не властивість батька), тому показуємо
+                    лише коли в обраного елемента дійсно Є батько. */}
+                {singleSelected && singleSelected.parentId !== null && (
+                  <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
+                    <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={singleSelected.edgeFade ?? false}
+                        onChange={(e) => updateSelectedFields("edgeFade", e.target.checked)}
+                        className="rounded border-slate-300 text-slate-600 focus:ring-slate-500 h-4 w-4"
+                      />
+                      🌫️ Плавний перехід країв у колір поля
+                    </label>
+                    {singleSelected.edgeFade && (
+                      <div>
+                        <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                          <span>Радіус переходу:</span>
+                          <span className="font-mono">{singleSelected.edgeFadeRadius ?? 20}px</span>
+                        </label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={80}
+                          value={singleSelected.edgeFadeRadius ?? 20}
+                          onChange={(e) => updateSelectedFields("edgeFadeRadius", Number(e.target.value))}
+                          className="w-full cursor-pointer"
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
