@@ -54,15 +54,19 @@ interface CanvasElement {
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
   // Динамічна рамка — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + товщина на КОЖНОМУ елементі окремо (а
-  // не властивість батька) — суцільна рамка кольору батьківського поля,
-  // накладена на власні зовнішні frameThickness px елемента (поки без
-  // розмиття — просто чіткий контур). Округлення кутів рамки НЕ своє —
-  // береться з borderRadius самого батьківського поля (renderCanvasNode:
-  // framePar?.borderRadius), щоб рамка завжди повторювала форму поля,
-  // а не мала окрему розсинхронізовану ручку.
+  // (parentId !== null). Перемикач + товщина + розмиття переходу на
+  // КОЖНОМУ елементі окремо (а не властивість батька) — суцільна рамка
+  // кольору батьківського поля, накладена на власні зовнішні
+  // frameThickness px елемента. Округлення кутів рамки НЕ своє — береться
+  // з borderRadius самого батьківського поля (renderCanvasNode:
+  // framePar?.borderRadius), щоб рамка завжди повторювала форму поля, а не
+  // мала окрему розсинхронізовану ручку. frameBlur (0 за замовчуванням —
+  // чіткий контур, як і раніше) розмиває ВНУТРІШНІЙ перехід рамки в сам
+  // об'єкт; зовнішній край від цього візуально не змінюється, бо він і так
+  // уже кольору поля навколо (ObjectFrame нижче).
   frame?: boolean;
   frameThickness?: number; // px
+  frameBlur?: number; // px, розмиття внутрішнього переходу
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -326,24 +330,33 @@ function frameClipPath(width: number, height: number, thickness: number, radius:
 }
 
 // Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
-// "яка в мене товщина", "який колір навколо мене (фон батьківського поля)"
-// і власні width/height. Суцільна рамка кольору поля, товщиною thickness
-// px, накладена НА САМ об'єкт: зовнішні thickness px самого об'єкта
-// перефарбовуються в колір поля, а власний вміст лишається видимим тільки
-// в центрі (розширення назовні, в уже й так того ж кольору фон поля
-// навколо, було б непомітним).
+// "яка в мене товщина", "яке розмиття переходу", "який колір навколо мене
+// (фон батьківського поля)" і власні width/height. Суцільна рамка кольору
+// поля, товщиною thickness px, накладена НА САМ об'єкт: зовнішні thickness
+// px самого об'єкта перефарбовуються в колір поля.
+//
+// blur > 0 робить ПЕРЕХІД плавним замість різкого обрізу: filter: blur()
+// на всій цій рамці. Ключовий трюк — зовнішній край рамки й так уже того ж
+// кольору, що й поле навколо (розмиття там просто непомітне, нема різниці
+// кольору, яку можна було б побачити), а от внутрішній край (де колір
+// рамки межує з ІНШИМ кольором самого об'єкта) — там розмиття справді
+// видно як плавний перехід. Тобто одна властивість природно дає "зовнішній
+// край = колір поля, внутрішній — розмитий", без окремої логіки на кожен
+// край.
 function ObjectFrame({
   thickness,
   color,
   radius,
   width,
   height,
+  blur,
 }: {
   thickness: number;
   color: string;
   radius: number;
   width: number;
   height: number;
+  blur: number;
 }) {
   if (thickness <= 0) return null;
   return (
@@ -352,6 +365,7 @@ function ObjectFrame({
       style={{
         background: color,
         clipPath: frameClipPath(width, height, thickness, radius),
+        filter: blur > 0 ? `blur(${blur}px)` : undefined,
       }}
     />
   );
@@ -1779,6 +1793,7 @@ export default function AppBoundedCanvas() {
               radius={framePar?.borderRadius ?? 0}
               width={currentWidth}
               height={currentHeight}
+              blur={el.frameBlur ?? 0}
             />
           )}
         </div>
@@ -2648,10 +2663,10 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* ДИНАМІЧНА РАМКА — перемикач + товщина на КОЖНОМУ елементі
-                    окремо (не властивість батька), тому показуємо лише коли
-                    в обраного елемента дійсно Є батько. Поки без розмиття —
-                    проста суцільна рамка кольору поля. */}
+                {/* ДИНАМІЧНА РАМКА — перемикач + товщина + розмиття
+                    переходу на КОЖНОМУ елементі окремо (не властивість
+                    батька), тому показуємо лише коли в обраного елемента
+                    дійсно Є батько. */}
                 {singleSelected && singleSelected.parentId !== null && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
@@ -2664,23 +2679,39 @@ export default function AppBoundedCanvas() {
                       🖼️ Динамічна рамка кольору поля
                     </label>
                     {singleSelected.frame && (
-                      <div>
-                        <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                          <span>Товщина рамки:</span>
-                          <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
-                        </label>
-                        <input
-                          type="range"
-                          min={0}
-                          max={40}
-                          value={singleSelected.frameThickness ?? 10}
-                          onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
-                          className="w-full cursor-pointer"
-                        />
-                        <p className="text-[10px] text-slate-500 leading-snug mt-1.5">
-                          Округлення кутів рамки повторює округлення самого поля (батька) — щоб змінити, виберіть поле і скористайтесь повзунком "Округлення кутів поля".
+                      <>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Товщина рамки:</span>
+                            <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={40}
+                            value={singleSelected.frameThickness ?? 10}
+                            onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Розмиття переходу:</span>
+                            <span className="font-mono">{singleSelected.frameBlur ?? 0}px</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={30}
+                            value={singleSelected.frameBlur ?? 0}
+                            onChange={(e) => updateSelectedFields("frameBlur", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-snug">
+                          Зовнішній край рамки — колір поля (і так непомітний на його ж фоні). "Розмиття переходу" плавно розмиває лише внутрішній край, де рамка межує з самим об'єктом. Округлення кутів повторює округлення самого поля (батька).
                         </p>
-                      </div>
+                      </>
                     )}
                   </div>
                 )}
