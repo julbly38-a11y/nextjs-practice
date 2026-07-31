@@ -429,6 +429,14 @@ function ObjectFrame({
       style={{
         background: frameFadeBackground(color, width, height, thickness, fade),
         clipPath: frameClipPath(width, height, thickness, radius),
+        // Дочірні елементи рендеряться через власний <Rnd> з явним
+        // zIndex 10 (40 якщо виділені) — позитивний z-index завжди
+        // малюється ПОВЕРХ будь-якого сусіда з auto/0 (яким без цього був
+        // би цей шар), незалежно від порядку в DOM. Тож якщо дитина лежить
+        // під самою рамкою (в межах її товщини), без явного zIndex тут
+        // дитина перекривала б рамку, а не навпаки. 45 — вище за
+        // максимальний zIndex дитини (40).
+        zIndex: 45,
       }}
     />
   );
@@ -1639,8 +1647,6 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
-    const restShadow = "0 0 6px rgba(0,0,0,0.18)";
-
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
 
@@ -1725,7 +1731,7 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed ? activeShadow : restShadow,
+              boxShadow: el.isPressed ? activeShadow : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
