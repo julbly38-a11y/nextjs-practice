@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabase";
 
 export async function GET() {
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await getSupabaseAdmin()
     .schema("lpz")
     .from("lpz_departments")
     .select("structure_id, org_edrpou, name, type_code, direction, block, beds")

@@ -53,6 +53,20 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
+  // Динамічна рамка — тільки для елементів, вкладених у батька
+  // (parentId !== null). Перемикач + товщина + крутизна переходу на
+  // КОЖНОМУ елементі окремо (а не властивість батька) — рамка кольору
+  // батьківського поля, накладена на власні зовнішні frameThickness px
+  // елемента, що згасає в прозорість градієнтом по експоненті (від повного
+  // кольору поля на зовнішньому краї до повної прозорості на внутрішньому
+  // контурі). Округлення кутів рамки НЕ своє — береться з borderRadius
+  // самого батьківського поля (renderCanvasNode: framePar?.borderRadius),
+  // щоб рамка завжди повторювала форму поля, а не мала окрему
+  // розсинхронізовану ручку.
+  frame?: boolean;
+  frameThickness?: number; // px
+  frameFade?: number; // крутизна експоненційного згасання прозорості (0 = лінійно)
+
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
   // Рядок списку (дитина list-елемента зі стовпцями) — значення по кожному стовпцю
@@ -123,7 +137,52 @@ interface ComplexObjectTemplate {
   description: string;
   defaults: Partial<CanvasElement>;
   fields: ComplexObjectField[];
+  // Якщо задано — цей пресет створює одразу ГРУПУ кнопок (по одній на кожен
+  // рядок тут), а не одну кнопку: кожен елемент отримує однаковий стиль
+  // (template.defaults + чернетка), свій текст із groupItems[i] і власну
+  // ширину під довжину цього тексту (як .ypill-month у hospital-analytics —
+  // авто-ширина замість фіксованих 60px в .ypill).
+  groupItems?: string[];
 }
+
+// Повні назви місяців (називний відмінок, ВЕЛИКИМИ) — 1:1 з MONTH_PILL_NAMES
+// у public/js/utils.js (пігулки місяців під роками в hospital-analytics).
+const MONTH_PILL_LABELS = [
+  "СІЧЕНЬ", "ЛЮТИЙ", "БЕРЕЗЕНЬ", "КВІТЕНЬ", "ТРАВЕНЬ", "ЧЕРВЕНЬ",
+  "ЛИПЕНЬ", "СЕРПЕНЬ", "ВЕРЕСЕНЬ", "ЖОВТЕНЬ", "ЛИСТОПАД", "ГРУДЕНЬ",
+];
+
+// Стиль спільний для одиночної пігулки й блоку пігулок-місяців — той самий
+// .ypill з hospital-analytics (форма/кольори/стани), щоб обидва пресети
+// лишались візуально ідентичними, навіть якщо один з них зміниться.
+const PILL_STYLE_DEFAULTS: Partial<CanvasElement> = {
+  type: "button",
+  borderRadius: 14,
+  isToggle: true,
+  groupExclusive: true,
+  customBgColor: "#ffffff",
+  textColor: "#3a3a3a",
+  hoverBgColor: "#f3d9df",
+  hoverTextColor: "#3a3a3a",
+  activeBgColor: "#3a3a3a",
+  activeTextColor: "#ffffff",
+  glowColor: "#b27c8b",
+  glowBlur: 0,
+  fontSize: 13,
+  fontFamily: "'Helvetica Neue', Arial, sans-serif",
+};
+
+const PILL_STYLE_FIELDS: ComplexObjectField[] = [
+  { key: "customBgColor", label: "Фон", type: "color" },
+  { key: "textColor", label: "Текст", type: "color" },
+  { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
+  { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
+  { key: "activeBgColor", label: "Фон (активна)", type: "color" },
+  { key: "activeTextColor", label: "Текст (активна)", type: "color" },
+  { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
+  { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
+  { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+];
 
 const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
   {
@@ -132,37 +191,28 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     description:
       "Кругла кнопка-перемикач як фільтр років у старому проекті — заокруглена форма, підсвітка при наведенні, заливка при активності, групова ексклюзивність (лише одна активна серед сестер у блоці).",
     defaults: {
-      type: "button",
+      ...PILL_STYLE_DEFAULTS,
       content: "Пігулка",
       width: 60,
       height: 30,
-      borderRadius: 14,
-      isToggle: true,
-      groupExclusive: true,
-      customBgColor: "#ffffff",
-      textColor: "#3a3a3a",
-      hoverBgColor: "#f3d9df",
-      hoverTextColor: "#3a3a3a",
-      activeBgColor: "#3a3a3a",
-      activeTextColor: "#ffffff",
-      glowColor: "#b27c8b",
-      glowBlur: 0,
-      fontSize: 13,
-      fontFamily: "'Helvetica Neue', Arial, sans-serif",
     },
     fields: [
-      { key: "customBgColor", label: "Фон", type: "color" },
-      { key: "textColor", label: "Текст", type: "color" },
-      { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
-      { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
-      { key: "activeBgColor", label: "Фон (активна)", type: "color" },
-      { key: "activeTextColor", label: "Текст (активна)", type: "color" },
-      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
-      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
-      { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+      ...PILL_STYLE_FIELDS,
       { key: "width", label: "Ширина (px)", type: "number" },
       { key: "height", label: "Висота (px)", type: "number" },
     ],
+  },
+  {
+    id: "pillMonths",
+    label: "🔘 Блок пігулок (місяці)",
+    description:
+      "Одразу 12 пігулок з назвами місяців (СІЧЕНЬ…ГРУДЕНЬ) у ТОЧНО тому ж стилі, що й пігулка вище — форма, кольори, підсвітка й групова ексклюзивність (активний лише один місяць одночасно). Ширина кожної пігулки підлаштовується під довжину назви, як пігулки місяців у старому проекті.",
+    defaults: {
+      ...PILL_STYLE_DEFAULTS,
+      height: 30,
+    },
+    fields: [...PILL_STYLE_FIELDS, { key: "height", label: "Висота (px)", type: "number" }],
+    groupItems: MONTH_PILL_LABELS,
   },
 ];
 
@@ -218,6 +268,172 @@ const renderMeshLayerHTML = (speed?: number, intensity?: number, colors?: string
   `;
 };
 
+// Згорнута/розгорнута кольорова секція всередині вкладки "Параметри" —
+// оголошена ОКРЕМО від AppBoundedCanvas (не інлайн-компонент у рендері),
+// щоб її ідентичність лишалась стабільною між рендерами: якби вона
+// створювалась заново на кожен рендер батька, React перемонтовував би її
+// (і всі контрольовані input-и в children) при кожному натисканні клавіші,
+// скидаючи фокус. Сама секція без внутрішнього стану — isOpen/onToggle
+// підняті в AppBoundedCanvas (openParamSections/toggleParamSection).
+function ParamSection({
+  label,
+  isOpen,
+  onToggle,
+  colorClass,
+  children,
+}: {
+  label: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  colorClass: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`border rounded-lg overflow-hidden ${colorClass}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[11px] font-bold uppercase text-left"
+      >
+        <span>{label}</span>
+        <span className="text-[10px] shrink-0 opacity-70">{isOpen ? "▼" : "▶"}</span>
+      </button>
+      {isOpen && <div className="px-3 pb-3 space-y-2.5">{children}</div>}
+    </div>
+  );
+}
+
+// Будує clip-path (SVG path, fill-rule evenodd) для форми "рамки": ЗОВНІШНІЙ
+// контур — завжди гострий прямокутник (справжня форма самого об'єкта, без
+// округлення), ВНУТРІШНІЙ контур (де рамка переходить у "вікно" до об'єкта)
+// — заокруглений на radius px. Два контури одного напрямку обходу +
+// evenodd лишають видимою лише різницю між ними (саме кільце завтовшки
+// thickness), тому border-radius CSS тут не годиться — він завжди округляє
+// ОБИДВА краї синхронно (внутрішній лише як зовнішній мінус товщина), а нам
+// потрібні незалежні радіуси з різних боків.
+function frameClipPath(width: number, height: number, thickness: number, radius: number): string {
+  const t = Math.max(0, thickness);
+  const innerW = Math.max(0, width - t * 2);
+  const innerH = Math.max(0, height - t * 2);
+  const r = Math.max(0, Math.min(radius, innerW / 2, innerH / 2));
+  const ix = t;
+  const iy = t;
+
+  const outer = `M0,0 L${width},0 L${width},${height} L0,${height} Z`;
+  const inner =
+    r > 0
+      ? `M${ix + r},${iy} L${ix + innerW - r},${iy} A${r},${r} 0 0 1 ${ix + innerW},${iy + r} L${ix + innerW},${iy + innerH - r} A${r},${r} 0 0 1 ${ix + innerW - r},${iy + innerH} L${ix + r},${iy + innerH} A${r},${r} 0 0 1 ${ix},${iy + innerH - r} L${ix},${iy + r} A${r},${r} 0 0 1 ${ix + r},${iy} Z`
+      : `M${ix},${iy} L${ix + innerW},${iy} L${ix + innerW},${iy + innerH} L${ix},${iy + innerH} Z`;
+
+  return `path(evenodd, "${outer} ${inner}")`;
+}
+
+// Розбирає колір рамки (hex від getElementColor або "rgba(r, g, b, a)" від
+// applyBgOpacity) на числові канали, щоб можна було сконструювати з нього
+// градієнт прозорості з тим самим кольором, але власною альфою на кожному
+// стопі.
+function parseFrameColor(color: string): [number, number, number, number] {
+  if (color.startsWith("#")) {
+    const hex = color.length === 4
+      ? color.slice(1).split("").map((c) => c + c).join("")
+      : color.slice(1);
+    const bigint = parseInt(hex, 16);
+    return [(bigint >> 16) & 255, (bigint >> 8) & 255, bigint & 255, 1];
+  }
+  const nums = color.replace(/rgba?\(|\)/g, "").split(",").map((s) => parseFloat(s.trim()));
+  return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0, nums[3] ?? 1];
+}
+
+// Нормалізована крива згасання прозорості: f=0 (зовнішній край рамки) -> 1
+// (повний колір поля), f=1 (внутрішній контур, де рамка межує з об'єктом) ->
+// 0 (повна прозорість). При steepness→0 формула вироджується в звичайний
+// лінійний перехід (1-f) — це границя виразу, тож окремого "лінійного
+// режиму" не потрібно. Більший steepness — колір спадає різко одразу біля
+// зовнішнього краю і довгим ледь помітним хвостом тягнеться до внутрішнього.
+function expFadeOpacity(f: number, steepness: number): number {
+  const k = Math.max(0, steepness);
+  if (k < 0.0001) return 1 - f;
+  return (Math.exp(-k * f) - Math.exp(-k)) / (1 - Math.exp(-k));
+}
+
+// Один "прохід" градієнта по осі: колір поля на 0%, що спадає по експоненті
+// в прозорість на frac*100% (frac — частка thickness від повної сторони), і
+// дзеркально — з прозорості назад у колір поля між (100-frac*100)% і 100%.
+// Середина (від frac*100% до (100-frac*100)%) лишається повністю прозорою —
+// там видно сам об'єкт як є, і саме цю зону однаково вирізає внутрішній
+// (заокруглений) контур frameClipPath.
+function frameAxisGradient(
+  direction: string,
+  rgb: [number, number, number],
+  alpha: number,
+  frac: number,
+  steepness: number
+): string {
+  const steps = 14;
+  const colorAt = (a: number) => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a.toFixed(3)})`;
+  const stops: string[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const f = i / steps;
+    stops.push(`${colorAt(expFadeOpacity(f, steepness) * alpha)} ${(f * frac * 100).toFixed(3)}%`);
+  }
+  for (let i = steps; i >= 0; i--) {
+    const f = i / steps;
+    stops.push(`${colorAt(expFadeOpacity(f, steepness) * alpha)} ${(100 - f * frac * 100).toFixed(3)}%`);
+  }
+  return `linear-gradient(${direction}, ${stops.join(", ")})`;
+}
+
+// Двовісний (горизонтальний + вертикальний, накладені один на одного як два
+// шари background) градієнт прозорості кольору поля навколо рамки. Дає той
+// самий ефект "рамка кольору поля", але замість різкого внутрішнього краю —
+// плавне згасання в прозорість по експоненті на глибину thickness px.
+function frameFadeBackground(color: string, width: number, height: number, thickness: number, steepness: number): string {
+  const [r, g, b, a] = parseFrameColor(color);
+  const rgb: [number, number, number] = [r, g, b];
+  const fracW = Math.min(thickness / Math.max(width, 1), 0.5);
+  const fracH = Math.min(thickness / Math.max(height, 1), 0.5);
+  return [
+    frameAxisGradient("to right", rgb, a, fracW, steepness),
+    frameAxisGradient("to bottom", rgb, a, fracH, steepness),
+  ].join(", ");
+}
+
+// Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
+// "яка в мене товщина", "яка крутизна згасання", "який колір навколо мене
+// (фон батьківського поля)" і власні width/height. Рамка кольору поля,
+// товщиною thickness px, накладена НА САМ об'єкт: зовнішні thickness px
+// самого об'єкта перефарбовуються в колір поля й плавно (по експоненті)
+// згасають у прозорість до внутрішнього (заокругленого за formою поля)
+// контуру. Градієнти не "розтікаються" за межі власного шару (на відміну
+// від filter: blur()), тож окремого overflow:hidden-контейнера для
+// обрізання зовнішнього краю більше не потрібно.
+function ObjectFrame({
+  thickness,
+  color,
+  radius,
+  width,
+  height,
+  fade,
+}: {
+  thickness: number;
+  color: string;
+  radius: number;
+  width: number;
+  height: number;
+  fade: number;
+}) {
+  if (thickness <= 0) return null;
+  return (
+    <div
+      className="absolute inset-0 pointer-events-none"
+      style={{
+        background: frameFadeBackground(color, width, height, thickness, fade),
+        clipPath: frameClipPath(width, height, thickness, radius),
+      }}
+    />
+  );
+}
+
 export default function AppBoundedCanvas() {
   const [pages, setPages] = useState<Page[]>([
     { id: "home", name: "Головна" },
@@ -268,6 +484,28 @@ export default function AppBoundedCanvas() {
 
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
+
+  // Вкладки головної панелі управління — замість одного суцільного скролу
+  // (Створити елемент + Ієрархія + Сторінка + Параметри в одному стовпці).
+  // "params" відкривається автоматично при виборі елемента (див. ефект нижче).
+  const [activePanelTab, setActivePanelTab] = useState<"create" | "page" | "params">("create");
+
+  // Які кольорові секції всередині вкладки "Параметри" розгорнуті — акордеон,
+  // не взаємовиключний (можна тримати відкритими кілька одразу). Позиція,
+  // розмір і вигляд відкриті за замовчуванням (найчастіше потрібні), видимість
+  // і тригери — згорнуті, доки не розгорнуть вручну.
+  const DEFAULT_OPEN_PARAM_SECTIONS = ["position", "appearance", "list", "button"];
+  const [openParamSections, setOpenParamSections] = useState<Set<string>>(
+    new Set(DEFAULT_OPEN_PARAM_SECTIONS)
+  );
+  const toggleParamSection = (key: string) => {
+    setOpenParamSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -334,6 +572,11 @@ export default function AppBoundedCanvas() {
       try { setComplexPanelOpacity(JSON.parse(savedComplexPanelOpacity)); } catch (e) {}
     }
 
+    const savedOpenParamSections = localStorage.getItem("mis_canvas_open_param_sections");
+    if (savedOpenParamSections) {
+      try { setOpenParamSections(new Set(JSON.parse(savedOpenParamSections))); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -348,8 +591,20 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_complex_panel_pos", JSON.stringify(complexPanelPos));
       localStorage.setItem("mis_canvas_complex_panel_size", JSON.stringify(complexPanelSize));
       localStorage.setItem("mis_canvas_complex_panel_opacity", JSON.stringify(complexPanelOpacity));
+      localStorage.setItem("mis_canvas_open_param_sections", JSON.stringify(Array.from(openParamSections)));
     }
-  }, [elements, pages, panelPos, panelSize, panelOpacity, complexPanelPos, complexPanelSize, complexPanelOpacity, isMounted]);
+  }, [
+    elements,
+    pages,
+    panelPos,
+    panelSize,
+    panelOpacity,
+    complexPanelPos,
+    complexPanelSize,
+    complexPanelOpacity,
+    openParamSections,
+    isMounted,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -493,12 +748,12 @@ export default function AppBoundedCanvas() {
     // мінімум за їхніми координатами тут не можна.
     const parentEl = elements.find((e) => e.id === parentId);
     if (parentEl?.type === "list") {
-      return { minWidth: 100, minHeight: 60 };
+      return { minWidth: 1, minHeight: 1 };
     }
 
     const children = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
     if (children.length === 0) {
-      return { minWidth: 20, minHeight: 20 };
+      return { minWidth: 1, minHeight: 1 };
     }
 
     let maxRight = 0;
@@ -512,8 +767,8 @@ export default function AppBoundedCanvas() {
     });
 
     return {
-      minWidth: Math.max(20, maxRight),
-      minHeight: Math.max(20, maxBottom),
+      minWidth: Math.max(1, maxRight),
+      minHeight: Math.max(1, maxBottom),
     };
   };
 
@@ -1012,6 +1267,12 @@ export default function AppBoundedCanvas() {
 
   const selectedElements = elements.filter((el) => selectedIds.includes(el.id));
   const singleSelected = selectedElements.length === 1 ? selectedElements[0] : null;
+  // Перший з виділених — лише для ВІДОБРАЖЕННЯ поточного значення в
+  // контролах, що можна застосовувати масово (кілька виділених елементів
+  // одразу). updateSelectedFields вже й так пише в УСІ selectedIds, тож
+  // масове редагування — це питання лише того, чи показувати контрол,
+  // коли singleSelected === null (виділено більше одного).
+  const bulkSelected = selectedElements.length > 0 ? selectedElements[0] : null;
 
   // Зворотний зв'язок: клік на будь-яку кнопку на полотні (навіть створену
   // задовго до появи панелі "Складні об'єкти" — не лише через неї) відкриває
@@ -1022,6 +1283,13 @@ export default function AppBoundedCanvas() {
       setSelectedComplexObjectId("pill");
     }
   }, [singleSelected?.id, singleSelected?.type]);
+
+  // Вибір елемента (на полотні чи в дереві) одразу перемикає плаваючу панель
+  // управління на вкладку "Параметри" — не треба вручну шукати її серед
+  // "Створити"/"Сторінка", коли щойно клікнули на об'єкт.
+  useEffect(() => {
+    if (selectedIds.length > 0) setActivePanelTab("params");
+  }, [selectedIds]);
 
   const handleSelectElement = (id: number | null, isMultiKey = false) => {
     if (id === null) {
@@ -1137,52 +1405,103 @@ export default function AppBoundedCanvas() {
     setSelectedIds(newElements.map((el) => el.id));
   };
 
-  // Створює елемент з обраного пресету "складного об'єкта" (панель "Складні
-  // об'єкти") — базові поля кнопки + defaults пресету + те, що донастроєно
-  // в complexObjectDraft (підсвітка/кольори/розміри тощо).
+  // Спільні поля кнопки, ще не зачеплені жодним пресетом — розумні
+  // "нульові" значення, поверх яких handleAddComplexObject накладає
+  // template.defaults + complexObjectDraft (і, для груп, власний x/width на
+  // кожен елемент).
+  const buildComplexObjectBase = (id: number, content: string): CanvasElement => ({
+    id,
+    pageId: currentPageId,
+    isGlobal: false,
+    isTriggerTarget: false,
+    showOnHoverId: null,
+    showOnClickId: null,
+    type: "button",
+    content,
+    width: 60,
+    height: 30,
+    x: 0,
+    y: 0,
+    textColor: "#ffffff",
+    padding: 4,
+    borderRadius: 8,
+    fontSize: 12,
+    fontFamily: "inherit",
+    fontWeight: "500",
+    textAlign: "left",
+    parentId: forcedParentId,
+    targetPageId: null,
+    hoverContent: "",
+    activeContent: "",
+    activeScale: 1,
+    activeOffsetY: 0,
+    activeGlowColor: "#60a5fa",
+    activeGlowBlur: 14,
+    activeWidthOffset: 0,
+    activeHeightOffset: 0,
+    isToggle: false,
+    isPressed: false,
+  });
+
+  // Створює елемент(и) з обраного пресету "складного об'єкта" (панель
+  // "Складні об'єкти") — базові поля кнопки + defaults пресету + те, що
+  // донастроєно в complexObjectDraft (підсвітка/кольори/розміри тощо).
+  // Пресети з groupItems (напр. "Блок пігулок (місяці)") створюють одразу
+  // весь ряд кнопок — по одній на кожен рядок groupItems, тим самим стилем,
+  // але кожна зі своєю шириною під довжину власного тексту.
   const handleAddComplexObject = () => {
     const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId);
     if (!template) return;
+
+    if (template.groupItems && template.groupItems.length > 0) {
+      const gap = 8;
+      const height =
+        (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
+      // Авто-ширина під довжину тексту (як .ypill-month: padding 0 14px
+      // навколо тексту), а не однакова фіксована ширина для всіх пігулок.
+      const itemWidths = template.groupItems.map((label) =>
+        Math.max(60, Math.round(label.length * 9 + 32))
+      );
+      const totalWidth = itemWidths.reduce((sum, w) => sum + w, 0) + gap * (itemWidths.length - 1);
+      const freePos = findFreePosition(forcedParentId, totalWidth, height);
+
+      let cursorX = freePos.x;
+      const newElements: CanvasElement[] = template.groupItems.map((label, i) => {
+        const width = itemWidths[i];
+        const base = buildComplexObjectBase(Date.now() + i, label);
+        const el: CanvasElement = {
+          ...base,
+          ...template.defaults,
+          ...complexObjectDraft,
+          id: base.id,
+          content: label,
+          width,
+          height,
+          x: cursorX,
+          y: freePos.y,
+        };
+        cursorX += width + gap;
+        return el;
+      });
+
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds(newElements.map((el) => el.id));
+      return;
+    }
 
     const width = (complexObjectDraft.width as number) ?? (template.defaults.width as number) ?? 60;
     const height = (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
     const freePos = findFreePosition(forcedParentId, width, height);
 
-    const base: CanvasElement = {
-      id: Date.now(),
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
-      type: "button",
-      content: template.label.replace(/^\S+\s*/, ""),
-      width: 60,
-      height: 30,
+    const base = buildComplexObjectBase(Date.now(), template.label.replace(/^\S+\s*/, ""));
+    const newElement: CanvasElement = {
+      ...base,
+      ...template.defaults,
+      ...complexObjectDraft,
+      id: base.id,
       x: freePos.x,
       y: freePos.y,
-      textColor: "#ffffff",
-      padding: 4,
-      borderRadius: 8,
-      fontSize: 12,
-      fontFamily: "inherit",
-      fontWeight: "500",
-      textAlign: "left",
-      parentId: forcedParentId,
-      targetPageId: null,
-      hoverContent: "",
-      activeContent: "",
-      activeScale: 1,
-      activeOffsetY: 0,
-      activeGlowColor: "#60a5fa",
-      activeGlowBlur: 14,
-      activeWidthOffset: 0,
-      activeHeightOffset: 0,
-      isToggle: false,
-      isPressed: false,
     };
-
-    const newElement: CanvasElement = { ...base, ...template.defaults, ...complexObjectDraft, id: base.id };
 
     updateElementsAndHistory([...elements, newElement]);
     handleSelectElement(newElement.id);
@@ -1304,6 +1623,12 @@ export default function AppBoundedCanvas() {
     const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
     const isButton = el.type === "button";
 
+    // Перемикач "Рамка" живе на САМОМУ el (не на батькові) — тож тут рахуємо
+    // колір ЙОГО батька, яким буде пофарбована рамка (ObjectFrame нижче).
+    const framePar =
+      el.frame && el.parentId !== null ? elements.find((p) => p.id === el.parentId) : undefined;
+    const frameColor = framePar ? applyBgOpacity(getElementColor(framePar), framePar.bgOpacity) : null;
+
     const { minWidth, minHeight } = getMinDimensions(el.id);
 
     const glowBlur = el.glowBlur || 0;
@@ -1313,6 +1638,8 @@ export default function AppBoundedCanvas() {
     const activeGlowBlur = el.activeGlowBlur || 0;
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
+
+    const restShadow = "0 0 6px rgba(0,0,0,0.18)";
 
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
@@ -1392,17 +1719,13 @@ export default function AppBoundedCanvas() {
                 : (el.textColor || "#ffffff"),
               width: "100%",
               height: "100%",
-              borderRadius: isButton ? `${el.borderRadius ?? 8}px` : "0px",
+              borderRadius: `${el.borderRadius ?? (isButton ? 8 : 0)}px`,
               padding: `${el.padding || 0}px`,
               fontSize: `${el.fontSize || 12}px`,
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed
-                ? activeShadow
-                : children.length > 0
-                ? "inset 0 0 10px rgba(0, 0, 0, 0.15)"
-                : "none",
+              boxShadow: el.isPressed ? activeShadow : restShadow,
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -1419,10 +1742,6 @@ export default function AppBoundedCanvas() {
           }
           className={`interactive-node relative box-border transition-all duration-75 cursor-pointer select-none ${
             isButton ? "is-button-element flex items-center justify-center" : ""
-          } ${
-            isSelected
-              ? "ring-4 ring-amber-400 ring-offset-1 shadow-lg"
-              : "shadow-[0_0_6px_rgba(0,0,0,0.18)]"
           }`}
         >
           {el.meshBg && renderMeshLayer(el.meshSpeed, el.meshIntensity, el.meshColors, -1)}
@@ -1532,6 +1851,17 @@ export default function AppBoundedCanvas() {
                 {children.map((child) => renderCanvasNode(child))}
               </div>
             </div>
+          )}
+
+          {frameColor && (
+            <ObjectFrame
+              thickness={el.frameThickness ?? 10}
+              color={frameColor}
+              radius={framePar?.borderRadius ?? 0}
+              width={currentWidth}
+              height={currentHeight}
+              fade={el.frameFade ?? 3}
+            />
           )}
         </div>
       </Rnd>
@@ -1809,8 +2139,36 @@ export default function AppBoundedCanvas() {
               />
             </div>
           </div>
-          <div className="flex-1 flex flex-col gap-6 overflow-y-auto p-5">
+          <div className="flex items-center gap-1 px-3 pt-3 shrink-0">
+            {(
+              [
+                { key: "create" as const, label: "🧱 Створити" },
+                { key: "page" as const, label: "📄 Сторінка" },
+                {
+                  key: "params" as const,
+                  label: `⚙️ Параметри${selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}`,
+                },
+              ]
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActivePanelTab(tab.key)}
+                className={`flex-1 text-[11px] font-bold py-1.5 rounded-md transition-colors ${
+                  activePanelTab === tab.key
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
+          <div className="flex-1 flex flex-col gap-4 overflow-y-auto p-5 pt-3">
+
+          {activePanelTab === "page" && (
+          <>
           {/* НАЛАШТУВАННЯ ПОТОЧНОЇ СТОРІНКИ */}
           <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-2">
             <span className="font-bold text-[11px] text-blue-900 uppercase block">
@@ -1893,7 +2251,11 @@ export default function AppBoundedCanvas() {
               </button>
             )}
           </div>
+          </>
+          )}
 
+          {activePanelTab === "create" && (
+          <>
           {/* Створення елемента */}
           <form onSubmit={handleAddElement} className="space-y-3 pb-4 border-b">
             <h2 className="font-bold text-slate-900 text-sm">Створити елемент</h2>
@@ -1952,7 +2314,11 @@ export default function AppBoundedCanvas() {
             </h2>
             <div className="space-y-1 text-xs">{renderSidebarTree(null)}</div>
           </div>
+          </>
+          )}
 
+          {activePanelTab === "params" && (
+          <>
           {/* ПАРАМЕТРИ */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1980,6 +2346,11 @@ export default function AppBoundedCanvas() {
 
             {selectedElements.length > 0 ? (
               <div className="space-y-4 text-xs">
+                {selectedElements.length > 1 && (
+                  <p className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded-md px-2 py-1.5 leading-snug">
+                    🔗 Масове редагування: {selectedElements.length} об'єктів. Нижче — лише параметри, спільні для всіх (шрифт, кольори, рамка тощо); зміни застосовуються одразу до всіх виділених.
+                  </p>
+                )}
                 {singleSelected && (
                   <>
                     <div>
@@ -1994,7 +2365,12 @@ export default function AppBoundedCanvas() {
                       />
                     </div>
 
-                    <div className="space-y-2">
+                    <ParamSection
+                      label="👁️ Видимість і каскад"
+                      isOpen={openParamSections.has("visibility")}
+                      onToggle={() => toggleParamSection("visibility")}
+                      colorClass="bg-slate-50 border-slate-200 text-slate-700"
+                    >
                       <div className="p-2.5 bg-violet-50/70 border border-violet-200 rounded-lg">
                         <label className="text-[11px] font-bold text-violet-900 flex items-center gap-2 cursor-pointer">
                           <input
@@ -2072,7 +2448,7 @@ export default function AppBoundedCanvas() {
                           👁️ Схований за замовчуванням (ціль тригера)
                         </label>
                       </div>
-                    </div>
+                    </ParamSection>
                   </>
                 )}
 
@@ -2080,10 +2456,12 @@ export default function AppBoundedCanvas() {
                     та сама кнопка може на одній сторінці показувати один об'єкт,
                     на іншій — інший, а на третій — нічого не викликати взагалі. */}
                 {singleSelected && (
-                  <div className="p-3 bg-indigo-50/60 border border-indigo-200 rounded-lg space-y-2.5">
-                    <span className="font-bold text-[11px] text-indigo-900 uppercase block">
-                      ⚡ Тригери появи — на сторінці «{currentPage?.name}»:
-                    </span>
+                  <ParamSection
+                    label={`⚡ Тригери появи — на сторінці «${currentPage?.name}»`}
+                    isOpen={openParamSections.has("triggers")}
+                    onToggle={() => toggleParamSection("triggers")}
+                    colorClass="bg-indigo-50/60 border-indigo-200 text-indigo-900"
+                  >
                     <div>
                       <label className="block text-[10px] text-indigo-800 mb-1">Показувати при наведенні (Hover):</label>
                       <select
@@ -2130,15 +2508,16 @@ export default function AppBoundedCanvas() {
                     <p className="text-[10px] text-indigo-700/70 leading-snug">
                       Діє лише для сторінки «{currentPage?.name}». На інших сторінках ця сама кнопка може викликати інший об'єкт або нічого.
                     </p>
-                  </div>
+                  </ParamSection>
                 )}
 
                 {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
-                <div className="p-3 bg-slate-50/70 border border-slate-200 rounded-lg space-y-2.5">
-                  <span className="font-bold text-[11px] text-slate-700 uppercase block">
-                    📏 Позиція та розміри (Live):
-                  </span>
-
+                <ParamSection
+                  label="📏 Позиція та розміри (Live)"
+                  isOpen={openParamSections.has("position")}
+                  onToggle={() => toggleParamSection("position")}
+                  colorClass="bg-slate-50/70 border-slate-200 text-slate-700"
+                >
                   <div className="grid grid-cols-2 gap-2 pb-1 border-b border-slate-200">
                     <div className="bg-white p-1.5 border rounded shadow-2xs">
                       <span className="block text-[10px] text-slate-400 font-semibold">Позиція X:</span>
@@ -2159,7 +2538,8 @@ export default function AppBoundedCanvas() {
                       <label className="block text-[10px] font-semibold text-slate-600 mb-1">Ширина (W):</label>
                       <input
                         type="number"
-                        value={singleSelected ? singleSelected.width : ""}
+                        min={1}
+                        value={bulkSelected ? bulkSelected.width : ""}
                         onChange={(e) => updateSelectedFields("width", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
                       />
@@ -2168,24 +2548,26 @@ export default function AppBoundedCanvas() {
                       <label className="block text-[10px] font-semibold text-slate-600 mb-1">Висота (H):</label>
                       <input
                         type="number"
-                        value={singleSelected ? singleSelected.height : ""}
+                        min={1}
+                        value={bulkSelected ? bulkSelected.height : ""}
                         onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
                       />
                     </div>
                   </div>
-                </div>
+                </ParamSection>
 
-                {/* ТИПОГРАФІКА (ШРИФТИ) */}
-                <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-lg space-y-2.5">
-                  <span className="font-bold text-[11px] text-amber-900 uppercase block">
-                    🔤 Типографіка (Шрифти):
-                  </span>
-
+                {/* ВИГЛЯД: типографіка, кольори, mesh-фон, прозорість, відступи */}
+                <ParamSection
+                  label="🎨 Вигляд (шрифт, кольори, фон, відступи)"
+                  isOpen={openParamSections.has("appearance")}
+                  onToggle={() => toggleParamSection("appearance")}
+                  colorClass="bg-amber-50/60 border-amber-200 text-amber-900"
+                >
                   <div>
                     <label className="block text-[10px] text-amber-800 mb-1">Шрифт (Font Family):</label>
                     <select
-                      value={singleSelected?.fontFamily || "inherit"}
+                      value={bulkSelected?.fontFamily || "inherit"}
                       onChange={(e) => updateSelectedFields("fontFamily", e.target.value)}
                       className="w-full p-1.5 border rounded-md text-xs bg-white font-medium"
                     >
@@ -2207,7 +2589,7 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-amber-800 mb-1">Насиченість (Weight):</label>
                       <select
-                        value={singleSelected?.fontWeight || "500"}
+                        value={bulkSelected?.fontWeight || "500"}
                         onChange={(e) => updateSelectedFields("fontWeight", e.target.value)}
                         className="w-full p-1.5 border rounded-md text-xs bg-white"
                       >
@@ -2222,7 +2604,7 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-amber-800 mb-1">Вирівнювання:</label>
                       <select
-                        value={singleSelected?.textAlign || "left"}
+                        value={bulkSelected?.textAlign || "left"}
                         onChange={(e) => updateSelectedFields("textAlign", e.target.value)}
                         className="w-full p-1.5 border rounded-md text-xs bg-white"
                       >
@@ -2240,22 +2622,21 @@ export default function AppBoundedCanvas() {
                       type="number"
                       min="8"
                       max="120"
-                      value={singleSelected ? singleSelected.fontSize ?? 12 : 12}
+                      value={bulkSelected ? bulkSelected.fontSize ?? 12 : 12}
                       onChange={(e) => updateSelectedFields("fontSize", Number(e.target.value))}
                       className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
                     />
                   </div>
-                </div>
 
-                {/* Основні кольори */}
+                  {/* Основні кольори */}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Фон (Bg):</label>
                     <input
                       type="color"
                       value={
-                        singleSelected?.customBgColor ||
-                        (singleSelected ? getElementColor(singleSelected) : "#2563eb")
+                        bulkSelected?.customBgColor ||
+                        (bulkSelected ? getElementColor(bulkSelected) : "#2563eb")
                       }
                       onChange={(e) => updateSelectedFields("customBgColor", e.target.value)}
                       className="w-full h-7 p-0 border rounded cursor-pointer"
@@ -2265,36 +2646,58 @@ export default function AppBoundedCanvas() {
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1">Текст:</label>
                     <input
                       type="color"
-                      value={singleSelected ? singleSelected.textColor || "#ffffff" : "#ffffff"}
+                      value={bulkSelected ? bulkSelected.textColor || "#ffffff" : "#ffffff"}
                       onChange={(e) => updateSelectedFields("textColor", e.target.value)}
                       className="w-full h-7 p-0 border rounded cursor-pointer"
                     />
                   </div>
                 </div>
 
-                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                {/* Округлення кутів самого поля (блок/список) — раніше
+                    borderRadius застосовувався лише до кнопок; тепер поле
+                    теж може мати заокруглені кути незалежно від "рамки".
+                    Показуємо і при масовому виділенні (кілька блоків/списків
+                    одразу) — updateSelectedFields однаково пише в усі. */}
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && (
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-semibold text-slate-600 mb-1">
+                      <span>Округлення кутів поля:</span>
+                      <span className="font-mono text-slate-500">{bulkSelected.borderRadius ?? 0}px</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={bulkSelected.borderRadius ?? 0}
+                      onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
+                      className="w-full cursor-pointer"
+                    />
+                  </div>
+                )}
+
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && (
                   <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={singleSelected.meshBg ?? false}
+                      checked={bulkSelected.meshBg ?? false}
                       onChange={(e) => updateSelectedFields("meshBg", e.target.checked)}
                       className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
                     />
                     🌈 Анімований mesh-фон (замість кольору вище)
                   </label>
                 )}
-                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && singleSelected.meshBg && (
+                {bulkSelected && selectedElements.every((el) => el.type === "block" || el.type === "list") && bulkSelected.meshBg && (
                   <div className="pl-1 space-y-2 border-t border-slate-200 pt-2">
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                         <span>Швидкість:</span>
-                        <span className="font-mono">{(singleSelected.meshSpeed ?? 1).toFixed(1)}×</span>
+                        <span className="font-mono">{(bulkSelected.meshSpeed ?? 1).toFixed(1)}×</span>
                       </label>
                       <input
                         type="range"
                         min={20}
                         max={300}
-                        value={Math.round((singleSelected.meshSpeed ?? 1) * 100)}
+                        value={Math.round((bulkSelected.meshSpeed ?? 1) * 100)}
                         onChange={(e) => updateSelectedFields("meshSpeed", Number(e.target.value) / 100)}
                         className="w-full"
                       />
@@ -2302,13 +2705,13 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
                         <span>Інтенсивність:</span>
-                        <span className="font-mono">{Math.round(singleSelected.meshIntensity ?? 100)}%</span>
+                        <span className="font-mono">{Math.round(bulkSelected.meshIntensity ?? 100)}%</span>
                       </label>
                       <input
                         type="range"
                         min={10}
                         max={100}
-                        value={singleSelected.meshIntensity ?? 100}
+                        value={bulkSelected.meshIntensity ?? 100}
                         onChange={(e) => updateSelectedFields("meshIntensity", Number(e.target.value))}
                         className="w-full"
                       />
@@ -2316,13 +2719,13 @@ export default function AppBoundedCanvas() {
                     <div>
                       <label className="block text-[10px] text-slate-600 mb-1">Кольори:</label>
                       <div className="flex gap-1">
-                        {(singleSelected.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
+                        {(bulkSelected.meshColors ?? DEFAULT_MESH_COLORS).map((c, i) => (
                           <input
                             key={i}
                             type="color"
                             value={c}
                             onChange={(e) => {
-                              const next = [...(singleSelected.meshColors ?? DEFAULT_MESH_COLORS)];
+                              const next = [...(bulkSelected.meshColors ?? DEFAULT_MESH_COLORS)];
                               next[i] = e.target.value;
                               updateSelectedFields("meshColors", next);
                             }}
@@ -2334,6 +2737,65 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
+                {/* ДИНАМІЧНА РАМКА — перемикач + товщина + крутизна
+                    експоненційного згасання прозорості на КОЖНОМУ елементі
+                    окремо, тому показуємо лише коли в УСІХ виділених дійсно
+                    Є батько (інакше рамці нема з чийого кольору малюватись).
+                    Працює й при масовому виділенні — updateSelectedFields
+                    вмикає рамку одразу всім позначеним об'єктам. */}
+                {bulkSelected && selectedElements.every((el) => el.parentId !== null) && (
+                  <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
+                    <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bulkSelected.frame ?? false}
+                        onChange={(e) => updateSelectedFields("frame", e.target.checked)}
+                        className="rounded border-slate-300 text-slate-600 focus:ring-slate-500 h-4 w-4"
+                      />
+                      🖼️ Динамічна рамка кольору поля
+                      {selectedElements.length > 1 && (
+                        <span className="font-normal text-slate-400">— {selectedElements.length} об'єктів</span>
+                      )}
+                    </label>
+                    {bulkSelected.frame && (
+                      <>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Товщина рамки:</span>
+                            <span className="font-mono">{bulkSelected.frameThickness ?? 10}px</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={40}
+                            value={bulkSelected.frameThickness ?? 10}
+                            onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Крутизна згасання:</span>
+                            <span className="font-mono">{bulkSelected.frameFade ?? 3}</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={10}
+                            step={0.5}
+                            value={bulkSelected.frameFade ?? 3}
+                            onChange={(e) => updateSelectedFields("frameFade", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-snug">
+                          Рамка — це градієнт прозорості кольору поля: на зовнішньому краї (межа об'єкта) колір поля повний, до внутрішнього контуру (де рамка переходить в сам об'єкт) він плавно згасає в повну прозорість по експоненті. "Крутизна" — 0 дає рівномірний (лінійний) перехід, більші значення — різке згасання одразу біля краю з довгим ледь помітним хвостом. Округлення внутрішнього контуру повторює округлення самого поля (батька).
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 {/* Прозорість фону — застосовується масово до всіх виділених елементів */}
                 <div>
                   <label className="flex items-center justify-between text-[11px] font-semibold text-slate-600 mb-1">
@@ -2341,26 +2803,38 @@ export default function AppBoundedCanvas() {
                       Прозорість фону {selectedIds.length > 1 && `(${selectedIds.length} об'єктів)`}:
                     </span>
                     <span className="font-mono text-slate-500">
-                      {Math.round((singleSelected?.bgOpacity ?? 1) * 100)}%
+                      {Math.round((bulkSelected?.bgOpacity ?? 1) * 100)}%
                     </span>
                   </label>
                   <input
                     type="range"
                     min={0}
                     max={100}
-                    value={Math.round((singleSelected?.bgOpacity ?? 1) * 100)}
+                    value={Math.round((bulkSelected?.bgOpacity ?? 1) * 100)}
                     onChange={(e) => updateSelectedFields("bgOpacity", Number(e.target.value) / 100)}
                     className="w-full cursor-pointer"
                   />
                 </div>
 
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
+                  <input
+                    type="number"
+                    value={bulkSelected ? bulkSelected.padding ?? 0 : ""}
+                    onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
+                    className="w-full p-1.5 border rounded-md"
+                  />
+                </div>
+                </ParamSection>
+
                 {/* ПУНКТИ СПИСКУ — редагування стовпців і рядків прямо в панелі */}
                 {singleSelected?.type === "list" && (
-                  <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg space-y-3">
-                    <span className="font-bold text-[11px] text-emerald-900 uppercase block">
-                      📋 Список:
-                    </span>
-
+                  <ParamSection
+                    label="📋 Список"
+                    isOpen={openParamSections.has("list")}
+                    onToggle={() => toggleParamSection("list")}
+                    colorClass="bg-emerald-50/60 border-emerald-200 text-emerald-900"
+                  >
                     {/* Стовпці — якщо не задано жодного, рядки лишаються звичайним одним текстом */}
                     <div className="space-y-1.5 pb-2 border-b border-emerald-200">
                       <span className="text-[10px] font-bold text-emerald-800 uppercase block">
@@ -2517,16 +2991,17 @@ export default function AppBoundedCanvas() {
                     >
                       + Додати пункт
                     </button>
-                  </div>
+                  </ParamSection>
                 )}
 
                 {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
                 {singleSelected?.type === "button" && (
-                  <div className="p-3 bg-blue-50/60 border border-blue-200 rounded-lg space-y-3">
-                    <span className="font-bold text-[11px] text-blue-900 uppercase block">
-                      🔘 Розширені налаштування кнопки:
-                    </span>
-
+                  <ParamSection
+                    label="🔘 Розширені налаштування кнопки"
+                    isOpen={openParamSections.has("button")}
+                    onToggle={() => toggleParamSection("button")}
+                    colorClass="bg-blue-50/60 border-blue-200 text-blue-900"
+                  >
                     {/* Скруглення граней */}
                     <div>
                       <label className="block text-[10px] font-semibold text-blue-800 mb-1">
@@ -2736,18 +3211,9 @@ export default function AppBoundedCanvas() {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </ParamSection>
                 )}
 
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">Padding (px):</label>
-                  <input
-                    type="number"
-                    value={singleSelected ? singleSelected.padding ?? 0 : ""}
-                    onChange={(e) => updateSelectedFields("padding", Number(e.target.value))}
-                    className="w-full p-1.5 border rounded-md"
-                  />
-                </div>
               </div>
             ) : (
               <div className="p-4 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-xs">
@@ -2755,6 +3221,8 @@ export default function AppBoundedCanvas() {
               </div>
             )}
           </div>
+          </>
+          )}
           </div>
         </aside>
         </Rnd>
@@ -2904,7 +3372,8 @@ export default function AppBoundedCanvas() {
                         onClick={handleAddComplexObject}
                         className="w-full bg-teal-600 hover:bg-teal-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                       >
-                        ➕ Додати на полотно{forcedParentId ? "" : " (у корінь сторінки)"}
+                        ➕ {template.groupItems ? `Додати всі ${template.groupItems.length} на полотно` : "Додати на полотно"}
+                        {forcedParentId ? "" : " (у корінь сторінки)"}
                       </button>
                     )}
                   </div>
