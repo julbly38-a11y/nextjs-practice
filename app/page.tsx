@@ -54,12 +54,14 @@ interface CanvasElement {
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
   // Динамічна рамка — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + товщина на КОЖНОМУ елементі окремо (а
-  // не властивість батька) — суцільна рамка кольору батьківського поля,
-  // товщиною frameThickness px, що йде НАЗОВНІ від власних меж елемента
-  // (поки без розмиття — просто чіткий прямокутний контур).
+  // (parentId !== null). Перемикач + товщина + округлення кутів на КОЖНОМУ
+  // елементі окремо (а не властивість батька) — суцільна рамка кольору
+  // батьківського поля, накладена на власні зовнішні frameThickness px
+  // елемента (поки без розмиття — просто чіткий контур, з опційно
+  // заокругленими кутами frameRadius px).
   frame?: boolean;
   frameThickness?: number; // px
+  frameRadius?: number; // px, округлення кутів рамки
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -307,13 +309,22 @@ function ParamSection({
 // лишається видимим тільки в центрі; розширення назовні (в уже й так того
 // ж кольору фон поля навколо) було б непомітним, тому рамка йде саме
 // всередину, на сам об'єкт.
-function ObjectFrame({ thickness, color }: { thickness: number; color: string }) {
+function ObjectFrame({
+  thickness,
+  color,
+  radius,
+}: {
+  thickness: number;
+  color: string;
+  radius: number;
+}) {
   if (thickness <= 0) return null;
   return (
     <div
       className="absolute inset-0 pointer-events-none box-border"
       style={{
         border: `${thickness}px solid ${color}`,
+        borderRadius: `${radius}px`,
       }}
     />
   );
@@ -1734,7 +1745,13 @@ export default function AppBoundedCanvas() {
             </div>
           )}
 
-          {frameColor && <ObjectFrame thickness={el.frameThickness ?? 10} color={frameColor} />}
+          {frameColor && (
+            <ObjectFrame
+              thickness={el.frameThickness ?? 10}
+              color={frameColor}
+              radius={el.frameRadius ?? 0}
+            />
+          )}
         </div>
       </Rnd>
     );
@@ -2598,20 +2615,36 @@ export default function AppBoundedCanvas() {
                       🖼️ Динамічна рамка кольору поля
                     </label>
                     {singleSelected.frame && (
-                      <div>
-                        <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                          <span>Товщина рамки:</span>
-                          <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
-                        </label>
-                        <input
-                          type="range"
-                          min={0}
-                          max={40}
-                          value={singleSelected.frameThickness ?? 10}
-                          onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
-                          className="w-full cursor-pointer"
-                        />
-                      </div>
+                      <>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Товщина рамки:</span>
+                            <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={40}
+                            value={singleSelected.frameThickness ?? 10}
+                            onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                            <span>Округлення кутів:</span>
+                            <span className="font-mono">{singleSelected.frameRadius ?? 0}px</span>
+                          </label>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={singleSelected.frameRadius ?? 0}
+                            onChange={(e) => updateSelectedFields("frameRadius", Number(e.target.value))}
+                            className="w-full cursor-pointer"
+                          />
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
