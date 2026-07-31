@@ -53,13 +53,13 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
-  // Плавний перехід країв — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + радіус на КОЖНОМУ елементі окремо (а
-  // не властивість батька) — колір власного краю цього елемента плавно
-  // переходить у колір фону батьківського поля, на всю ширину radius px
-  // назовні від власних меж елемента.
-  edgeFade?: boolean;
-  edgeFadeRadius?: number; // px
+  // Динамічна рамка — тільки для елементів, вкладених у батька
+  // (parentId !== null). Перемикач + товщина на КОЖНОМУ елементі окремо (а
+  // не властивість батька) — суцільна рамка кольору батьківського поля,
+  // товщиною frameThickness px, що йде НАЗОВНІ від власних меж елемента
+  // (поки без розмиття — просто чіткий прямокутний контур).
+  frame?: boolean;
+  frameThickness?: number; // px
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -298,49 +298,22 @@ function ParamSection({
 }
 
 // Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
-// "який я маю радіус", "який колір навколо мене (фон батьківського поля)" і
-// власні width/height, і малює м'який перехід свого власного краю в цей
-// колір. Розширюється на radius px НАЗОВНІ від меж самого об'єкта
-// (inset: -radius), тож перехід сидить точно на межі об'єкт/поле незалежно
-// від того, де в батькові цей об'єкт розташований. overflow-hidden
-// батьківського шару (вище по дереву) природно обрізає цю обгортку, якщо
-// вона виходить за межі самого поля.
-//
-// Форма переходу — ПРЯМОКУТНА РАМКА навколо об'єкта, а не еліпс від центру:
-// об'єкт майже завжди прямокутний, і круглий градієнт від середини не
-// відповідає його реальним прямим краям (кути й середини сторін гаснуть
-// по-різному, невідповідно формі). Тому тут два лінійні градієнти —
-// горизонтальний (гасить ліву/праву сторони) і вертикальний (верх/низ),
-// накладені один на одного: кожен суцільного кольору точно на своєму краю
-// рамки (0%/100%) і прозорий у широкій середині. Там, де вони накладаються
-// (кути рамки), верхній шар просто суцільний — кут виходить рівним
-// кольором без огріхів; у центрі обидва прозорі — сам об'єкт лишається
-// різким.
-function ObjectEdgeFade({
-  radius,
-  fadeToColor,
-  objectWidth,
-  objectHeight,
-}: {
-  radius: number;
-  fadeToColor: string;
-  objectWidth: number;
-  objectHeight: number;
-}) {
-  if (radius <= 0) return null;
-  const totalWidth = objectWidth + radius * 2;
-  const totalHeight = objectHeight + radius * 2;
-  const xPct = Math.min(50, (radius / totalWidth) * 100);
-  const yPct = Math.min(50, (radius / totalHeight) * 100);
+// "яка в мене товщина" і "який колір навколо мене (фон батьківського поля)".
+// Поки що БЕЗ жодного розмиття/градієнта — проста суцільна рамка кольору
+// поля, товщиною thickness px, накладена НА САМ об'єкт (inset: 0 — рівно в
+// межах його власного розміру, border з box-sizing: border-box лягає
+// смугою по внутрішньому периметру ЦИХ меж). Тобто зовнішні thickness px
+// самого об'єкта перефарбовуються в колір поля — його власний вміст
+// лишається видимим тільки в центрі; розширення назовні (в уже й так того
+// ж кольору фон поля навколо) було б непомітним, тому рамка йде саме
+// всередину, на сам об'єкт.
+function ObjectFrame({ thickness, color }: { thickness: number; color: string }) {
+  if (thickness <= 0) return null;
   return (
     <div
-      className="absolute pointer-events-none"
+      className="absolute inset-0 pointer-events-none box-border"
       style={{
-        inset: -radius,
-        background: [
-          `linear-gradient(to right, ${fadeToColor} 0%, transparent ${xPct}%, transparent ${100 - xPct}%, ${fadeToColor} 100%)`,
-          `linear-gradient(to bottom, ${fadeToColor} 0%, transparent ${yPct}%, transparent ${100 - yPct}%, ${fadeToColor} 100%)`,
-        ].join(", "),
+        border: `${thickness}px solid ${color}`,
       }}
     />
   );
@@ -1529,14 +1502,11 @@ export default function AppBoundedCanvas() {
     const computedBgColor = applyBgOpacity(getElementColor(el), el.bgOpacity);
     const isButton = el.type === "button";
 
-    // Перемикач "Плавний перехід країв" живе на САМОМУ el (не на батькові) —
-    // тож тут рахуємо колір ЙОГО батька, у який має плавно перейти власний
-    // край el (ObjectEdgeFade нижче).
-    const edgeFadeParent =
-      el.edgeFade && el.parentId !== null ? elements.find((p) => p.id === el.parentId) : undefined;
-    const edgeFadeColor = edgeFadeParent
-      ? applyBgOpacity(getElementColor(edgeFadeParent), edgeFadeParent.bgOpacity)
-      : null;
+    // Перемикач "Рамка" живе на САМОМУ el (не на батькові) — тож тут рахуємо
+    // колір ЙОГО батька, яким буде пофарбована рамка (ObjectFrame нижче).
+    const framePar =
+      el.frame && el.parentId !== null ? elements.find((p) => p.id === el.parentId) : undefined;
+    const frameColor = framePar ? applyBgOpacity(getElementColor(framePar), framePar.bgOpacity) : null;
 
     const { minWidth, minHeight } = getMinDimensions(el.id);
 
@@ -1764,14 +1734,7 @@ export default function AppBoundedCanvas() {
             </div>
           )}
 
-          {edgeFadeColor && (
-            <ObjectEdgeFade
-              radius={el.edgeFadeRadius ?? 20}
-              fadeToColor={edgeFadeColor}
-              objectWidth={currentWidth}
-              objectHeight={currentHeight}
-            />
-          )}
+          {frameColor && <ObjectFrame thickness={el.frameThickness ?? 10} color={frameColor} />}
         </div>
       </Rnd>
     );
@@ -2619,32 +2582,33 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* ПЛАВНИЙ ПЕРЕХІД КРАЇВ — перемикач + радіус на КОЖНОМУ
-                    елементі окремо (не властивість батька), тому показуємо
-                    лише коли в обраного елемента дійсно Є батько. */}
+                {/* ДИНАМІЧНА РАМКА — перемикач + товщина на КОЖНОМУ елементі
+                    окремо (не властивість батька), тому показуємо лише коли
+                    в обраного елемента дійсно Є батько. Поки без розмиття —
+                    проста суцільна рамка кольору поля. */}
                 {singleSelected && singleSelected.parentId !== null && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={singleSelected.edgeFade ?? false}
-                        onChange={(e) => updateSelectedFields("edgeFade", e.target.checked)}
+                        checked={singleSelected.frame ?? false}
+                        onChange={(e) => updateSelectedFields("frame", e.target.checked)}
                         className="rounded border-slate-300 text-slate-600 focus:ring-slate-500 h-4 w-4"
                       />
-                      🌫️ Плавний перехід країв у колір поля
+                      🖼️ Динамічна рамка кольору поля
                     </label>
-                    {singleSelected.edgeFade && (
+                    {singleSelected.frame && (
                       <div>
                         <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                          <span>Радіус переходу:</span>
-                          <span className="font-mono">{singleSelected.edgeFadeRadius ?? 20}px</span>
+                          <span>Товщина рамки:</span>
+                          <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
                         </label>
                         <input
                           type="range"
                           min={0}
-                          max={80}
-                          value={singleSelected.edgeFadeRadius ?? 20}
-                          onChange={(e) => updateSelectedFields("edgeFadeRadius", Number(e.target.value))}
+                          max={40}
+                          value={singleSelected.frameThickness ?? 10}
+                          onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
                           className="w-full cursor-pointer"
                         />
                       </div>
