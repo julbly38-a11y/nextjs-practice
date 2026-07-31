@@ -54,14 +54,15 @@ interface CanvasElement {
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
   // Динамічна рамка — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + товщина + округлення кутів на КОЖНОМУ
-  // елементі окремо (а не властивість батька) — суцільна рамка кольору
-  // батьківського поля, накладена на власні зовнішні frameThickness px
-  // елемента (поки без розмиття — просто чіткий контур, з опційно
-  // заокругленими кутами frameRadius px).
+  // (parentId !== null). Перемикач + товщина на КОЖНОМУ елементі окремо (а
+  // не властивість батька) — суцільна рамка кольору батьківського поля,
+  // накладена на власні зовнішні frameThickness px елемента (поки без
+  // розмиття — просто чіткий контур). Округлення кутів рамки НЕ своє —
+  // береться з borderRadius самого батьківського поля (renderCanvasNode:
+  // framePar?.borderRadius), щоб рамка завжди повторювала форму поля,
+  // а не мала окрему розсинхронізовану ручку.
   frame?: boolean;
   frameThickness?: number; // px
-  frameRadius?: number; // px, округлення кутів рамки
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -299,32 +300,58 @@ function ParamSection({
   );
 }
 
+// Будує clip-path (SVG path, fill-rule evenodd) для форми "рамки": ЗОВНІШНІЙ
+// контур — завжди гострий прямокутник (справжня форма самого об'єкта, без
+// округлення), ВНУТРІШНІЙ контур (де рамка переходить у "вікно" до об'єкта)
+// — заокруглений на radius px. Два контури одного напрямку обходу +
+// evenodd лишають видимою лише різницю між ними (саме кільце завтовшки
+// thickness), тому border-radius CSS тут не годиться — він завжди округляє
+// ОБИДВА краї синхронно (внутрішній лише як зовнішній мінус товщина), а нам
+// потрібні незалежні радіуси з різних боків.
+function frameClipPath(width: number, height: number, thickness: number, radius: number): string {
+  const t = Math.max(0, thickness);
+  const innerW = Math.max(0, width - t * 2);
+  const innerH = Math.max(0, height - t * 2);
+  const r = Math.max(0, Math.min(radius, innerW / 2, innerH / 2));
+  const ix = t;
+  const iy = t;
+
+  const outer = `M0,0 L${width},0 L${width},${height} L0,${height} Z`;
+  const inner =
+    r > 0
+      ? `M${ix + r},${iy} L${ix + innerW - r},${iy} A${r},${r} 0 0 1 ${ix + innerW},${iy + r} L${ix + innerW},${iy + innerH - r} A${r},${r} 0 0 1 ${ix + innerW - r},${iy + innerH} L${ix + r},${iy + innerH} A${r},${r} 0 0 1 ${ix},${iy + innerH - r} L${ix},${iy + r} A${r},${r} 0 0 1 ${ix + r},${iy} Z`
+      : `M${ix},${iy} L${ix + innerW},${iy} L${ix + innerW},${iy + innerH} L${ix},${iy + innerH} Z`;
+
+  return `path(evenodd, "${outer} ${inner}")`;
+}
+
 // Обгортка для ОДНОГО вкладеного об'єкта (не для батька!) — знає лише
-// "яка в мене товщина" і "який колір навколо мене (фон батьківського поля)".
-// Поки що БЕЗ жодного розмиття/градієнта — проста суцільна рамка кольору
-// поля, товщиною thickness px, накладена НА САМ об'єкт (inset: 0 — рівно в
-// межах його власного розміру, border з box-sizing: border-box лягає
-// смугою по внутрішньому периметру ЦИХ меж). Тобто зовнішні thickness px
-// самого об'єкта перефарбовуються в колір поля — його власний вміст
-// лишається видимим тільки в центрі; розширення назовні (в уже й так того
-// ж кольору фон поля навколо) було б непомітним, тому рамка йде саме
-// всередину, на сам об'єкт.
+// "яка в мене товщина", "який колір навколо мене (фон батьківського поля)"
+// і власні width/height. Суцільна рамка кольору поля, товщиною thickness
+// px, накладена НА САМ об'єкт: зовнішні thickness px самого об'єкта
+// перефарбовуються в колір поля, а власний вміст лишається видимим тільки
+// в центрі (розширення назовні, в уже й так того ж кольору фон поля
+// навколо, було б непомітним).
 function ObjectFrame({
   thickness,
   color,
   radius,
+  width,
+  height,
 }: {
   thickness: number;
   color: string;
   radius: number;
+  width: number;
+  height: number;
 }) {
   if (thickness <= 0) return null;
   return (
     <div
-      className="absolute inset-0 pointer-events-none box-border"
+      className="absolute inset-0 pointer-events-none"
       style={{
-        border: `${thickness}px solid ${color}`,
-        borderRadius: `${radius}px`,
+        background: color,
+        clipPath: frameClipPath(width, height, thickness, radius),
       }}
     />
   );
@@ -1749,7 +1776,9 @@ export default function AppBoundedCanvas() {
             <ObjectFrame
               thickness={el.frameThickness ?? 10}
               color={frameColor}
-              radius={el.frameRadius ?? 0}
+              radius={framePar?.borderRadius ?? 0}
+              width={currentWidth}
+              height={currentHeight}
             />
           )}
         </div>
@@ -2635,36 +2664,23 @@ export default function AppBoundedCanvas() {
                       🖼️ Динамічна рамка кольору поля
                     </label>
                     {singleSelected.frame && (
-                      <>
-                        <div>
-                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                            <span>Товщина рамки:</span>
-                            <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
-                          </label>
-                          <input
-                            type="range"
-                            min={0}
-                            max={40}
-                            value={singleSelected.frameThickness ?? 10}
-                            onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
-                            className="w-full cursor-pointer"
-                          />
-                        </div>
-                        <div>
-                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                            <span>Округлення кутів:</span>
-                            <span className="font-mono">{singleSelected.frameRadius ?? 0}px</span>
-                          </label>
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            value={singleSelected.frameRadius ?? 0}
-                            onChange={(e) => updateSelectedFields("frameRadius", Number(e.target.value))}
-                            className="w-full cursor-pointer"
-                          />
-                        </div>
-                      </>
+                      <div>
+                        <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                          <span>Товщина рамки:</span>
+                          <span className="font-mono">{singleSelected.frameThickness ?? 10}px</span>
+                        </label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={40}
+                          value={singleSelected.frameThickness ?? 10}
+                          onChange={(e) => updateSelectedFields("frameThickness", Number(e.target.value))}
+                          className="w-full cursor-pointer"
+                        />
+                        <p className="text-[10px] text-slate-500 leading-snug mt-1.5">
+                          Округлення кутів рамки повторює округлення самого поля (батька) — щоб змінити, виберіть поле і скористайтесь повзунком "Округлення кутів поля".
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}
