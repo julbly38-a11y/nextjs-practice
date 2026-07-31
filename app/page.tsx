@@ -53,19 +53,24 @@ interface CanvasElement {
   meshIntensity?: number; // 0..100, загальна непрозорість mesh-шару
   meshColors?: string[]; // 1-5 кастомних кольорів замість дефолтної палітри Хотина
 
-  // Динамічна рамка — тільки для елементів, вкладених у батька
-  // (parentId !== null). Перемикач + товщина + крутизна переходу на
-  // КОЖНОМУ елементі окремо (а не властивість батька) — рамка кольору
-  // батьківського поля, накладена на власні зовнішні frameThickness px
-  // елемента, що згасає в прозорість градієнтом по експоненті (від повного
-  // кольору поля на зовнішньому краї до повної прозорості на внутрішньому
-  // контурі). Округлення кутів рамки НЕ своє — береться з borderRadius
-  // самого батьківського поля (renderCanvasNode: framePar?.borderRadius),
-  // щоб рамка завжди повторювала форму поля, а не мала окрему
-  // розсинхронізовану ручку.
+  // Динамічна рамка — перемикач + товщина є на КОЖНОМУ вкладеному елементі
+  // окремо (parentId !== null), рамка кольору батьківського поля, накладена
+  // на власні зовнішні frameThickness px елемента, що згасає в прозорість
+  // градієнтом по експоненті (від повного кольору поля на зовнішньому краї
+  // до повної прозорості на внутрішньому контурі). А от округлення кутів і
+  // крутизна цього згасання — властивості САМОГО ПОЛЯ (borderRadius,
+  // frameFade на батькові, renderCanvasNode: framePar?.borderRadius,
+  // framePar?.frameFade), а не окрема ручка на кожній дитині: усі об'єкти в
+  // одному полі мають виглядати однаково "вирізаними" з нього.
   frame?: boolean;
   frameThickness?: number; // px
-  frameFade?: number; // крутизна експоненційного згасання прозорості (0 = лінійно)
+  frameFade?: number; // крутизна експоненційного згасання прозорості рамки дітей цього поля (0 = лінійно) — властивість ПОЛЯ (як borderRadius)
+  // Зовнішній контур рамки за замовчуванням гострий (справжня прямокутна
+  // форма об'єкта). Якщо об'єкт сам має власне округлення кутів
+  // (borderRadius на НЬОМУ, а не на полі), цей перемикач дозволяє
+  // заокруглити й зовнішній край рамки так само — інакше квадратний ріг
+  // рамки стирчав би з-під уже округленого власного силуету об'єкта.
+  frameOuterRound?: boolean;
 
   // "Список" (type: "list") — конфігурація стовпців таблиці
   columns?: ListColumn[];
@@ -304,26 +309,37 @@ function ParamSection({
 }
 
 // Будує clip-path (SVG path, fill-rule evenodd) для форми "рамки": ЗОВНІШНІЙ
-// контур — завжди гострий прямокутник (справжня форма самого об'єкта, без
-// округлення), ВНУТРІШНІЙ контур (де рамка переходить у "вікно" до об'єкта)
-// — заокруглений на radius px. Два контури одного напрямку обходу +
-// evenodd лишають видимою лише різницю між ними (саме кільце завтовшки
-// thickness), тому border-radius CSS тут не годиться — він завжди округляє
-// ОБИДВА краї синхронно (внутрішній лише як зовнішній мінус товщина), а нам
-// потрібні незалежні радіуси з різних боків.
-function frameClipPath(width: number, height: number, thickness: number, radius: number): string {
+// контур — за замовчуванням гострий прямокутник (справжня форма самого
+// об'єкта без округлення), але може бути заокруглений на outerRadius px,
+// якщо об'єкт сам має власне округлення кутів (перемикач "Заокруглити
+// зовнішній край" на елементі) — інакше зовнішній ріг рамки лишався б
+// квадратним і стирчав би з-під уже округленого власного силуету об'єкта.
+// ВНУТРІШНІЙ контур (де рамка переходить у "вікно" до об'єкта) —
+// заокруглений на innerRadius px (радіус самого поля). Два контури одного
+// напрямку обходу + evenodd лишають видимою лише різницю між ними (саме
+// кільце завтовшки thickness), тому border-radius CSS тут не годиться —
+// він завжди округляє ОБИДВА краї синхронно (внутрішній лише як зовнішній
+// мінус товщина), а нам потрібні незалежні радіуси з різних боків.
+function roundedRectPath(x: number, y: number, w: number, h: number, r: number): string {
+  if (r <= 0) return `M${x},${y} L${x + w},${y} L${x + w},${y + h} L${x},${y + h} Z`;
+  return `M${x + r},${y} L${x + w - r},${y} A${r},${r} 0 0 1 ${x + w},${y + r} L${x + w},${y + h - r} A${r},${r} 0 0 1 ${x + w - r},${y + h} L${x + r},${y + h} A${r},${r} 0 0 1 ${x},${y + h - r} L${x},${y + r} A${r},${r} 0 0 1 ${x + r},${y} Z`;
+}
+
+function frameClipPath(
+  width: number,
+  height: number,
+  thickness: number,
+  innerRadius: number,
+  outerRadius: number = 0
+): string {
   const t = Math.max(0, thickness);
   const innerW = Math.max(0, width - t * 2);
   const innerH = Math.max(0, height - t * 2);
-  const r = Math.max(0, Math.min(radius, innerW / 2, innerH / 2));
-  const ix = t;
-  const iy = t;
+  const rInner = Math.max(0, Math.min(innerRadius, innerW / 2, innerH / 2));
+  const rOuter = Math.max(0, Math.min(outerRadius, width / 2, height / 2));
 
-  const outer = `M0,0 L${width},0 L${width},${height} L0,${height} Z`;
-  const inner =
-    r > 0
-      ? `M${ix + r},${iy} L${ix + innerW - r},${iy} A${r},${r} 0 0 1 ${ix + innerW},${iy + r} L${ix + innerW},${iy + innerH - r} A${r},${r} 0 0 1 ${ix + innerW - r},${iy + innerH} L${ix + r},${iy + innerH} A${r},${r} 0 0 1 ${ix},${iy + innerH - r} L${ix},${iy + r} A${r},${r} 0 0 1 ${ix + r},${iy} Z`
-      : `M${ix},${iy} L${ix + innerW},${iy} L${ix + innerW},${iy + innerH} L${ix},${iy + innerH} Z`;
+  const outer = roundedRectPath(0, 0, width, height, rOuter);
+  const inner = roundedRectPath(t, t, innerW, innerH, rInner);
 
   return `path(evenodd, "${outer} ${inner}")`;
 }
@@ -411,6 +427,7 @@ function ObjectFrame({
   thickness,
   color,
   radius,
+  outerRadius,
   width,
   height,
   fade,
@@ -418,6 +435,7 @@ function ObjectFrame({
   thickness: number;
   color: string;
   radius: number;
+  outerRadius: number;
   width: number;
   height: number;
   fade: number;
@@ -428,7 +446,7 @@ function ObjectFrame({
       className="absolute inset-0 pointer-events-none"
       style={{
         background: frameFadeBackground(color, width, height, thickness, fade),
-        clipPath: frameClipPath(width, height, thickness, radius),
+        clipPath: frameClipPath(width, height, thickness, radius, outerRadius),
         // Дочірні елементи рендеряться через власний <Rnd> з явним
         // zIndex 10 (40 якщо виділені) — позитивний z-index завжди
         // малюється ПОВЕРХ будь-якого сусіда з auto/0 (яким без цього був
@@ -1862,9 +1880,10 @@ export default function AppBoundedCanvas() {
               thickness={el.frameThickness ?? 10}
               color={frameColor}
               radius={framePar?.borderRadius ?? 0}
+              outerRadius={el.frameOuterRound ? (el.borderRadius ?? 0) : 0}
               width={currentWidth}
               height={currentHeight}
-              fade={el.frameFade ?? 3}
+              fade={framePar?.frameFade ?? 3}
             />
           )}
         </div>
@@ -2672,6 +2691,28 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
+                {/* Крутизна згасання рамки дітей цього поля — так само
+                    властивість самого поля, як і округлення кутів вище: всі
+                    вкладені об'єкти з увімкненою рамкою беруть це значення
+                    від батька, а не налаштовують кожен свою. */}
+                {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
+                  <div>
+                    <label className="flex items-center justify-between text-[10px] font-semibold text-slate-600 mb-1">
+                      <span>Згладженість рамки дітей:</span>
+                      <span className="font-mono text-slate-500">{singleSelected.frameFade ?? 3}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={10}
+                      step={0.5}
+                      value={singleSelected.frameFade ?? 3}
+                      onChange={(e) => updateSelectedFields("frameFade", Number(e.target.value))}
+                      className="w-full cursor-pointer"
+                    />
+                  </div>
+                )}
+
                 {singleSelected && (singleSelected.type === "block" || singleSelected.type === "list") && (
                   <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
                     <input
@@ -2734,10 +2775,12 @@ export default function AppBoundedCanvas() {
                   </div>
                 )}
 
-                {/* ДИНАМІЧНА РАМКА — перемикач + товщина + крутизна
-                    експоненційного згасання прозорості на КОЖНОМУ елементі
-                    окремо (не властивість батька), тому показуємо лише коли
-                    в обраного елемента дійсно Є батько. */}
+                {/* ДИНАМІЧНА РАМКА — перемикач + товщина на КОЖНОМУ
+                    елементі окремо, тому показуємо лише коли в обраного
+                    елемента дійсно Є батько. Округлення кутів і крутизна
+                    згасання рамки НЕ тут — це властивості самого поля
+                    (батька), див. "Округлення кутів поля" і "Згладженість
+                    рамки дітей" вище. */}
                 {singleSelected && singleSelected.parentId !== null && (
                   <div className="p-2.5 bg-slate-100/70 border border-slate-200 rounded-lg space-y-2">
                     <label className="text-[11px] font-bold text-slate-700 flex items-center gap-2 cursor-pointer">
@@ -2765,23 +2808,35 @@ export default function AppBoundedCanvas() {
                             className="w-full cursor-pointer"
                           />
                         </div>
-                        <div>
-                          <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
-                            <span>Крутизна згасання:</span>
-                            <span className="font-mono">{singleSelected.frameFade ?? 3}</span>
-                          </label>
+
+                        <label className="text-[10px] font-semibold text-slate-600 flex items-center gap-2 cursor-pointer pt-1 border-t border-slate-200">
                           <input
-                            type="range"
-                            min={0}
-                            max={10}
-                            step={0.5}
-                            value={singleSelected.frameFade ?? 3}
-                            onChange={(e) => updateSelectedFields("frameFade", Number(e.target.value))}
-                            className="w-full cursor-pointer"
+                            type="checkbox"
+                            checked={singleSelected.frameOuterRound ?? false}
+                            onChange={(e) => updateSelectedFields("frameOuterRound", e.target.checked)}
+                            className="rounded border-slate-300 text-slate-600 focus:ring-slate-500 h-4 w-4"
                           />
-                        </div>
+                          Заокруглити зовнішній край рамки
+                        </label>
+                        {singleSelected.frameOuterRound && (
+                          <div>
+                            <label className="flex items-center justify-between text-[10px] text-slate-600 mb-1">
+                              <span>Радіус зовнішнього краю (кути об'єкта):</span>
+                              <span className="font-mono">{singleSelected.borderRadius ?? 0}px</span>
+                            </label>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              value={singleSelected.borderRadius ?? 0}
+                              onChange={(e) => updateSelectedFields("borderRadius", Number(e.target.value))}
+                              className="w-full cursor-pointer"
+                            />
+                          </div>
+                        )}
+
                         <p className="text-[10px] text-slate-500 leading-snug">
-                          Рамка — це градієнт прозорості кольору поля: на зовнішньому краї (межа об'єкта) колір поля повний, до внутрішнього контуру (де рамка переходить в сам об'єкт) він плавно згасає в повну прозорість по експоненті. "Крутизна" — 0 дає рівномірний (лінійний) перехід, більші значення — різке згасання одразу біля краю з довгим ледь помітним хвостом. Округлення внутрішнього контуру повторює округлення самого поля (батька).
+                          Рамка — це градієнт прозорості кольору поля: на зовнішньому краї (межа об'єкта) колір поля повний, до внутрішнього контуру (де рамка переходить в сам об'єкт) він плавно згасає в повну прозорість по експоненті. Округлення внутрішнього контуру і крутизна цього згасання повторюють налаштування самого поля (батька) — виберіть поле, щоб їх змінити. Зовнішній край за замовчуванням гострий (справжня форма об'єкта); увімкніть перемикач вище, щоб і він був заокруглений — так само округляться й самі кути об'єкта, щоб рамка не стирчала квадратним ріжком з-під округленого силуету.
                         </p>
                       </>
                     )}
