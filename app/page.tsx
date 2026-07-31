@@ -1639,16 +1639,7 @@ export default function AppBoundedCanvas() {
     const activeGlowColor = el.activeGlowColor || glowColor;
     const activeShadow = activeGlowBlur > 0 ? `0 0 ${activeGlowBlur}px ${activeGlowColor}` : hoverShadow;
 
-    // Виділення малюється як звичайний INLINE box-shadow (а не Tailwind
-    // ring-* клас), бо нижче на цьому ж вузлі вже стоїть інлайновий
-    // boxShadow (для isPressed/glow) — інлайн-стилі завжди переважають
-    // класи з stylesheet, тож ring-4/shadow-lg класи ніколи не малювались
-    // би. inset (а не звичайна тінь назовні) — щоб рамка виділення завжди
-    // лишалась у власних межах об'єкта і не обрізалась overflow:hidden
-    // батьківського поля, коли дитина впритул до його краю.
-    const restShadow = isSelected
-      ? "inset 0 0 0 3px #fbbf24, 0 10px 15px -3px rgba(0,0,0,0.15), 0 4px 6px -4px rgba(0,0,0,0.15)"
-      : "0 0 6px rgba(0,0,0,0.18)";
+    const restShadow = "0 0 6px rgba(0,0,0,0.18)";
 
     const currentWidth = el.isPressed ? el.width + (el.activeWidthOffset || 0) : el.width;
     const currentHeight = el.isPressed ? el.height + (el.activeHeightOffset || 0) : el.height;
