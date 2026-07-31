@@ -631,12 +631,12 @@ export default function AppBoundedCanvas() {
     // мінімум за їхніми координатами тут не можна.
     const parentEl = elements.find((e) => e.id === parentId);
     if (parentEl?.type === "list") {
-      return { minWidth: 100, minHeight: 60 };
+      return { minWidth: 1, minHeight: 1 };
     }
 
     const children = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
     if (children.length === 0) {
-      return { minWidth: 20, minHeight: 20 };
+      return { minWidth: 1, minHeight: 1 };
     }
 
     let maxRight = 0;
@@ -650,8 +650,8 @@ export default function AppBoundedCanvas() {
     });
 
     return {
-      minWidth: Math.max(20, maxRight),
-      minHeight: Math.max(20, maxBottom),
+      minWidth: Math.max(1, maxRight),
+      minHeight: Math.max(1, maxBottom),
     };
   };
 
@@ -2408,6 +2408,7 @@ export default function AppBoundedCanvas() {
                       <label className="block text-[10px] font-semibold text-slate-600 mb-1">Ширина (W):</label>
                       <input
                         type="number"
+                        min={1}
                         value={singleSelected ? singleSelected.width : ""}
                         onChange={(e) => updateSelectedFields("width", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
@@ -2417,6 +2418,7 @@ export default function AppBoundedCanvas() {
                       <label className="block text-[10px] font-semibold text-slate-600 mb-1">Висота (H):</label>
                       <input
                         type="number"
+                        min={1}
                         value={singleSelected ? singleSelected.height : ""}
                         onChange={(e) => updateSelectedFields("height", Number(e.target.value))}
                         className="w-full p-1.5 border rounded-md font-mono text-xs bg-white"
