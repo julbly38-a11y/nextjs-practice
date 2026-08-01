@@ -131,6 +131,17 @@ interface ComplexObjectField {
   label: string;
   type: "color" | "number";
 }
+// Дочірній елемент, вкладений у батька цього пресету (напр. число й підпис
+// картки КПІ, вкладені в її прямокутник) — власні позиція/розмір відносно
+// батька й власні стилі (fontSize/textColor/textAlign тощо).
+interface ComplexObjectChildSpec {
+  content: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  defaults: Partial<CanvasElement>;
+}
 interface ComplexObjectTemplate {
   id: string;
   label: string;
@@ -143,6 +154,10 @@ interface ComplexObjectTemplate {
   // ширину під довжину цього тексту (як .ypill-month у hospital-analytics —
   // авто-ширина замість фіксованих 60px в .ypill).
   groupItems?: string[];
+  // Якщо задано — крім самого елемента (батька) одразу створюються й ці
+  // дочірні елементи з parentId, виставленим на щойно створений батьківський
+  // id (напр. число + підпис усередині картки КПІ).
+  children?: ComplexObjectChildSpec[];
 }
 
 // Повні назви місяців (називний відмінок, ВЕЛИКИМИ) — 1:1 з MONTH_PILL_NAMES
@@ -169,7 +184,7 @@ const PILL_STYLE_DEFAULTS: Partial<CanvasElement> = {
   glowColor: "#b27c8b",
   glowBlur: 0,
   fontSize: 13,
-  fontFamily: "'Helvetica Neue', Arial, sans-serif",
+  fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
 };
 
 const PILL_STYLE_FIELDS: ComplexObjectField[] = [
@@ -213,6 +228,67 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     },
     fields: [...PILL_STYLE_FIELDS, { key: "height", label: "Висота (px)", type: "number" }],
     groupItems: MONTH_PILL_LABELS,
+  },
+  {
+    id: "kpiCard",
+    label: "📊 Картка КПІ",
+    description:
+      "1:1 з .kpi-row у khotyn_slide.html (старий проект) — число (36px, ITFLight 300, #1a1a1a) над підписом (20px, ITFLight 300, #9a958f, ВЕЛИКИМИ), обидва притиснуті вправо. Батько — прозорий контейнер-рамка; число й підпис — окремі вкладені текстові елементи, тож кожен можна перев'язати на реальні дані (лічильник тощо) окремо. Тестові дані: 20 500 / ГОСПІТАЛІЗАЦІЙ.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 200,
+      height: 70,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      textColor: "#1a1a1a",
+      padding: 0,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "300",
+      textAlign: "right",
+    },
+    fields: [
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+    children: [
+      {
+        content: "20 500",
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 44,
+        defaults: {
+          type: "text",
+          fontSize: 36,
+          fontWeight: "300",
+          textColor: "#1a1a1a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ГОСПІТАЛІЗАЦІЙ",
+        x: 0,
+        y: 44,
+        width: 200,
+        height: 26,
+        defaults: {
+          type: "text",
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#9a958f",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
   },
 ];
 
@@ -1511,7 +1587,25 @@ export default function AppBoundedCanvas() {
       y: freePos.y,
     };
 
-    updateElementsAndHistory([...elements, newElement]);
+    // Дочірні елементи пресету (напр. число + підпис картки КПІ) — власна
+    // позиція/розмір/стиль з template.children, parentId прив'язаний на
+    // щойно створеного батька.
+    const childElements: CanvasElement[] = (template.children ?? []).map((child, i) => {
+      const childBase = buildComplexObjectBase(newElement.id + 1 + i, child.content);
+      return {
+        ...childBase,
+        ...child.defaults,
+        id: childBase.id,
+        parentId: newElement.id,
+        content: child.content,
+        x: child.x,
+        y: child.y,
+        width: child.width,
+        height: child.height,
+      };
+    });
+
+    updateElementsAndHistory([...elements, newElement, ...childElements]);
     handleSelectElement(newElement.id);
   };
 
@@ -1790,8 +1884,13 @@ export default function AppBoundedCanvas() {
             <div className="absolute inset-0 flex flex-col pointer-events-auto">
               {el.content && (
                 <div
-                  className="shrink-0 px-1 pb-1 font-semibold uppercase tracking-wide truncate pointer-events-none"
-                  style={{ fontSize: `${el.fontSize || 12}px` }}
+                  className="shrink-0 px-1 pb-1 uppercase tracking-wide truncate pointer-events-none"
+                  style={{
+                    fontSize: `${el.fontSize || 12}px`,
+                    color: el.textColor || "#000000",
+                    fontFamily: el.fontFamily || "inherit",
+                    fontWeight: el.fontWeight || "500",
+                  }}
                 >
                   {el.content}
                 </div>
@@ -1801,8 +1900,15 @@ export default function AppBoundedCanvas() {
                   {el.columns.map((col) => (
                     <span
                       key={col.id}
-                      className="truncate text-[10px] font-bold uppercase opacity-70"
-                      style={{ flexGrow: col.width ?? 1, flexBasis: 0, minWidth: 0 }}
+                      className="truncate text-[10px] uppercase opacity-70"
+                      style={{
+                        flexGrow: col.width ?? 1,
+                        flexBasis: 0,
+                        minWidth: 0,
+                        color: el.textColor || "#000000",
+                        fontFamily: el.fontFamily || "inherit",
+                        fontWeight: el.fontWeight || "500",
+                      }}
                     >
                       {col.label}
                     </span>
