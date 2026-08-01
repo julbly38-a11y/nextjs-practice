@@ -163,6 +163,129 @@ npm run start   # запуск production-збірки
 npm run lint    # ESLint
 ```
 
+## Довідник показників ЛСМД (для прив'язки даних до карток)
+
+Перенесено з `docs/FORMULAS.md` старого проєкту (`hospital-analytics`) — **80+ обчислюваних полів**, витягнутих з VIEW/Materialized Views Supabase БД (`wnyfrckxhwujsjcfxqou`, джерело — Looker Studio → нативний SQL). Використовується як довідник, коли карткам конструктора (напр. «Картка КПІ») потрібно прив'язати реальні дані замість тестових.
+
+### 1. Базові прапорці (`v_case_metrics`)
+
+| Показник | Формула |
+|---|---|
+| `f_death` | `(discharge_status = 'Помер')::integer` |
+| `f_improved` | `(discharge_status = 'З поліпшенням')::integer` |
+| `f_nochange` | `(discharge_status = 'Без змін')::integer` |
+| `f_worse` | `(discharge_status = 'З погіршенням')::integer` |
+| `f_transferred` | `(discharge_status LIKE '%Переведений%')::integer` |
+| `f_urgent` | `(admission_type = 'Екстренна')::integer` |
+| `f_planned` | `(admission_type = 'Планова')::integer` |
+| `f_referral` | `(referral IS NOT NULL AND referral <> '')::integer` |
+| `f_operation` | `(operation_id IS NOT NULL)::integer` |
+| `f_urgent_operation` | `(admission_type = 'Екстренна' AND operation_id IS NOT NULL)::integer` |
+| `f_female` / `f_male` | `(gender = 'Ж')::integer` / `(gender = 'Ч')::integer` |
+| `patient_age` | `EXTRACT(year FROM age(admission_date_d, birth_date_d))::integer` |
+| `f_child` / `f_elderly` | `(patient_age < 18)::integer` / `(patient_age >= 60)::integer` |
+| `age_group` | `CASE WHEN patient_age<18 THEN '0-17' WHEN <=39 THEN '18-39' WHEN <=59 THEN '40-59' WHEN <=74 THEN '60-74' ELSE '75+' END` |
+| `f_night` | `(shift_time = 'нічне')::integer` |
+| `shift_time` | `CASE WHEN admission_time::time >= '22:00' OR < '07:00' THEN 'нічне' ELSE 'денне' END` |
+| `day_type` | `CASE WHEN EXTRACT(DOW FROM admission_date_d) IN (0,6) THEN 'вихідний' ELSE 'будній' END` |
+| `f_urgent_death` | `(admission_type='Екстренна' AND discharge_status='Помер')::integer` |
+| `f_planned_death` | `(admission_type='Планова' AND discharge_status='Помер')::integer` |
+| `f_urgent_transfer` | `(admission_type='Екстренна' AND discharge_status LIKE '%Переведений%')::integer` |
+| `bed_days` | `length_of_stay` |
+| `length_of_stay` | `(discharge_date_d - admission_date_d)::int` |
+
+### 2. Госпітальні показники (`v_hospital_summary`)
+
+| Показник | Формула |
+|---|---|
+| `total_cases` | `COUNT(*)` |
+| `unique_patients` | `COUNT(DISTINCT patient_id)` |
+| `total_bed_days` | `SUM(bed_days)` |
+| `avg_bed_days` | `ROUND(AVG(bed_days), 1)` |
+| `avg_age` | `ROUND(AVG(patient_age), 1)` |
+| `death_rate_pct` | `ROUND(100.0 * SUM(f_death) / COUNT(*), 2)` |
+| `urgent_pct` | `ROUND(100.0 * SUM(f_urgent) / COUNT(*), 2)` |
+| `surgical_activity_pct` | `ROUND(100.0 * SUM(f_operation) / COUNT(*), 2)` |
+| `percentage` (загальна формула) | `ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)` |
+| `deaths` / `operations` / `transferred` / `worse` / `urgent` / `planned` | `SUM(f_death)` / `SUM(f_operation)` / `SUM(f_transferred)` / `SUM(f_worse)` / `SUM(f_urgent)` / `SUM(f_planned)` |
+
+### 3. Показники відділень (`v_department_stats`, group by `discharge_department`)
+
+`total_cases`, `unique_patients`, `avg_bed_days`, `max_bed_days`, `deaths`, `death_rate_pct`, `urgent`, `urgent_pct`, `operations`, `surgical_activity_pct`, `avg_age`, `women`, `men`, `children`, `elderly`, `with_referral`, `improved`, `nochange` — ті самі формули з розділу 1-2, згруповані по `discharge_department`.
+
+### 4. Повторні госпіталізації (`v_readmissions` / `v_readmission_metrics`)
+
+| Показник | Формула |
+|---|---|
+| `next_admission` | `LEAD(admission_date_d) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
+| `next_icd` | `LEAD(icd_primary) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
+| `days_to_readmission` | `next_admission - discharge_date_d` |
+| `readmit_30d` | `(days_to_readmission BETWEEN 0 AND 30)::integer` |
+| `readmit_90d` | `(days_to_readmission BETWEEN 0 AND 90)::integer` |
+| `same_diagnosis` | `(next_icd = icd_primary)::integer` |
+| `total_with_followup` | `COUNT(*)` (з `v_readmissions`) |
+| `readmit_30d_pct` / `readmit_90d_pct` | `ROUND(100.0 * SUM(readmit_30d)/COUNT(*), 2)` / аналогічно для 90d |
+| `same_dx_30d` | `SUM(CASE WHEN readmit_30d=1 AND same_diagnosis=1 THEN 1 ELSE 0 END)` |
+
+### 5. Ургентні показники (`v_urgency_stats`, group by `hosp_type`)
+
+`total_cases`, `deaths`, `death_rate_pct`, `operations`, `surgery_pct`, `avg_bed_days`, `transferred`, `worse`.
+
+### 6. Діагнози (`v_diagnosis_stats`, group by `icd_primary`)
+
+`cases`, `patients`, `deaths`, `death_rate_pct`, `operations`, `surgery_pct`, `avg_bed_days`, `avg_age`, `women`, `men`.
+
+### 7. Пікові навантаження
+
+| View | Group by | Показники |
+|---|---|---|
+| `v_peak_by_hour` | `EXTRACT(hour FROM admission_ts)` | `admissions`, `urgent`, `planned` |
+| `v_peak_by_weekday` | `EXTRACT(DOW FROM admission_date_d)` (0=нд, 6=сб) | `admissions`, `urgent`, `night_admissions` |
+| `v_peak_by_month` | `EXTRACT(month FROM admission_date_d)` | `admissions`, `deaths`, `operations` |
+
+### 8. Географія (`v_region_stats`, group by `region`)
+
+`patients`, `unique_patients`, `cities` (`array_agg(DISTINCT city_name)`), `women`, `men`, `avg_age`.
+
+### 9. Пацієнти (`v_patient_stats`, group by `gender, age_group`)
+
+`cases`, `unique_patients`, `deaths`, `death_rate_pct`, `avg_bed_days`, `operations`.
+
+### 10. Загальні правила розрахунку
+
+```sql
+percentage    = ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)
+average       = ROUND(AVG(column), 1)
+flag          = (умова)::integer
+unique_count  = COUNT(DISTINCT column)
+sum_of_flags  = SUM(flag)
+
+-- Window functions
+LEAD(column) OVER (PARTITION BY patient_id ORDER BY date)   -- наступний запис
+LAG(column)  OVER (PARTITION BY patient_id ORDER BY date)   -- попередній запис
+ROW_NUMBER() OVER (PARTITION BY group ORDER BY metric DESC)
+SUM(column)  OVER (PARTITION BY group ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+```
+
+### 11. Materialized Views (кешовані, оновлюються щоночі о 02:00 через `pg_cron`)
+
+| View | Зміст |
+|---|---|
+| `mv_daily_stats` | `v_case_metrics GROUP BY admission_date_d` (~2265 рядків) |
+| `mv_dept_stats` | `v_department_stats` (20 рядків) |
+| `mv_doctor_full` | лікар + його статистика (868 рядків) |
+| `mv_icd_usage` | `icd_10` + `COUNT(випадків)` (19824 рядки) |
+
+Ручне оновлення: `SELECT refresh_all_mviews();`
+
+### 13. Важливі фільтри для точності
+
+- **Плейсхолдер "Лікується"** — `discharge_date = admission + 10 днів`, не реальна виписка. Виключати: `WHERE discharge_status <> 'Лікується'`.
+- **Коректні повторні госпіталізації** — `WHERE days_to_readmission >= 0 AND days_to_readmission <= 365`.
+- **Реальне середнє ліжко-день** — рахувати без `'Лікується'`: `WHERE discharge_status <> 'Лікується'`.
+
+> Повний оригінал з прикладами використання (топ відділень за летальністю, випадки за місяць тощо) — `docs/FORMULAS.md` у репозиторії `hospital-analytics`.
+
 ## Відомі обмеження / напрямки розвитку
 
 - Стан живе лише в `localStorage` браузера — немає бекенду чи мультикористувацького збереження
