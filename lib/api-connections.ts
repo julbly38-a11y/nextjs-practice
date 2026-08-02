@@ -18,6 +18,7 @@ export type ApiConnectionVariant = {
   note?: string;
   getTokenUrl?: string; // де взяти ключ/токен
   whereToAdd?: string; // куди його вписати (файл або сторінка налаштувань)
+  sqlEditorUrl?: string; // де перевірити/змінити права (GRANT) чи виконати SQL напряму
 };
 
 // Project ref цього застосунку в Supabase — підставлений у посилання нижче,
@@ -40,9 +41,10 @@ export const API_CONNECTION_VARIANTS: ApiConnectionVariant[] = [
       "PostgREST-доступ через supabase-js з публічним (anon/publishable) ключем — безпечно викликати прямо в браузері, доступ до даних обмежується RLS-політиками на рівні Postgres, а не самим ключем.",
     envVars: ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"],
     example: "getSupabase().from('table').select('*')",
-    note: "У цьому проєкті: lib/supabase.ts → getSupabase(). Схемі lpz анонний ключ недоступний (немає GRANT) — там чутливі дані пацієнтів.",
+    note: "У цьому проєкті: lib/supabase.ts → getSupabase(). Схемі lpz анонний ключ недоступний (немає GRANT) — там чутливі дані пацієнтів. GRANT — це не ключ, а право доступу в самій базі (SQL), тому для нього немає окремої сторінки з токеном; свідомо не виданий anon для lpz.",
     getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api`,
     whereToAdd: "Вписати в .env.local у корені проєкту (для Vercel — Project → Settings → Environment Variables)",
+    sqlEditorUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/sql/new`,
   },
   {
     id: "service-role",

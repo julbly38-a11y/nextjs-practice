@@ -3800,6 +3800,16 @@ export default function AppBoundedCanvas() {
                         </a>
                       )}
                       {variant.whereToAdd && <div className="text-slate-500">📥 Куди вписати: {variant.whereToAdd}</div>}
+                      {variant.sqlEditorUrl && (
+                        <a
+                          href={variant.sqlEditorUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-indigo-600 hover:underline"
+                        >
+                          🛠️ SQL Editor (перевірити/змінити права) →
+                        </a>
+                      )}
                       {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
                     </div>
                   )}
