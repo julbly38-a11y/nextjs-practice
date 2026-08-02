@@ -640,13 +640,11 @@ export default function AppBoundedCanvas() {
     tooling: "bg-slate-200 text-slate-700",
   };
 
-  // Окрема плаваюча панель "Пошук пацієнта" — пошук по /api/patients/search
-  // (service_role, лише сервер), вибір одного результату і побудова картки
-  // (список "Поле"/"Значення" з усіма полями) на полотні. Навмисно НЕ через
-  // Публічний API/anon-ключ — див. панель "Підключення до бази".
-  const [patientPanelPos, setPatientPanelPos] = useState<{ x: number; y: number }>({ x: 1050, y: 570 });
-  const [patientPanelSize, setPatientPanelSize] = useState<{ width: number; height: number }>({ width: 320, height: 420 });
-  const [patientPanelOpacity, setPatientPanelOpacity] = useState<number>(0.92);
+  // Пошук пацієнта — не окрема панель, а один із пунктів "Складні об'єкти"
+  // (selectedComplexObjectId === "patient-search"): пошук по
+  // /api/patients/search (service_role, лише сервер), вибір результату і
+  // побудова картки (список "Поле"/"Значення" з усіма полями) на полотні.
+  // Навмисно НЕ через Публічний API/anon-ключ — див. панель "Підключення до бази".
   const [patientSearchQuery, setPatientSearchQuery] = useState("");
   const [patientSearchResults, setPatientSearchResults] = useState<PatientRecord[]>([]);
   const [patientSearchLoading, setPatientSearchLoading] = useState(false);
@@ -865,19 +863,6 @@ export default function AppBoundedCanvas() {
       try { setConnectionsPanelOpacity(JSON.parse(savedConnectionsPanelOpacity)); } catch (e) {}
     }
 
-    const savedPatientPanelPos = localStorage.getItem("mis_canvas_patient_panel_pos");
-    const savedPatientPanelSize = localStorage.getItem("mis_canvas_patient_panel_size");
-    const savedPatientPanelOpacity = localStorage.getItem("mis_canvas_patient_panel_opacity");
-    if (savedPatientPanelPos) {
-      try { setPatientPanelPos(clampPanelPos(JSON.parse(savedPatientPanelPos))); } catch (e) {}
-    }
-    if (savedPatientPanelSize) {
-      try { setPatientPanelSize(JSON.parse(savedPatientPanelSize)); } catch (e) {}
-    }
-    if (savedPatientPanelOpacity) {
-      try { setPatientPanelOpacity(JSON.parse(savedPatientPanelOpacity)); } catch (e) {}
-    }
-
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -899,9 +884,6 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_connections_panel_pos", JSON.stringify(connectionsPanelPos));
       localStorage.setItem("mis_canvas_connections_panel_size", JSON.stringify(connectionsPanelSize));
       localStorage.setItem("mis_canvas_connections_panel_opacity", JSON.stringify(connectionsPanelOpacity));
-      localStorage.setItem("mis_canvas_patient_panel_pos", JSON.stringify(patientPanelPos));
-      localStorage.setItem("mis_canvas_patient_panel_size", JSON.stringify(patientPanelSize));
-      localStorage.setItem("mis_canvas_patient_panel_opacity", JSON.stringify(patientPanelOpacity));
     }
   }, [
     elements,
@@ -919,9 +901,6 @@ export default function AppBoundedCanvas() {
     connectionsPanelPos,
     connectionsPanelSize,
     connectionsPanelOpacity,
-    patientPanelPos,
-    patientPanelSize,
-    patientPanelOpacity,
     isMounted,
   ]);
 
@@ -1232,9 +1211,6 @@ export default function AppBoundedCanvas() {
       connectionsPanelPos,
       connectionsPanelSize,
       connectionsPanelOpacity,
-      patientPanelPos,
-      patientPanelSize,
-      patientPanelOpacity,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -1474,9 +1450,6 @@ export default function AppBoundedCanvas() {
           if (parsed.connectionsPanelPos) setConnectionsPanelPos(clampPanelPos(parsed.connectionsPanelPos));
           if (parsed.connectionsPanelSize) setConnectionsPanelSize(parsed.connectionsPanelSize);
           if (typeof parsed.connectionsPanelOpacity === "number") setConnectionsPanelOpacity(parsed.connectionsPanelOpacity);
-          if (parsed.patientPanelPos) setPatientPanelPos(clampPanelPos(parsed.patientPanelPos));
-          if (parsed.patientPanelSize) setPatientPanelSize(parsed.patientPanelSize);
-          if (typeof parsed.patientPanelOpacity === "number") setPatientPanelOpacity(parsed.patientPanelOpacity);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -3663,9 +3636,89 @@ export default function AppBoundedCanvas() {
                   </div>
                 </button>
               ))}
+              <button
+                onClick={() => setSelectedComplexObjectId("patient-search")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "patient-search"
+                    ? "bg-rose-600 border-rose-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-rose-50"
+                }`}
+              >
+                <div className="font-bold">🏥 Пошук пацієнта</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "patient-search" ? "text-rose-100" : "text-slate-500"
+                  }`}
+                >
+                  Пошук за ПІБ/ІПН (service_role) — картка з усіма полями на полотні
+                </div>
+              </button>
             </div>
 
+            {selectedComplexObjectId === "patient-search" && (
+              <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg space-y-2.5">
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={patientSearchQuery}
+                    onChange={(e) => setPatientSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearchPatients()}
+                    placeholder="ПІБ або ІПН (мін. 2 символи)…"
+                    className="flex-1 p-1.5 border rounded-md text-xs"
+                  />
+                  <button
+                    onClick={handleSearchPatients}
+                    disabled={patientSearchLoading}
+                    className="px-2.5 bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white text-xs rounded-md shrink-0"
+                  >
+                    {patientSearchLoading ? "…" : "🔍"}
+                  </button>
+                </div>
+                {patientSearchError && <div className="text-xs text-red-500 text-center py-1">{patientSearchError}</div>}
+                {!selectedPatient && patientSearchResults.length > 0 && (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {patientSearchResults.map((p, i) => (
+                      <button
+                        key={String(p.patient_id ?? i)}
+                        onClick={() => setSelectedPatient(p)}
+                        className="w-full text-left p-2 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-xs"
+                      >
+                        <div className="font-bold text-slate-700">{formatPatientFieldValue(p.full_name)}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {formatPatientFieldValue(p.birthday)} · {formatPatientFieldValue(p.org_edrpou)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedPatient && (
+                  <div className="space-y-1.5">
+                    <button onClick={() => setSelectedPatient(null)} className="text-[10px] text-rose-700 hover:underline">
+                      ← До результатів пошуку
+                    </button>
+                    <div className="border border-rose-200 bg-white rounded-lg p-2 space-y-1 max-h-56 overflow-y-auto">
+                      {PATIENT_FIELD_LABELS.map((f) => (
+                        <div key={f.key} className="text-[10px] flex justify-between gap-2">
+                          <span className="text-slate-500 shrink-0">{f.label}:</span>
+                          <span className="text-slate-800 text-right break-all">
+                            {formatPatientFieldValue(selectedPatient[f.key])}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={handleAddPatientCard}
+                      className="w-full bg-rose-700 hover:bg-rose-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                    >
+                      ➕ Додати картку на полотно
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {selectedComplexObjectId &&
+              selectedComplexObjectId !== "patient-search" &&
               (() => {
                 const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
                 // Редагування вже існуючої кнопки на полотні (обрана через
@@ -3961,109 +4014,6 @@ export default function AppBoundedCanvas() {
                 </div>
               );
             })}
-          </div>
-        </aside>
-        </Rnd>
-
-        {/* Окрема плаваюча панель "Пошук пацієнта" — пошук через service_role
-            на сервері (/api/patients/search), НЕ через публічний anon-ключ.
-            Обов'язковий пошуковий запит (мінімум 2 символи) — жодного дампу
-            всієї таблиці. Результат — картка (список "Поле"/"Значення") з
-            усіма полями обраного пацієнта. */}
-        <Rnd
-          position={patientPanelPos}
-          size={patientPanelSize}
-          onDragStop={(e, d) => setPatientPanelPos({ x: d.x, y: d.y })}
-          onResizeStop={(e, dir, ref, delta, pos) => {
-            setPatientPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
-            setPatientPanelPos(pos);
-          }}
-          dragHandleClassName="patient-panel-drag-handle"
-          bounds="window"
-          minWidth={260}
-          minHeight={220}
-          style={{ zIndex: 45 }}
-        >
-        <aside
-          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
-          style={{ backgroundColor: `rgba(255, 255, 255, ${patientPanelOpacity})` }}
-        >
-          <div className="patient-panel-drag-handle cursor-move bg-rose-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>🏥 Пошук пацієнта</span>
-            <div
-              className="flex items-center gap-1.5 font-normal"
-              onMouseDown={(e) => e.stopPropagation()}
-              title="Прозорість панелі"
-            >
-              <span>👁️</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(patientPanelOpacity * 100)}
-                onChange={(e) => setPatientPanelOpacity(Number(e.target.value) / 100)}
-                className="w-16 cursor-pointer"
-              />
-            </div>
-          </div>
-          <div className="p-2 border-b border-slate-200 shrink-0 flex gap-1.5">
-            <input
-              type="text"
-              value={patientSearchQuery}
-              onChange={(e) => setPatientSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearchPatients()}
-              placeholder="ПІБ або ІПН (мін. 2 символи)…"
-              className="flex-1 p-1.5 border rounded-md text-xs"
-            />
-            <button
-              onClick={handleSearchPatients}
-              disabled={patientSearchLoading}
-              className="px-2.5 bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white text-xs rounded-md shrink-0"
-            >
-              {patientSearchLoading ? "…" : "🔍"}
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-            {patientSearchError && <div className="text-xs text-red-500 text-center py-2">{patientSearchError}</div>}
-            {!selectedPatient &&
-              patientSearchResults.map((p, i) => (
-                <button
-                  key={String(p.patient_id ?? i)}
-                  onClick={() => setSelectedPatient(p)}
-                  className="w-full text-left p-2 rounded-lg border border-slate-200 hover:bg-rose-50 text-xs"
-                >
-                  <div className="font-bold text-slate-700">{formatPatientFieldValue(p.full_name)}</div>
-                  <div className="text-[10px] text-slate-500">
-                    {formatPatientFieldValue(p.birthday)} · {formatPatientFieldValue(p.org_edrpou)}
-                  </div>
-                </button>
-              ))}
-            {selectedPatient && (
-              <div className="space-y-1.5">
-                <button
-                  onClick={() => setSelectedPatient(null)}
-                  className="text-[10px] text-rose-700 hover:underline"
-                >
-                  ← До результатів пошуку
-                </button>
-                <div className="border border-rose-200 bg-rose-50/60 rounded-lg p-2 space-y-1 max-h-64 overflow-y-auto">
-                  {PATIENT_FIELD_LABELS.map((f) => (
-                    <div key={f.key} className="text-[10px] flex justify-between gap-2">
-                      <span className="text-slate-500 shrink-0">{f.label}:</span>
-                      <span className="text-slate-800 text-right break-all">
-                        {formatPatientFieldValue(selectedPatient[f.key])}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <button
-                  onClick={handleAddPatientCard}
-                  className="w-full bg-rose-700 hover:bg-rose-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
-                >
-                  ➕ Додати картку на полотно
-                </button>
-              </div>
-            )}
           </div>
         </aside>
         </Rnd>
