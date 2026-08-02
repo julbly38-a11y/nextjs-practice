@@ -42,8 +42,8 @@ export const API_CONNECTION_VARIANTS: ApiConnectionVariant[] = [
     envVars: ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"],
     example: "getSupabase().from('table').select('*')",
     note: "У цьому проєкті: lib/supabase.ts → getSupabase(). Схемі lpz анонний ключ недоступний (немає GRANT) — там чутливі дані пацієнтів. GRANT — це не ключ, а право доступу в самій базі (SQL), тому для нього немає окремої сторінки з токеном; свідомо не виданий anon для lpz.",
-    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api`,
-    whereToAdd: "Вписати в .env.local у корені проєкту (для Vercel — Project → Settings → Environment Variables)",
+    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api-keys`,
+    whereToAdd: "Файл .env.local у корені проєкту, рядки NEXT_PUBLIC_SUPABASE_URL і NEXT_PUBLIC_SUPABASE_ANON_KEY",
     sqlEditorUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/sql/new`,
   },
   {
@@ -56,8 +56,8 @@ export const API_CONNECTION_VARIANTS: ApiConnectionVariant[] = [
     envVars: ["SUPABASE_SERVICE_KEY"],
     example: "getSupabaseAdmin().schema('lpz').from('lpz_departments').select(...)",
     note: "У цьому проєкті: lib/supabase.ts → getSupabaseAdmin(), викликається лише з app/api/departments/route.ts.",
-    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api`,
-    whereToAdd: "Вписати в .env.local (лише сервер!) або у Vercel → Project → Settings → Environment Variables — ніколи в NEXT_PUBLIC_*",
+    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api-keys`,
+    whereToAdd: "Файл .env.local у корені проєкту, рядок SUPABASE_SERVICE_KEY (лише сервер! ніколи в NEXT_PUBLIC_*)",
   },
   {
     id: "direct-postgres",
@@ -79,7 +79,7 @@ export const API_CONNECTION_VARIANTS: ApiConnectionVariant[] = [
     description:
       "Розширення pg_graphql — доступ до тих самих таблиць і тих самих RLS-політик, що й REST, але GraphQL-запитами. Автоматично доступне на кожному проєкті Supabase, у конструкторі поки не використовується.",
     example: `POST https://${SUPABASE_PROJECT_REF}.supabase.co/graphql/v1`,
-    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api`,
+    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api-keys`,
     whereToAdd: "Той самий anon-ключ, що й для Публічного API вище — окремого токена не потрібно",
   },
   {
@@ -100,7 +100,7 @@ export const API_CONNECTION_VARIANTS: ApiConnectionVariant[] = [
     status: "available",
     description:
       "Три додаткові API на тому ж anon/service ключі: Storage (файли), Auth (реєстрація/логін користувачів), Realtime (підписка на зміни в таблицях через WebSocket). Жодне зараз не задіяне в конструкторі — кандидати на майбутнє: напр. Realtime для живого оновлення списку відділень, Storage для зображень у картках.",
-    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api`,
+    getTokenUrl: `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/settings/api-keys`,
     whereToAdd: "Той самий anon/service ключ, що й вище — окремого токена не потрібно",
   },
 ];
