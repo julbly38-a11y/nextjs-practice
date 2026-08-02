@@ -8,6 +8,21 @@ import { PATIENT_FIELD_LABELS, formatPatientFieldValue, type PatientRecord } fro
 
 type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
 
+// Захист від "зниклих" плаваючих панелей: якщо збережена (localStorage чи
+// імпортований JSON) позиція опиняється поза поточним вікном — напр. проєкт
+// зберігали на великому екрані, а відкрили на меншому — хендл (верхній край)
+// стає недосяжним і перетягнути панель неможливо. Тому притискаємо позицію
+// так, щоб хендл завжди лишався в межах видимої області.
+function clampPanelPos(pos: { x: number; y: number }): { x: number; y: number } {
+  if (typeof window === "undefined") return pos;
+  const maxX = Math.max(window.innerWidth - 60, 0);
+  const maxY = Math.max(window.innerHeight - 40, 0);
+  return {
+    x: Math.min(Math.max(pos.x, 0), maxX),
+    y: Math.min(Math.max(pos.y, 0), maxY),
+  };
+}
+
 const LEVEL_COLORS = [
   "#2563eb", // 1 рівень
   "#10b981", // 2 рівень
@@ -797,7 +812,7 @@ export default function AppBoundedCanvas() {
     const savedPanelSize = localStorage.getItem("mis_canvas_panel_size");
     const savedPanelOpacity = localStorage.getItem("mis_canvas_panel_opacity");
     if (savedPanelPos) {
-      try { setPanelPos(JSON.parse(savedPanelPos)); } catch (e) {}
+      try { setPanelPos(clampPanelPos(JSON.parse(savedPanelPos))); } catch (e) {}
     }
     if (savedPanelSize) {
       try { setPanelSize(JSON.parse(savedPanelSize)); } catch (e) {}
@@ -810,7 +825,7 @@ export default function AppBoundedCanvas() {
     const savedComplexPanelSize = localStorage.getItem("mis_canvas_complex_panel_size");
     const savedComplexPanelOpacity = localStorage.getItem("mis_canvas_complex_panel_opacity");
     if (savedComplexPanelPos) {
-      try { setComplexPanelPos(JSON.parse(savedComplexPanelPos)); } catch (e) {}
+      try { setComplexPanelPos(clampPanelPos(JSON.parse(savedComplexPanelPos))); } catch (e) {}
     }
     if (savedComplexPanelSize) {
       try { setComplexPanelSize(JSON.parse(savedComplexPanelSize)); } catch (e) {}
@@ -828,7 +843,7 @@ export default function AppBoundedCanvas() {
     const savedIndicatorsPanelSize = localStorage.getItem("mis_canvas_indicators_panel_size");
     const savedIndicatorsPanelOpacity = localStorage.getItem("mis_canvas_indicators_panel_opacity");
     if (savedIndicatorsPanelPos) {
-      try { setIndicatorsPanelPos(JSON.parse(savedIndicatorsPanelPos)); } catch (e) {}
+      try { setIndicatorsPanelPos(clampPanelPos(JSON.parse(savedIndicatorsPanelPos))); } catch (e) {}
     }
     if (savedIndicatorsPanelSize) {
       try { setIndicatorsPanelSize(JSON.parse(savedIndicatorsPanelSize)); } catch (e) {}
@@ -841,7 +856,7 @@ export default function AppBoundedCanvas() {
     const savedConnectionsPanelSize = localStorage.getItem("mis_canvas_connections_panel_size");
     const savedConnectionsPanelOpacity = localStorage.getItem("mis_canvas_connections_panel_opacity");
     if (savedConnectionsPanelPos) {
-      try { setConnectionsPanelPos(JSON.parse(savedConnectionsPanelPos)); } catch (e) {}
+      try { setConnectionsPanelPos(clampPanelPos(JSON.parse(savedConnectionsPanelPos))); } catch (e) {}
     }
     if (savedConnectionsPanelSize) {
       try { setConnectionsPanelSize(JSON.parse(savedConnectionsPanelSize)); } catch (e) {}
@@ -854,7 +869,7 @@ export default function AppBoundedCanvas() {
     const savedPatientPanelSize = localStorage.getItem("mis_canvas_patient_panel_size");
     const savedPatientPanelOpacity = localStorage.getItem("mis_canvas_patient_panel_opacity");
     if (savedPatientPanelPos) {
-      try { setPatientPanelPos(JSON.parse(savedPatientPanelPos)); } catch (e) {}
+      try { setPatientPanelPos(clampPanelPos(JSON.parse(savedPatientPanelPos))); } catch (e) {}
     }
     if (savedPatientPanelSize) {
       try { setPatientPanelSize(JSON.parse(savedPatientPanelSize)); } catch (e) {}
@@ -1447,19 +1462,19 @@ export default function AppBoundedCanvas() {
           saveToHistory(parsed.pages, parsed.elements);
           setCurrentPageId(parsed.pages[0]?.id || "home");
           setSelectedIds([]);
-          if (parsed.panelPos) setPanelPos(parsed.panelPos);
+          if (parsed.panelPos) setPanelPos(clampPanelPos(parsed.panelPos));
           if (parsed.panelSize) setPanelSize(parsed.panelSize);
           if (typeof parsed.panelOpacity === "number") setPanelOpacity(parsed.panelOpacity);
-          if (parsed.complexPanelPos) setComplexPanelPos(parsed.complexPanelPos);
+          if (parsed.complexPanelPos) setComplexPanelPos(clampPanelPos(parsed.complexPanelPos));
           if (parsed.complexPanelSize) setComplexPanelSize(parsed.complexPanelSize);
           if (typeof parsed.complexPanelOpacity === "number") setComplexPanelOpacity(parsed.complexPanelOpacity);
-          if (parsed.indicatorsPanelPos) setIndicatorsPanelPos(parsed.indicatorsPanelPos);
+          if (parsed.indicatorsPanelPos) setIndicatorsPanelPos(clampPanelPos(parsed.indicatorsPanelPos));
           if (parsed.indicatorsPanelSize) setIndicatorsPanelSize(parsed.indicatorsPanelSize);
           if (typeof parsed.indicatorsPanelOpacity === "number") setIndicatorsPanelOpacity(parsed.indicatorsPanelOpacity);
-          if (parsed.connectionsPanelPos) setConnectionsPanelPos(parsed.connectionsPanelPos);
+          if (parsed.connectionsPanelPos) setConnectionsPanelPos(clampPanelPos(parsed.connectionsPanelPos));
           if (parsed.connectionsPanelSize) setConnectionsPanelSize(parsed.connectionsPanelSize);
           if (typeof parsed.connectionsPanelOpacity === "number") setConnectionsPanelOpacity(parsed.connectionsPanelOpacity);
-          if (parsed.patientPanelPos) setPatientPanelPos(parsed.patientPanelPos);
+          if (parsed.patientPanelPos) setPatientPanelPos(clampPanelPos(parsed.patientPanelPos));
           if (parsed.patientPanelSize) setPatientPanelSize(parsed.patientPanelSize);
           if (typeof parsed.patientPanelOpacity === "number") setPatientPanelOpacity(parsed.patientPanelOpacity);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
