@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Rnd } from "react-rnd";
 import { INDICATOR_SECTIONS } from "@/lib/indicators";
+import { API_CONNECTION_VARIANTS, SCOPE_LABELS, type ConnectionScope } from "@/lib/api-connections";
 
 type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
 
@@ -601,6 +602,28 @@ export default function AppBoundedCanvas() {
       : section.rows,
   })).filter((section) => section.rows.length > 0);
 
+  // Окрема плаваюча панель "Підключення до бази" — довідник способів API-
+  // доступу до Supabase (публічний, service role, пряме підключення до
+  // Postgres, GraphQL, Management API/MCP, Storage/Auth/Realtime). Лише
+  // довідник: реальні ключі/паролі в env-змінних, сюди не потрапляють.
+  const [connectionsPanelPos, setConnectionsPanelPos] = useState<{ x: number; y: number }>({ x: 1050, y: 24 });
+  const [connectionsPanelSize, setConnectionsPanelSize] = useState<{ width: number; height: number }>({ width: 320, height: 520 });
+  const [connectionsPanelOpacity, setConnectionsPanelOpacity] = useState<number>(0.92);
+  const [openConnectionIds, setOpenConnectionIds] = useState<Set<string>>(new Set());
+  const toggleConnectionOpen = (id: string) => {
+    setOpenConnectionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const SCOPE_BADGE_STYLE: Record<ConnectionScope, string> = {
+    "client-safe": "bg-emerald-100 text-emerald-700",
+    "server-only": "bg-red-100 text-red-700",
+    tooling: "bg-slate-200 text-slate-700",
+  };
+
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
 
@@ -709,6 +732,19 @@ export default function AppBoundedCanvas() {
       try { setIndicatorsPanelOpacity(JSON.parse(savedIndicatorsPanelOpacity)); } catch (e) {}
     }
 
+    const savedConnectionsPanelPos = localStorage.getItem("mis_canvas_connections_panel_pos");
+    const savedConnectionsPanelSize = localStorage.getItem("mis_canvas_connections_panel_size");
+    const savedConnectionsPanelOpacity = localStorage.getItem("mis_canvas_connections_panel_opacity");
+    if (savedConnectionsPanelPos) {
+      try { setConnectionsPanelPos(JSON.parse(savedConnectionsPanelPos)); } catch (e) {}
+    }
+    if (savedConnectionsPanelSize) {
+      try { setConnectionsPanelSize(JSON.parse(savedConnectionsPanelSize)); } catch (e) {}
+    }
+    if (savedConnectionsPanelOpacity) {
+      try { setConnectionsPanelOpacity(JSON.parse(savedConnectionsPanelOpacity)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -727,6 +763,9 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_indicators_panel_pos", JSON.stringify(indicatorsPanelPos));
       localStorage.setItem("mis_canvas_indicators_panel_size", JSON.stringify(indicatorsPanelSize));
       localStorage.setItem("mis_canvas_indicators_panel_opacity", JSON.stringify(indicatorsPanelOpacity));
+      localStorage.setItem("mis_canvas_connections_panel_pos", JSON.stringify(connectionsPanelPos));
+      localStorage.setItem("mis_canvas_connections_panel_size", JSON.stringify(connectionsPanelSize));
+      localStorage.setItem("mis_canvas_connections_panel_opacity", JSON.stringify(connectionsPanelOpacity));
     }
   }, [
     elements,
@@ -741,6 +780,9 @@ export default function AppBoundedCanvas() {
     indicatorsPanelPos,
     indicatorsPanelSize,
     indicatorsPanelOpacity,
+    connectionsPanelPos,
+    connectionsPanelSize,
+    connectionsPanelOpacity,
     isMounted,
   ]);
 
@@ -1048,6 +1090,9 @@ export default function AppBoundedCanvas() {
       indicatorsPanelPos,
       indicatorsPanelSize,
       indicatorsPanelOpacity,
+      connectionsPanelPos,
+      connectionsPanelSize,
+      connectionsPanelOpacity,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -1284,6 +1329,9 @@ export default function AppBoundedCanvas() {
           if (parsed.indicatorsPanelPos) setIndicatorsPanelPos(parsed.indicatorsPanelPos);
           if (parsed.indicatorsPanelSize) setIndicatorsPanelSize(parsed.indicatorsPanelSize);
           if (typeof parsed.indicatorsPanelOpacity === "number") setIndicatorsPanelOpacity(parsed.indicatorsPanelOpacity);
+          if (parsed.connectionsPanelPos) setConnectionsPanelPos(parsed.connectionsPanelPos);
+          if (parsed.connectionsPanelSize) setConnectionsPanelSize(parsed.connectionsPanelSize);
+          if (typeof parsed.connectionsPanelOpacity === "number") setConnectionsPanelOpacity(parsed.connectionsPanelOpacity);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -3651,6 +3699,97 @@ export default function AppBoundedCanvas() {
                           )}
                         </button>
                       ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+        </Rnd>
+
+        {/* Окрема плаваюча панель "Підключення до бази" — довідник способів
+            API-доступу до Supabase. Лише довідник: показує, ЯКИЙ спосіб
+            використовується де і навіщо, реальні ключі/паролі не вставляються
+            і не зберігаються тут — вони лишаються в env-змінних. */}
+        <Rnd
+          position={connectionsPanelPos}
+          size={connectionsPanelSize}
+          onDragStop={(e, d) => setConnectionsPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setConnectionsPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setConnectionsPanelPos(pos);
+          }}
+          dragHandleClassName="connections-panel-drag-handle"
+          bounds="window"
+          minWidth={260}
+          minHeight={200}
+          style={{ zIndex: 45 }}
+        >
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${connectionsPanelOpacity})` }}
+        >
+          <div className="connections-panel-drag-handle cursor-move bg-amber-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>🔌 Підключення до бази</span>
+            <div
+              className="flex items-center gap-1.5 font-normal"
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Прозорість панелі"
+            >
+              <span>👁️</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(connectionsPanelOpacity * 100)}
+                onChange={(e) => setConnectionsPanelOpacity(Number(e.target.value) / 100)}
+                className="w-16 cursor-pointer"
+              />
+            </div>
+          </div>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Довідник способів API-доступу до Supabase — без секретів, лише опис і де саме в проєкті використано.
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {API_CONNECTION_VARIANTS.map((variant) => {
+              const isOpen = openConnectionIds.has(variant.id);
+              return (
+                <div key={variant.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleConnectionOpen(variant.id)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
+                  >
+                    <span className="text-[11px] font-bold text-slate-700">
+                      {isOpen ? "▼" : "▶"} {variant.title}
+                    </span>
+                    <span
+                      className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                        variant.status === "used" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"
+                      }`}
+                    >
+                      {variant.status === "used" ? "використовується" : "доступно"}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="p-2 space-y-1.5 text-[10px] text-slate-600">
+                      <span className={`inline-block font-semibold px-1.5 py-0.5 rounded-full ${SCOPE_BADGE_STYLE[variant.scope]}`}>
+                        {SCOPE_LABELS[variant.scope]}
+                      </span>
+                      <div>{variant.description}</div>
+                      {variant.envVars && (
+                        <div className="font-mono text-slate-500">
+                          {variant.envVars.map((v) => (
+                            <div key={v}>• {v}</div>
+                          ))}
+                        </div>
+                      )}
+                      {variant.example && (
+                        <div className="font-mono bg-slate-50 border border-slate-200 rounded p-1.5 break-all text-slate-500">
+                          {variant.example}
+                        </div>
+                      )}
+                      {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
                     </div>
                   )}
                 </div>
