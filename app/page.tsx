@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Rnd } from "react-rnd";
+import { INDICATOR_SECTIONS } from "@/lib/indicators";
 
 type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
 
@@ -566,6 +567,40 @@ export default function AppBoundedCanvas() {
   const [selectedComplexObjectId, setSelectedComplexObjectId] = useState<string | null>(null);
   const [complexObjectDraft, setComplexObjectDraft] = useState<Partial<CanvasElement>>({});
 
+  // Окрема плаваюча панель "Показники" — довідник обчислюваних полів ЛСМД
+  // (код + українська назва + SQL-формула), щоб шукати код показника, коли
+  // картці (напр. КПІ) треба прив'язати реальне поле замість тестового тексту.
+  const [indicatorsPanelPos, setIndicatorsPanelPos] = useState<{ x: number; y: number }>({ x: 700, y: 24 });
+  const [indicatorsPanelSize, setIndicatorsPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 520 });
+  const [indicatorsPanelOpacity, setIndicatorsPanelOpacity] = useState<number>(0.92);
+  const [indicatorSearch, setIndicatorSearch] = useState("");
+  const [openIndicatorSections, setOpenIndicatorSections] = useState<Set<string>>(new Set());
+  const [copiedIndicatorCode, setCopiedIndicatorCode] = useState<string | null>(null);
+  const toggleIndicatorSection = (title: string) => {
+    setOpenIndicatorSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      return next;
+    });
+  };
+  const handleCopyIndicatorCode = (code: string) => {
+    navigator.clipboard?.writeText(code).catch(() => {});
+    setCopiedIndicatorCode(code);
+    setTimeout(() => setCopiedIndicatorCode((prev) => (prev === code ? null : prev)), 1200);
+  };
+  const normalizedIndicatorSearch = indicatorSearch.trim().toLowerCase();
+  const filteredIndicatorSections = INDICATOR_SECTIONS.map((section) => ({
+    ...section,
+    rows: normalizedIndicatorSearch
+      ? section.rows.filter(
+          (row) =>
+            row.code.toLowerCase().includes(normalizedIndicatorSearch) ||
+            row.nameUk.toLowerCase().includes(normalizedIndicatorSearch)
+        )
+      : section.rows,
+  })).filter((section) => section.rows.length > 0);
+
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
 
@@ -661,6 +696,19 @@ export default function AppBoundedCanvas() {
       try { setOpenParamSections(new Set(JSON.parse(savedOpenParamSections))); } catch (e) {}
     }
 
+    const savedIndicatorsPanelPos = localStorage.getItem("mis_canvas_indicators_panel_pos");
+    const savedIndicatorsPanelSize = localStorage.getItem("mis_canvas_indicators_panel_size");
+    const savedIndicatorsPanelOpacity = localStorage.getItem("mis_canvas_indicators_panel_opacity");
+    if (savedIndicatorsPanelPos) {
+      try { setIndicatorsPanelPos(JSON.parse(savedIndicatorsPanelPos)); } catch (e) {}
+    }
+    if (savedIndicatorsPanelSize) {
+      try { setIndicatorsPanelSize(JSON.parse(savedIndicatorsPanelSize)); } catch (e) {}
+    }
+    if (savedIndicatorsPanelOpacity) {
+      try { setIndicatorsPanelOpacity(JSON.parse(savedIndicatorsPanelOpacity)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -676,6 +724,9 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_complex_panel_size", JSON.stringify(complexPanelSize));
       localStorage.setItem("mis_canvas_complex_panel_opacity", JSON.stringify(complexPanelOpacity));
       localStorage.setItem("mis_canvas_open_param_sections", JSON.stringify(Array.from(openParamSections)));
+      localStorage.setItem("mis_canvas_indicators_panel_pos", JSON.stringify(indicatorsPanelPos));
+      localStorage.setItem("mis_canvas_indicators_panel_size", JSON.stringify(indicatorsPanelSize));
+      localStorage.setItem("mis_canvas_indicators_panel_opacity", JSON.stringify(indicatorsPanelOpacity));
     }
   }, [
     elements,
@@ -687,6 +738,9 @@ export default function AppBoundedCanvas() {
     complexPanelSize,
     complexPanelOpacity,
     openParamSections,
+    indicatorsPanelPos,
+    indicatorsPanelSize,
+    indicatorsPanelOpacity,
     isMounted,
   ]);
 
@@ -991,6 +1045,9 @@ export default function AppBoundedCanvas() {
       complexPanelPos,
       complexPanelSize,
       complexPanelOpacity,
+      indicatorsPanelPos,
+      indicatorsPanelSize,
+      indicatorsPanelOpacity,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -1224,6 +1281,9 @@ export default function AppBoundedCanvas() {
           if (parsed.complexPanelPos) setComplexPanelPos(parsed.complexPanelPos);
           if (parsed.complexPanelSize) setComplexPanelSize(parsed.complexPanelSize);
           if (typeof parsed.complexPanelOpacity === "number") setComplexPanelOpacity(parsed.complexPanelOpacity);
+          if (parsed.indicatorsPanelPos) setIndicatorsPanelPos(parsed.indicatorsPanelPos);
+          if (parsed.indicatorsPanelSize) setIndicatorsPanelSize(parsed.indicatorsPanelSize);
+          if (typeof parsed.indicatorsPanelOpacity === "number") setIndicatorsPanelOpacity(parsed.indicatorsPanelOpacity);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -2218,16 +2278,6 @@ export default function AppBoundedCanvas() {
               className="hidden"
             />
           </div>
-        </div>
-
-        <div className="flex items-center gap-3 text-xs bg-slate-50 border px-3 py-1.5 rounded-lg">
-          <span className="font-semibold text-slate-500">Рівні:</span>
-          {LEVEL_COLORS.map((color, idx) => (
-            <div key={color} className="flex items-center gap-1">
-              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
-              <span>{idx + 1} рівень</span>
-            </div>
-          ))}
         </div>
       </header>
 
@@ -3508,6 +3558,104 @@ export default function AppBoundedCanvas() {
                   </div>
                 );
               })()}
+          </div>
+        </aside>
+        </Rnd>
+
+        {/* Окрема плаваюча панель "Показники" — довідник обчислюваних полів
+            ЛСМД (код + українська назва + SQL-формула) з пошуком; клік на
+            рядок копіює код показника в буфер обміну для вставки в картку. */}
+        <Rnd
+          position={indicatorsPanelPos}
+          size={indicatorsPanelSize}
+          onDragStop={(e, d) => setIndicatorsPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setIndicatorsPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setIndicatorsPanelPos(pos);
+          }}
+          dragHandleClassName="indicators-panel-drag-handle"
+          bounds="window"
+          minWidth={260}
+          minHeight={200}
+          style={{ zIndex: 45 }}
+        >
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${indicatorsPanelOpacity})` }}
+        >
+          <div className="indicators-panel-drag-handle cursor-move bg-indigo-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>📖 Показники</span>
+            <div
+              className="flex items-center gap-1.5 font-normal"
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Прозорість панелі"
+            >
+              <span>👁️</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(indicatorsPanelOpacity * 100)}
+                onChange={(e) => setIndicatorsPanelOpacity(Number(e.target.value) / 100)}
+                className="w-16 cursor-pointer"
+              />
+            </div>
+          </div>
+          <div className="p-2 border-b border-slate-200 shrink-0">
+            <input
+              type="text"
+              value={indicatorSearch}
+              onChange={(e) => setIndicatorSearch(e.target.value)}
+              placeholder="🔍 Пошук за кодом або назвою…"
+              className="w-full p-1.5 border rounded-md text-xs"
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {filteredIndicatorSections.length === 0 && (
+              <div className="text-xs text-slate-400 text-center py-4">Нічого не знайдено</div>
+            )}
+            {filteredIndicatorSections.map((section) => {
+              const isOpen = normalizedIndicatorSearch ? true : openIndicatorSections.has(section.title);
+              return (
+                <div key={section.title} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleIndicatorSection(section.title)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
+                  >
+                    <span className="text-[11px] font-bold text-slate-700">
+                      {isOpen ? "▼" : "▶"} {section.title}
+                    </span>
+                    <span className="text-[10px] text-slate-400">{section.rows.length}</span>
+                  </button>
+                  {section.source && isOpen && (
+                    <div className="px-2 pt-1 text-[10px] text-slate-400 italic">{section.source}</div>
+                  )}
+                  {isOpen && (
+                    <div className="divide-y divide-slate-100">
+                      {section.rows.map((row, idx) => (
+                        <button
+                          key={`${row.code}-${idx}`}
+                          onClick={() => handleCopyIndicatorCode(row.code)}
+                          title="Копіювати код"
+                          className="w-full text-left px-2 py-1.5 hover:bg-indigo-50 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <code className="text-[11px] font-mono text-indigo-700">{row.code}</code>
+                            {copiedIndicatorCode === row.code && (
+                              <span className="text-[10px] text-emerald-600 font-semibold">скопійовано ✓</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-600">{row.nameUk}</div>
+                          {row.formula && (
+                            <div className="text-[10px] font-mono text-slate-400 mt-0.5 break-all">{row.formula}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </aside>
         </Rnd>
