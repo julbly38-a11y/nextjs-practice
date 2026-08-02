@@ -169,96 +169,96 @@ npm run lint    # ESLint
 
 ### 1. Базові прапорці (`v_case_metrics`)
 
-| Показник | Формула |
-|---|---|
-| `f_death` | `(discharge_status = 'Помер')::integer` |
-| `f_improved` | `(discharge_status = 'З поліпшенням')::integer` |
-| `f_nochange` | `(discharge_status = 'Без змін')::integer` |
-| `f_worse` | `(discharge_status = 'З погіршенням')::integer` |
-| `f_transferred` | `(discharge_status LIKE '%Переведений%')::integer` |
-| `f_urgent` | `(admission_type = 'Екстренна')::integer` |
-| `f_planned` | `(admission_type = 'Планова')::integer` |
-| `f_referral` | `(referral IS NOT NULL AND referral <> '')::integer` |
-| `f_operation` | `(operation_id IS NOT NULL)::integer` |
-| `f_urgent_operation` | `(admission_type = 'Екстренна' AND operation_id IS NOT NULL)::integer` |
-| `f_female` / `f_male` | `(gender = 'Ж')::integer` / `(gender = 'Ч')::integer` |
-| `patient_age` | `EXTRACT(year FROM age(admission_date_d, birth_date_d))::integer` |
-| `f_child` / `f_elderly` | `(patient_age < 18)::integer` / `(patient_age >= 60)::integer` |
-| `age_group` | `CASE WHEN patient_age<18 THEN '0-17' WHEN <=39 THEN '18-39' WHEN <=59 THEN '40-59' WHEN <=74 THEN '60-74' ELSE '75+' END` |
-| `f_night` | `(shift_time = 'нічне')::integer` |
-| `shift_time` | `CASE WHEN admission_time::time >= '22:00' OR < '07:00' THEN 'нічне' ELSE 'денне' END` |
-| `day_type` | `CASE WHEN EXTRACT(DOW FROM admission_date_d) IN (0,6) THEN 'вихідний' ELSE 'будній' END` |
-| `f_urgent_death` | `(admission_type='Екстренна' AND discharge_status='Помер')::integer` |
-| `f_planned_death` | `(admission_type='Планова' AND discharge_status='Помер')::integer` |
-| `f_urgent_transfer` | `(admission_type='Екстренна' AND discharge_status LIKE '%Переведений%')::integer` |
-| `bed_days` | `length_of_stay` |
-| `length_of_stay` | `(discharge_date_d - admission_date_d)::int` |
+| Показник | Українська назва | Формула |
+|---|---|---|
+| `f_death` | Ознака смерті | `(discharge_status = 'Помер')::integer` |
+| `f_improved` | Ознака поліпшення | `(discharge_status = 'З поліпшенням')::integer` |
+| `f_nochange` | Ознака відсутності змін | `(discharge_status = 'Без змін')::integer` |
+| `f_worse` | Ознака погіршення | `(discharge_status = 'З погіршенням')::integer` |
+| `f_transferred` | Ознака переведення | `(discharge_status LIKE '%Переведений%')::integer` |
+| `f_urgent` | Ознака екстреної госпіталізації | `(admission_type = 'Екстренна')::integer` |
+| `f_planned` | Ознака планової госпіталізації | `(admission_type = 'Планова')::integer` |
+| `f_referral` | Ознака наявності направлення | `(referral IS NOT NULL AND referral <> '')::integer` |
+| `f_operation` | Ознака проведення операції | `(operation_id IS NOT NULL)::integer` |
+| `f_urgent_operation` | Ознака екстреної операції | `(admission_type = 'Екстренна' AND operation_id IS NOT NULL)::integer` |
+| `f_female` / `f_male` | Жіноча стать / чоловіча стать | `(gender = 'Ж')::integer` / `(gender = 'Ч')::integer` |
+| `patient_age` | Вік пацієнта | `EXTRACT(year FROM age(admission_date_d, birth_date_d))::integer` |
+| `f_child` / `f_elderly` | Дитина / особа похилого віку | `(patient_age < 18)::integer` / `(patient_age >= 60)::integer` |
+| `age_group` | Вікова група | `CASE WHEN patient_age<18 THEN '0-17' WHEN <=39 THEN '18-39' WHEN <=59 THEN '40-59' WHEN <=74 THEN '60-74' ELSE '75+' END` |
+| `f_night` | Ознака нічної госпіталізації | `(shift_time = 'нічне')::integer` |
+| `shift_time` | Час доби госпіталізації (денне/нічне) | `CASE WHEN admission_time::time >= '22:00' OR < '07:00' THEN 'нічне' ELSE 'денне' END` |
+| `day_type` | Тип дня (будній/вихідний) | `CASE WHEN EXTRACT(DOW FROM admission_date_d) IN (0,6) THEN 'вихідний' ELSE 'будній' END` |
+| `f_urgent_death` | Смерть при екстреній госпіталізації | `(admission_type='Екстренна' AND discharge_status='Помер')::integer` |
+| `f_planned_death` | Смерть при плановій госпіталізації | `(admission_type='Планова' AND discharge_status='Помер')::integer` |
+| `f_urgent_transfer` | Переведення при екстреній госпіталізації | `(admission_type='Екстренна' AND discharge_status LIKE '%Переведений%')::integer` |
+| `bed_days` | Кількість ліжко-днів | `length_of_stay` |
+| `length_of_stay` | Тривалість перебування (днів) | `(discharge_date_d - admission_date_d)::int` |
 
 ### 2. Госпітальні показники (`v_hospital_summary`)
 
-| Показник | Формула |
-|---|---|
-| `total_cases` | `COUNT(*)` |
-| `unique_patients` | `COUNT(DISTINCT patient_id)` |
-| `total_bed_days` | `SUM(bed_days)` |
-| `avg_bed_days` | `ROUND(AVG(bed_days), 1)` |
-| `avg_age` | `ROUND(AVG(patient_age), 1)` |
-| `death_rate_pct` | `ROUND(100.0 * SUM(f_death) / COUNT(*), 2)` |
-| `urgent_pct` | `ROUND(100.0 * SUM(f_urgent) / COUNT(*), 2)` |
-| `surgical_activity_pct` | `ROUND(100.0 * SUM(f_operation) / COUNT(*), 2)` |
-| `percentage` (загальна формула) | `ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)` |
-| `deaths` / `operations` / `transferred` / `worse` / `urgent` / `planned` | `SUM(f_death)` / `SUM(f_operation)` / `SUM(f_transferred)` / `SUM(f_worse)` / `SUM(f_urgent)` / `SUM(f_planned)` |
+| Показник | Українська назва | Формула |
+|---|---|---|
+| `total_cases` | Загальна кількість випадків | `COUNT(*)` |
+| `unique_patients` | Кількість унікальних пацієнтів | `COUNT(DISTINCT patient_id)` |
+| `total_bed_days` | Загальна кількість ліжко-днів | `SUM(bed_days)` |
+| `avg_bed_days` | Середня кількість ліжко-днів | `ROUND(AVG(bed_days), 1)` |
+| `avg_age` | Середній вік | `ROUND(AVG(patient_age), 1)` |
+| `death_rate_pct` | Відсоток летальності | `ROUND(100.0 * SUM(f_death) / COUNT(*), 2)` |
+| `urgent_pct` | Відсоток екстрених госпіталізацій | `ROUND(100.0 * SUM(f_urgent) / COUNT(*), 2)` |
+| `surgical_activity_pct` | Відсоток хірургічної активності | `ROUND(100.0 * SUM(f_operation) / COUNT(*), 2)` |
+| `percentage` (загальна формула) | Відсоток (загальна формула) | `ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)` |
+| `deaths` / `operations` / `transferred` / `worse` / `urgent` / `planned` | Смерті / операції / переведені / з погіршенням / екстрені / планові | `SUM(f_death)` / `SUM(f_operation)` / `SUM(f_transferred)` / `SUM(f_worse)` / `SUM(f_urgent)` / `SUM(f_planned)` |
 
 ### 3. Показники відділень (`v_department_stats`, group by `discharge_department`)
 
-`total_cases`, `unique_patients`, `avg_bed_days`, `max_bed_days`, `deaths`, `death_rate_pct`, `urgent`, `urgent_pct`, `operations`, `surgical_activity_pct`, `avg_age`, `women`, `men`, `children`, `elderly`, `with_referral`, `improved`, `nochange` — ті самі формули з розділу 1-2, згруповані по `discharge_department`.
+`total_cases` (загальна кількість випадків), `unique_patients` (унікальні пацієнти), `avg_bed_days` (середня к-ть ліжко-днів), `max_bed_days` (максимальна к-ть ліжко-днів), `deaths` (смерті), `death_rate_pct` (відсоток летальності), `urgent` (екстрені), `urgent_pct` (відсоток екстрених), `operations` (операції), `surgical_activity_pct` (відсоток хірургічної активності), `avg_age` (середній вік), `women` (жінки), `men` (чоловіки), `children` (діти), `elderly` (особи похилого віку), `with_referral` (з направленням), `improved` (з поліпшенням), `nochange` (без змін) — ті самі формули з розділу 1-2, згруповані по `discharge_department`.
 
 ### 4. Повторні госпіталізації (`v_readmissions` / `v_readmission_metrics`)
 
-| Показник | Формула |
-|---|---|
-| `next_admission` | `LEAD(admission_date_d) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
-| `next_icd` | `LEAD(icd_primary) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
-| `days_to_readmission` | `next_admission - discharge_date_d` |
-| `readmit_30d` | `(days_to_readmission BETWEEN 0 AND 30)::integer` |
-| `readmit_90d` | `(days_to_readmission BETWEEN 0 AND 90)::integer` |
-| `same_diagnosis` | `(next_icd = icd_primary)::integer` |
-| `total_with_followup` | `COUNT(*)` (з `v_readmissions`) |
-| `readmit_30d_pct` / `readmit_90d_pct` | `ROUND(100.0 * SUM(readmit_30d)/COUNT(*), 2)` / аналогічно для 90d |
-| `same_dx_30d` | `SUM(CASE WHEN readmit_30d=1 AND same_diagnosis=1 THEN 1 ELSE 0 END)` |
+| Показник | Українська назва | Формула |
+|---|---|---|
+| `next_admission` | Дата наступної госпіталізації | `LEAD(admission_date_d) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
+| `next_icd` | Діагноз наступної госпіталізації | `LEAD(icd_primary) OVER (PARTITION BY patient_id ORDER BY admission_date_d)` |
+| `days_to_readmission` | Днів до повторної госпіталізації | `next_admission - discharge_date_d` |
+| `readmit_30d` | Повторна госпіталізація протягом 30 днів | `(days_to_readmission BETWEEN 0 AND 30)::integer` |
+| `readmit_90d` | Повторна госпіталізація протягом 90 днів | `(days_to_readmission BETWEEN 0 AND 90)::integer` |
+| `same_diagnosis` | Той самий діагноз при повторній госпіталізації | `(next_icd = icd_primary)::integer` |
+| `total_with_followup` | Загальна кількість випадків з подальшим спостереженням | `COUNT(*)` (з `v_readmissions`) |
+| `readmit_30d_pct` / `readmit_90d_pct` | Відсоток повторних госпіталізацій за 30 / 90 днів | `ROUND(100.0 * SUM(readmit_30d)/COUNT(*), 2)` / аналогічно для 90d |
+| `same_dx_30d` | Той самий діагноз у межах 30-денної повторної госпіталізації | `SUM(CASE WHEN readmit_30d=1 AND same_diagnosis=1 THEN 1 ELSE 0 END)` |
 
 ### 5. Ургентні показники (`v_urgency_stats`, group by `hosp_type`)
 
-`total_cases`, `deaths`, `death_rate_pct`, `operations`, `surgery_pct`, `avg_bed_days`, `transferred`, `worse`.
+`total_cases` (загальна кількість випадків), `deaths` (смерті), `death_rate_pct` (відсоток летальності), `operations` (операції), `surgery_pct` (відсоток хірургічної активності), `avg_bed_days` (середня к-ть ліжко-днів), `transferred` (переведені), `worse` (з погіршенням).
 
 ### 6. Діагнози (`v_diagnosis_stats`, group by `icd_primary`)
 
-`cases`, `patients`, `deaths`, `death_rate_pct`, `operations`, `surgery_pct`, `avg_bed_days`, `avg_age`, `women`, `men`.
+`cases` (випадки), `patients` (пацієнти), `deaths` (смерті), `death_rate_pct` (відсоток летальності), `operations` (операції), `surgery_pct` (відсоток хірургічної активності), `avg_bed_days` (середня к-ть ліжко-днів), `avg_age` (середній вік), `women` (жінки), `men` (чоловіки).
 
 ### 7. Пікові навантаження
 
 | View | Group by | Показники |
 |---|---|---|
-| `v_peak_by_hour` | `EXTRACT(hour FROM admission_ts)` | `admissions`, `urgent`, `planned` |
-| `v_peak_by_weekday` | `EXTRACT(DOW FROM admission_date_d)` (0=нд, 6=сб) | `admissions`, `urgent`, `night_admissions` |
-| `v_peak_by_month` | `EXTRACT(month FROM admission_date_d)` | `admissions`, `deaths`, `operations` |
+| `v_peak_by_hour` | `EXTRACT(hour FROM admission_ts)` | `admissions` (госпіталізації), `urgent` (екстрені), `planned` (планові) |
+| `v_peak_by_weekday` | `EXTRACT(DOW FROM admission_date_d)` (0=нд, 6=сб) | `admissions` (госпіталізації), `urgent` (екстрені), `night_admissions` (нічні госпіталізації) |
+| `v_peak_by_month` | `EXTRACT(month FROM admission_date_d)` | `admissions` (госпіталізації), `deaths` (смерті), `operations` (операції) |
 
 ### 8. Географія (`v_region_stats`, group by `region`)
 
-`patients`, `unique_patients`, `cities` (`array_agg(DISTINCT city_name)`), `women`, `men`, `avg_age`.
+`patients` (пацієнти), `unique_patients` (унікальні пацієнти), `cities` (міста, `array_agg(DISTINCT city_name)`), `women` (жінки), `men` (чоловіки), `avg_age` (середній вік).
 
 ### 9. Пацієнти (`v_patient_stats`, group by `gender, age_group`)
 
-`cases`, `unique_patients`, `deaths`, `death_rate_pct`, `avg_bed_days`, `operations`.
+`cases` (випадки), `unique_patients` (унікальні пацієнти), `deaths` (смерті), `death_rate_pct` (відсоток летальності), `avg_bed_days` (середня к-ть ліжко-днів), `operations` (операції).
 
 ### 10. Загальні правила розрахунку
 
 ```sql
-percentage    = ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)
-average       = ROUND(AVG(column), 1)
-flag          = (умова)::integer
-unique_count  = COUNT(DISTINCT column)
-sum_of_flags  = SUM(flag)
+percentage    = ROUND(100.0 * числитель::numeric / знаменник::numeric, 2)  -- відсоток
+average       = ROUND(AVG(column), 1)                                       -- середнє значення
+flag          = (умова)::integer                                            -- прапорець (0/1)
+unique_count  = COUNT(DISTINCT column)                                      -- кількість унікальних значень
+sum_of_flags  = SUM(flag)                                                   -- сума прапорців
 
 -- Window functions
 LEAD(column) OVER (PARTITION BY patient_id ORDER BY date)   -- наступний запис
