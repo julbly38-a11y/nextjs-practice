@@ -3789,6 +3789,17 @@ export default function AppBoundedCanvas() {
                           {variant.example}
                         </div>
                       )}
+                      {variant.getTokenUrl && (
+                        <a
+                          href={variant.getTokenUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-indigo-600 hover:underline"
+                        >
+                          🔗 Де взяти ключ/токен →
+                        </a>
+                      )}
+                      {variant.whereToAdd && <div className="text-slate-500">📥 Куди вписати: {variant.whereToAdd}</div>}
                       {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
                     </div>
                   )}
