@@ -982,7 +982,17 @@ export default function AppBoundedCanvas() {
   };
 
   const handleExportJSON = () => {
-    const exportData = { pages, elements };
+    const exportData = {
+      pages,
+      elements,
+      panelPos,
+      panelSize,
+      panelOpacity,
+      complexPanelPos,
+      complexPanelSize,
+      complexPanelOpacity,
+      openParamSections: Array.from(openParamSections),
+    };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
     const downloadAnchor = document.createElement("a");
     downloadAnchor.setAttribute("href", dataStr);
@@ -1208,6 +1218,13 @@ export default function AppBoundedCanvas() {
           saveToHistory(parsed.pages, parsed.elements);
           setCurrentPageId(parsed.pages[0]?.id || "home");
           setSelectedIds([]);
+          if (parsed.panelPos) setPanelPos(parsed.panelPos);
+          if (parsed.panelSize) setPanelSize(parsed.panelSize);
+          if (typeof parsed.panelOpacity === "number") setPanelOpacity(parsed.panelOpacity);
+          if (parsed.complexPanelPos) setComplexPanelPos(parsed.complexPanelPos);
+          if (parsed.complexPanelSize) setComplexPanelSize(parsed.complexPanelSize);
+          if (typeof parsed.complexPanelOpacity === "number") setComplexPanelOpacity(parsed.complexPanelOpacity);
+          if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
           saveToHistory(pages, parsed);
