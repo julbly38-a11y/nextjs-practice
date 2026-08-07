@@ -310,6 +310,24 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
   },
 ];
 
+// "Бібліотека" — окрема панель, де користувач сам зберігає вибраний
+// фрагмент полотна (один елемент чи кілька, з піддеревами) як готовий блок,
+// щоб потім одним кліком вставляти його повторно на цій чи інших сторінках.
+// На відміну від COMPLEX_OBJECTS (вбудовані пресети з фіксованим дизайном
+// і власними полями налаштувань), вміст цієї бібліотеки повністю визначає
+// сам користувач — вона порожня, доки щось не збережуть.
+interface LibraryItem {
+  id: string;
+  name: string;
+  // Оригінальні елементи вибраного фрагмента (корені + всі нащадки,
+  // preorder — предок завжди йде перед своїми нащадками) зі своїми
+  // "рідними" id/parentId. Ці id використовуються лише як внутрішні
+  // посилання для перезв'язки при вставці (handleAddLibraryItem) — самі
+  // елементи на полотні не з'являються, доки пункт не додадуть.
+  elements: CanvasElement[];
+  rootIds: number[];
+}
+
 const hexToRgba = (hex: string, alpha: number): string => {
   const h = hex.replace("#", "");
   const r = parseInt(h.substring(0, 2), 16) || 0;
@@ -640,6 +658,29 @@ export default function AppBoundedCanvas() {
     tooling: "bg-slate-200 text-slate-700",
   };
 
+  // Окрема плаваюча панель "Бібліотека" — власні готові елементи
+  // користувача: зберігаєш виділений фрагмент полотна під назвою, потім
+  // вставляєш той самий фрагмент (зі збереженою внутрішньою структурою й
+  // відносним розташуванням) повторно на цій чи інших сторінках. На
+  // відміну від "Складних об'єктів" (вбудовані пресети), наповнення тут
+  // повністю визначає сам користувач.
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+  const [libraryPanelPos, setLibraryPanelPos] = useState<{ x: number; y: number }>({ x: 380, y: 520 });
+  const [libraryPanelSize, setLibraryPanelSize] = useState<{ width: number; height: number }>({ width: 300, height: 380 });
+  const [libraryPanelOpacity, setLibraryPanelOpacity] = useState<number>(0.9);
+  const [libraryNameDraft, setLibraryNameDraft] = useState<string>("");
+  // Які пункти бібліотеки розгорнуті — показують дерево складу (з яких
+  // простих елементів і в якій вкладеності зібраний цей складний елемент).
+  const [openLibraryItemIds, setOpenLibraryItemIds] = useState<Set<string>>(new Set());
+  const toggleLibraryItemOpen = (id: string) => {
+    setOpenLibraryItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   // Пошук пацієнта — не окрема панель, а один із пунктів "Складні об'єкти"
   // (selectedComplexObjectId === "patient-search"): пошук по
   // /api/patients/search (service_role, лише сервер), вибір результату і
@@ -863,6 +904,23 @@ export default function AppBoundedCanvas() {
       try { setConnectionsPanelOpacity(JSON.parse(savedConnectionsPanelOpacity)); } catch (e) {}
     }
 
+    const savedLibraryItems = localStorage.getItem("mis_canvas_library_items");
+    const savedLibraryPanelPos = localStorage.getItem("mis_canvas_library_panel_pos");
+    const savedLibraryPanelSize = localStorage.getItem("mis_canvas_library_panel_size");
+    const savedLibraryPanelOpacity = localStorage.getItem("mis_canvas_library_panel_opacity");
+    if (savedLibraryItems) {
+      try { setLibraryItems(JSON.parse(savedLibraryItems)); } catch (e) {}
+    }
+    if (savedLibraryPanelPos) {
+      try { setLibraryPanelPos(clampPanelPos(JSON.parse(savedLibraryPanelPos))); } catch (e) {}
+    }
+    if (savedLibraryPanelSize) {
+      try { setLibraryPanelSize(JSON.parse(savedLibraryPanelSize)); } catch (e) {}
+    }
+    if (savedLibraryPanelOpacity) {
+      try { setLibraryPanelOpacity(JSON.parse(savedLibraryPanelOpacity)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -884,6 +942,10 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_connections_panel_pos", JSON.stringify(connectionsPanelPos));
       localStorage.setItem("mis_canvas_connections_panel_size", JSON.stringify(connectionsPanelSize));
       localStorage.setItem("mis_canvas_connections_panel_opacity", JSON.stringify(connectionsPanelOpacity));
+      localStorage.setItem("mis_canvas_library_items", JSON.stringify(libraryItems));
+      localStorage.setItem("mis_canvas_library_panel_pos", JSON.stringify(libraryPanelPos));
+      localStorage.setItem("mis_canvas_library_panel_size", JSON.stringify(libraryPanelSize));
+      localStorage.setItem("mis_canvas_library_panel_opacity", JSON.stringify(libraryPanelOpacity));
     }
   }, [
     elements,
@@ -901,6 +963,10 @@ export default function AppBoundedCanvas() {
     connectionsPanelPos,
     connectionsPanelSize,
     connectionsPanelOpacity,
+    libraryItems,
+    libraryPanelPos,
+    libraryPanelSize,
+    libraryPanelOpacity,
     isMounted,
   ]);
 
@@ -1211,6 +1277,10 @@ export default function AppBoundedCanvas() {
       connectionsPanelPos,
       connectionsPanelSize,
       connectionsPanelOpacity,
+      libraryItems,
+      libraryPanelPos,
+      libraryPanelSize,
+      libraryPanelOpacity,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -1450,6 +1520,10 @@ export default function AppBoundedCanvas() {
           if (parsed.connectionsPanelPos) setConnectionsPanelPos(clampPanelPos(parsed.connectionsPanelPos));
           if (parsed.connectionsPanelSize) setConnectionsPanelSize(parsed.connectionsPanelSize);
           if (typeof parsed.connectionsPanelOpacity === "number") setConnectionsPanelOpacity(parsed.connectionsPanelOpacity);
+          if (Array.isArray(parsed.libraryItems)) setLibraryItems(parsed.libraryItems);
+          if (parsed.libraryPanelPos) setLibraryPanelPos(clampPanelPos(parsed.libraryPanelPos));
+          if (parsed.libraryPanelSize) setLibraryPanelSize(parsed.libraryPanelSize);
+          if (typeof parsed.libraryPanelOpacity === "number") setLibraryPanelOpacity(parsed.libraryPanelOpacity);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -1640,7 +1714,7 @@ export default function AppBoundedCanvas() {
 
   const handleButtonClick = (e: React.MouseEvent, el: CanvasElement) => {
     e.stopPropagation();
-    handleSelectElement(el.id, e.shiftKey || e.ctrlKey);
+    handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
 
     const clickTargetId = getClickTargetId(el, currentPageId);
     if (clickTargetId) {
@@ -1885,6 +1959,124 @@ export default function AppBoundedCanvas() {
     setSelectedIds([]);
   };
 
+  // Збирає елемент rootId разом з усіма нащадками як preorder-список
+  // ОРИГІНАЛІВ (без нових id, без зміщення позицій) — саме так фрагмент
+  // потрапляє в LibraryItem.elements; перезв'язка id/parentId відбувається
+  // пізніше, при вставці (handleAddLibraryItem).
+  const collectSubtreeElements = (rootId: number, source: CanvasElement[]): CanvasElement[] => {
+    const original = source.find((el) => el.id === rootId);
+    if (!original) return [];
+    const children = source.filter((el) => el.parentId === rootId);
+    return [original, ...children.flatMap((child) => collectSubtreeElements(child.id, source))];
+  };
+
+  // Зберігає поточне виділення (один чи кілька елементів, з усіма
+  // піддеревами) як новий пункт бібліотеки під назвою name. Та сама логіка
+  // визначення "коренів" виділення, що й у handleDuplicateSelected — якщо
+  // вибрано і батька, і його дитину, дитина не зберігається окремим коренем.
+  const handleSaveSelectionToLibrary = (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName || selectedIds.length === 0) return;
+
+    const rootIds = selectedIds.filter((id) => {
+      const el = elements.find((e) => e.id === id);
+      return el && !(el.parentId !== null && selectedIds.includes(el.parentId));
+    });
+    if (rootIds.length === 0) return;
+
+    const itemElements = rootIds.flatMap((id) => collectSubtreeElements(id, elements));
+    const newItem: LibraryItem = {
+      id: `lib-${Date.now()}`,
+      name: trimmedName,
+      elements: itemElements,
+      rootIds,
+    };
+    setLibraryItems((prev) => [...prev, newItem]);
+    setLibraryNameDraft("");
+  };
+
+  // Вставляє збережений пункт бібліотеки на полотно поточної сторінки: нові
+  // унікальні id для всіх елементів фрагмента, parentId дочірніх
+  // перезв'язується на клоновані id, а корені — на forcedParentId (як і
+  // будь-який інший щойно доданий елемент). Відносне розташування коренів
+  // одне до одного зберігається — зміщується лише вся група разом, у перше
+  // вільне місце на полотні.
+  const handleAddLibraryItem = (item: LibraryItem) => {
+    if (item.elements.length === 0) return;
+
+    const idMap = new Map<number, number>();
+    const baseId = Date.now();
+    item.elements.forEach((el, i) => idMap.set(el.id, baseId + i));
+
+    const roots = item.elements.filter((el) => item.rootIds.includes(el.id));
+    const minX = Math.min(...roots.map((r) => r.x));
+    const minY = Math.min(...roots.map((r) => r.y));
+    const maxRight = Math.max(...roots.map((r) => r.x + r.width));
+    const maxBottom = Math.max(...roots.map((r) => r.y + r.height));
+    const freePos = findFreePosition(forcedParentId, maxRight - minX, maxBottom - minY);
+    const offsetX = freePos.x - minX;
+    const offsetY = freePos.y - minY;
+
+    const newElements: CanvasElement[] = item.elements.map((el) => {
+      const isRoot = item.rootIds.includes(el.id);
+      const remappedParentId = isRoot
+        ? forcedParentId
+        : el.parentId !== null && idMap.has(el.parentId)
+        ? idMap.get(el.parentId)!
+        : forcedParentId;
+      return {
+        ...el,
+        id: idMap.get(el.id)!,
+        pageId: currentPageId,
+        isGlobal: false,
+        parentId: remappedParentId,
+        x: isRoot ? el.x + offsetX : el.x,
+        y: isRoot ? el.y + offsetY : el.y,
+      };
+    });
+
+    updateElementsAndHistory([...elements, ...newElements]);
+    setSelectedIds(roots.map((r) => idMap.get(r.id)!));
+  };
+
+  const handleDeleteLibraryItem = (id: string) => {
+    setLibraryItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // Компактне дерево складу пункту бібліотеки (лише перегляд) — показує, з
+  // яких простих елементів (тип + вміст) зібраний цей складний елемент і
+  // як вони вкладені один в одного, за збереженими в item.elements
+  // id/parentId. Корені item.rootIds малюються на нульовому рівні (їхній
+  // "реальний" батько на полотні тут не має значення — при вставці він все
+  // одно перепризначається), кожен наступний рівень — через фіксований
+  // відступ, що природно накопичується завдяки вкладеності самих <div>.
+  const renderLibraryItemTree = (item: LibraryItem) => {
+    const byParent = new Map<number | null, CanvasElement[]>();
+    item.elements.forEach((el) => {
+      const key = item.rootIds.includes(el.id) ? null : el.parentId;
+      const list = byParent.get(key) ?? [];
+      list.push(el);
+      byParent.set(key, list);
+    });
+
+    const renderLevel = (parentKey: number | null): React.ReactNode => {
+      const kids = byParent.get(parentKey) ?? [];
+      if (kids.length === 0) return null;
+      return kids.map((el) => (
+        <div key={el.id} className="ml-3">
+          <div className="text-[10px] text-slate-500 flex items-center gap-1 py-0.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+            <span className="font-semibold text-slate-600 shrink-0">[{TYPE_LABELS[el.type]}]</span>
+            <span className="truncate">{el.content || "—"}</span>
+          </div>
+          {renderLevel(el.id)}
+        </div>
+      ));
+    };
+
+    return <div className="-ml-3">{renderLevel(null)}</div>;
+  };
+
   // Клонує елемент разом з усіма його нащадками, видаючи кожному новий унікальний id
   // та переприв'язуючи parentId дочірніх елементів до клонованих. Корінь дублікату
   // зміщується на +20/+20, щоб не лежати точно поверх оригіналу.
@@ -2010,7 +2202,16 @@ export default function AppBoundedCanvas() {
         minHeight={minHeight}
         onDragStart={(e) => {
           e.stopPropagation();
-          if (!selectedIds.includes(el.id)) {
+          // Rnd ловить mousedown (а отже й початок звичайного кліку) РАНІШЕ
+          // за onClick нижче. Якщо тут не перевіряти модифікатори, він би
+          // завжди примусово скидав виділення до одного елемента ще ДО
+          // того, як onClick встигне прочитати Shift/Ctrl/⌘ і додати
+          // елемент до вибору — мультивибір на полотні (на відміну від
+          // дерева в бічній панелі, де onDragStart немає) був би неможливий.
+          // Тож при затиснутому модифікаторі просто нічого тут не робимо —
+          // усю роботу виконає onClick.
+          const isMultiKey = e.shiftKey || e.ctrlKey || e.metaKey;
+          if (!isMultiKey && !selectedIds.includes(el.id)) {
             handleSelectElement(el.id, false);
           }
         }}
@@ -2169,7 +2370,7 @@ export default function AppBoundedCanvas() {
                       key={child.id}
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleSelectElement(child.id, e.shiftKey || e.ctrlKey);
+                        handleSelectElement(child.id, e.shiftKey || e.ctrlKey || e.metaKey);
                       }}
                       className={`flex items-center gap-2 px-1 py-1.5 border-b border-black/10 last:border-b-0 cursor-pointer ${
                         selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""
@@ -2241,7 +2442,7 @@ export default function AppBoundedCanvas() {
       return (
         <div key={el.id} className="space-y-1 my-1" style={{ marginLeft: `${depth * 10}px` }}>
           <div
-            onClick={(e) => handleSelectElement(el.id, e.shiftKey || e.ctrlKey)}
+            onClick={(e) => handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey)}
             className={`p-2 rounded cursor-pointer text-xs flex items-center justify-between gap-2 transition-all ${
               isSelected
                 ? "bg-slate-900 text-white font-bold shadow-md ring-2 ring-amber-400"
@@ -4009,6 +4210,140 @@ export default function AppBoundedCanvas() {
                         </a>
                       )}
                       {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </aside>
+        </Rnd>
+
+        {/* Окрема плаваюча панель "Бібліотека" — власні готові елементи
+            користувача: зберігаєш виділений фрагмент полотна під назвою,
+            потім вставляєш той самий фрагмент повторно на цій чи інших
+            сторінках. На відміну від "Складних об'єктів" (вбудовані
+            пресети), наповнення тут повністю визначає сам користувач. */}
+        <Rnd
+          position={libraryPanelPos}
+          size={libraryPanelSize}
+          onDragStop={(e, d) => setLibraryPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setLibraryPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setLibraryPanelPos(pos);
+          }}
+          dragHandleClassName="library-panel-drag-handle"
+          bounds="window"
+          minWidth={240}
+          minHeight={200}
+          style={{ zIndex: 45 }}
+        >
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${libraryPanelOpacity})` }}
+        >
+          <div className="library-panel-drag-handle cursor-move bg-violet-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>📚 Бібліотека</span>
+            <div
+              className="flex items-center gap-1.5 font-normal"
+              onMouseDown={(e) => e.stopPropagation()}
+              title="Прозорість панелі"
+            >
+              <span>👁️</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={Math.round(libraryPanelOpacity * 100)}
+                onChange={(e) => setLibraryPanelOpacity(Number(e.target.value) / 100)}
+                className="w-16 cursor-pointer"
+              />
+            </div>
+          </div>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Власні готові елементи — збережіть виділене на полотні під назвою, щоб вставляти його повторно.
+          </div>
+          <div className="p-2 border-b border-slate-200 shrink-0 space-y-1.5">
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={libraryNameDraft}
+                onChange={(e) => setLibraryNameDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveSelectionToLibrary(libraryNameDraft)}
+                placeholder={
+                  selectedIds.length === 0 ? "Виділіть елемент(и) на полотні…" : "Назва елемента бібліотеки…"
+                }
+                disabled={selectedIds.length === 0}
+                className="flex-1 p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
+              />
+              <button
+                onClick={() => handleSaveSelectionToLibrary(libraryNameDraft)}
+                disabled={selectedIds.length === 0 || !libraryNameDraft.trim()}
+                className="px-2.5 bg-violet-700 hover:bg-violet-800 disabled:opacity-40 text-white text-xs rounded-md shrink-0"
+                title="Зберегти виділене в бібліотеку"
+              >
+                💾
+              </button>
+            </div>
+            {selectedIds.length > 0 && (
+              <div className="text-[10px] text-slate-400">
+                Буде збережено: {selectedIds.length} {selectedIds.length === 1 ? "елемент" : "елем."} (з нащадками)
+              </div>
+            )}
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {libraryItems.length === 0 && (
+              <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                Бібліотека порожня. Виділіть елемент на полотні й збережіть його вище.
+              </div>
+            )}
+            {libraryItems.map((item) => {
+              const isOpen = openLibraryItemIds.has(item.id);
+              const hasStructure = item.elements.length > 1;
+              return (
+                <div key={item.id} className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                  <div className="p-2 flex items-center gap-2">
+                    {hasStructure ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleLibraryItemOpen(item.id)}
+                        className="shrink-0 w-3.5 text-center text-[10px] text-slate-400"
+                        title={isOpen ? "Згорнути склад" : "Показати склад"}
+                      >
+                        {isOpen ? "▼" : "▶"}
+                      </button>
+                    ) : (
+                      <span className="shrink-0 w-3.5" />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-slate-700 truncate">{item.name}</div>
+                      <div className="text-[10px] text-slate-400">
+                        {item.rootIds.length > 1 ? `${item.rootIds.length} елем.` : "1 елемент"}
+                        {item.elements.length > item.rootIds.length
+                          ? ` + ${item.elements.length - item.rootIds.length} вклад.`
+                          : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleAddLibraryItem(item)}
+                      className="px-2 py-1 bg-violet-600 hover:bg-violet-700 text-white text-[11px] rounded-md shrink-0"
+                      title="Додати на полотно"
+                    >
+                      ➕
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm(`Видалити «${item.name}» з бібліотеки?`)) handleDeleteLibraryItem(item.id);
+                      }}
+                      className="px-2 py-1 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-500 text-[11px] rounded-md shrink-0"
+                      title="Видалити з бібліотеки"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  {isOpen && hasStructure && (
+                    <div className="px-2 pb-2 pt-1 border-t border-slate-100 bg-slate-50/60">
+                      {renderLibraryItemTree(item)}
                     </div>
                   )}
                 </div>
