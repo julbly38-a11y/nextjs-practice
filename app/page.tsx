@@ -2,9 +2,15 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Rnd } from "react-rnd";
-import { INDICATOR_SECTIONS } from "@/lib/indicators";
+import { INDICATOR_SECTIONS, type IndicatorRow } from "@/lib/indicators";
 import { API_CONNECTION_VARIANTS, SCOPE_LABELS, type ConnectionScope } from "@/lib/api-connections";
 import { PATIENT_FIELD_LABELS, formatPatientFieldValue, type PatientRecord } from "@/lib/patient-fields";
+import {
+  DOCTOR_FIELD_LABELS,
+  DEPARTMENT_STAT_FIELD_LABELS,
+  formatLpzFieldValue,
+  type LpzEntityRecord,
+} from "@/lib/lpz-object-fields";
 
 type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
 
@@ -22,6 +28,45 @@ function clampPanelPos(pos: { x: number; y: number }): { x: number; y: number } 
     y: Math.min(Math.max(pos.y, 0), maxY),
   };
 }
+
+// Fade-маска на краях прокручуваного списку (1:1 з utils.js:updateFadeMask
+// у hospital-analytics, public/js/utils.js) — розмиває верхній/нижній край
+// списку в прозорість, і зникає з того боку, де прокручувати вже нікуди
+// (щоб не затуляти перший/останній пункт). Реагує на реальну позицію
+// скролу через 'scroll' — на відміну від решти перенесених звідти речей,
+// це не окремий об'єкт-пресет, а ефект самого типу "Список".
+const SCROLL_FADE_SIZE = 32;
+function applyScrollFadeMask(el: HTMLElement) {
+  const pos = el.scrollTop;
+  const extent = el.scrollHeight - el.clientHeight;
+  const atStart = pos <= 2;
+  const atEnd = pos >= extent - 2;
+  let mask: string;
+  if (extent <= 0 || (atStart && atEnd)) {
+    mask = "none";
+  } else if (atStart) {
+    mask = `linear-gradient(180deg, #000 0, #000 calc(100% - ${SCROLL_FADE_SIZE}px), transparent 100%)`;
+  } else if (atEnd) {
+    mask = `linear-gradient(180deg, transparent 0, #000 ${SCROLL_FADE_SIZE}px, #000 100%)`;
+  } else {
+    mask = `linear-gradient(180deg, transparent 0, #000 ${SCROLL_FADE_SIZE}px, #000 calc(100% - ${SCROLL_FADE_SIZE}px), transparent 100%)`;
+  }
+  el.style.webkitMaskImage = mask;
+  el.style.maskImage = mask;
+}
+// Callback ref, не useEffect — renderCanvasNode викликається як звичайна
+// функція (не хук-компонент) для кожного елемента полотна в циклі, тож
+// хуки тут недоступні. dataset-прапорець захищає від повторної реєстрації
+// 'scroll'-слухача при кожному ре-рендері (React викликає ref-колбек лише
+// на attach/detach DOM-вузла, але той самий вузол React може перевикликати
+// колбеком, якщо сам колбек — нова функція; тут він стабільний module-level).
+const attachScrollFadeMask = (node: HTMLDivElement | null) => {
+  if (!node || node.dataset.fadeMaskInit) return;
+  node.dataset.fadeMaskInit = "1";
+  const update = () => applyScrollFadeMask(node);
+  update();
+  node.addEventListener("scroll", update);
+};
 
 const LEVEL_COLORS = [
   "#2563eb", // 1 рівень
@@ -308,6 +353,470 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
       },
     ],
   },
+  {
+    id: "yearBadge",
+    label: "🏷️ Бейдж року",
+    description:
+      "Наближення до .year-badge з hospital-analytics (public/shared/layout.css) — велике число року над назвою місяця, обидва по центру. Оригінал малює число градієнтом (accent-berry → sage) через background-clip:text — модель елементів цього не підтримує, тож узято суцільний accent-berry (#9c5468) як найближчий орієнтир.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 147,
+      height: 80,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    },
+    fields: [
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+    children: [
+      {
+        content: "2026",
+        x: 0,
+        y: 0,
+        width: 147,
+        height: 54,
+        defaults: {
+          type: "text",
+          fontSize: 48,
+          fontWeight: "300",
+          textColor: "#9c5468",
+          textAlign: "center",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "СІЧЕНЬ",
+        x: 0,
+        y: 54,
+        width: 147,
+        height: 26,
+        defaults: {
+          type: "text",
+          fontSize: 15,
+          fontWeight: "300",
+          textColor: "#9c5468",
+          textAlign: "center",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
+  },
+  {
+    id: "deptCard",
+    label: "🏢 Картка відділення",
+    description:
+      "Наближення до .dept-expand/.de-* з hospital-analytics — назва відділення й завідувач над рядком статистики (3 колонки: значення + підпис), усе притиснуте вправо. Роздільні лінії між колонками (border-left в оригіналі) модель елементів не підтримує — колонки розділені лише відступом.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 260,
+      height: 80,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    },
+    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
+    children: [
+      {
+        content: "Терапевтичне відділення",
+        x: 0,
+        y: 0,
+        width: 260,
+        height: 22,
+        defaults: {
+          type: "text",
+          fontSize: 15,
+          fontWeight: "300",
+          textColor: "#4a4a4a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "Зав.: Іваненко О. П.",
+        x: 0,
+        y: 22,
+        width: 260,
+        height: 18,
+        defaults: {
+          type: "text",
+          fontSize: 13,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "42",
+        x: 0,
+        y: 46,
+        width: 80,
+        height: 20,
+        defaults: {
+          type: "text",
+          fontSize: 17,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ШТАТ",
+        x: 0,
+        y: 66,
+        width: 80,
+        height: 14,
+        defaults: {
+          type: "text",
+          fontSize: 9,
+          fontWeight: "400",
+          textColor: "#8a857f",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "12",
+        x: 90,
+        y: 46,
+        width: 80,
+        height: 20,
+        defaults: {
+          type: "text",
+          fontSize: 17,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ЛІКАРІ",
+        x: 90,
+        y: 66,
+        width: 80,
+        height: 14,
+        defaults: {
+          type: "text",
+          fontSize: 9,
+          fontWeight: "400",
+          textColor: "#8a857f",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "1 240",
+        x: 180,
+        y: 46,
+        width: 80,
+        height: 20,
+        defaults: {
+          type: "text",
+          fontSize: 17,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ГОСПІТАЛІЗАЦІЙ",
+        x: 180,
+        y: 66,
+        width: 80,
+        height: 14,
+        defaults: {
+          type: "text",
+          fontSize: 9,
+          fontWeight: "400",
+          textColor: "#8a857f",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
+  },
+  {
+    id: "userProfile",
+    label: "👤 Профіль користувача",
+    description:
+      "1:1 з .me-bar/.me-surname/.me-firstname з hospital-analytics — прізвище (19px, ВЕЛИКИМИ) над ім'ям (11px, ВЕЛИКИМИ), обидва притиснуті вправо. У старому проекті заповнюється з /api/me (utils.js:applyMeProfile) — тут це текст-заглушка, готова для перев'язки на реальні дані.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 200,
+      height: 42,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    },
+    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
+    children: [
+      {
+        content: "ІВАНЕНКО",
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 24,
+        defaults: {
+          type: "text",
+          fontSize: 19,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ОЛЕНА ПЕТРІВНА",
+        x: 0,
+        y: 24,
+        width: 200,
+        height: 18,
+        defaults: {
+          type: "text",
+          fontSize: 11,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
+  },
+  {
+    id: "logoutButton",
+    label: "🚪 Кнопка-пігулка «Вийти»",
+    description:
+      "1:1 з .me-logout з hospital-analytics — кнопка без фону в спокої, з підсвіткою (заливка + світіння) при наведенні. За формою й поведінкою схожа на «Пігулку», але більший шрифт (20px) і без групової ексклюзивності — це звичайна кнопка дії, а не перемикач-фільтр.",
+    defaults: {
+      type: "button",
+      content: "Вийти",
+      width: 110,
+      height: 40,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      textColor: "#4a4a4a",
+      hoverBgColor: "#3a3a3a",
+      hoverTextColor: "#ffffff",
+      glowColor: "#3a3a3a",
+      glowBlur: 14,
+      borderRadius: 16,
+      fontSize: 20,
+      fontWeight: "300",
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+    },
+    fields: [
+      { key: "customBgColor", label: "Фон", type: "color" },
+      { key: "textColor", label: "Текст", type: "color" },
+      { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
+      { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
+      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
+      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
+      { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+  },
+  {
+    id: "docItem",
+    label: "🩺 Рядок лікаря (ординаторська)",
+    description:
+      "Наближення до .doc-item з hospital-analytics (public/shared/head-cabinet.css, ординаторська на сторінці завідувача) — ім'я над посадою (ВЕЛИКИМИ, дрібніше), обидва праворуч, підсвітка при наведенні. Оригінал світить текст через text-shadow і трохи інакше фарбує обране ім'я при кліку (.doc-active) — модель елементів підтримує лише підсвітку box-shadow навколо всього рядка (як у решти кнопок) і не вміє перефарбувати саме вкладений напис при кліку, тому активний стан не відтворено.",
+    defaults: {
+      type: "button",
+      content: "",
+      width: 220,
+      height: 46,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      textColor: "#3a3a3a",
+      hoverBgColor: "#ffffff",
+      hoverTextColor: "#3a3a3a",
+      glowColor: "#b27c8b",
+      glowBlur: 16,
+      borderRadius: 0,
+      fontSize: 20,
+      fontWeight: "300",
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+    },
+    fields: [
+      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
+      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
+      { key: "width", label: "Ширина (px)", type: "number" },
+    ],
+    children: [
+      {
+        content: "Прізвище Ім'я",
+        x: 0,
+        y: 0,
+        width: 220,
+        height: 28,
+        defaults: {
+          type: "text",
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "ПОСАДА",
+        x: 0,
+        y: 28,
+        width: 220,
+        height: 18,
+        defaults: {
+          type: "text",
+          fontSize: 12,
+          fontWeight: "400",
+          textColor: "#9a958f",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
+  },
+  {
+    id: "censusRow",
+    label: "🏥 Пацієнт у відділенні",
+    description:
+      "Наближення до .census-row/.census-name/.census-meta/.census-bar/.census-days з hospital-analytics (public/shared/layout.css, розділ «Перебуває у відділенні» на entry.html/doctor-cabinet.html/head-cabinet.html) — ім'я й дані пацієнта зліва, міні-смужка перебування (сегмент = доба) і кількість днів справа. Оригінал підсвічує ім'я синім при наведенні (.census-row:hover) — модель елементів не вміє перефарбувати вкладений текст за наведенням на батька, тому це не відтворено; смужка тут — фіксовані 4 сегменти для вигляду, а не реальна кількість діб.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 340,
+      height: 30,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    },
+    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
+    children: [
+      {
+        content: "Прізвище Ім'я",
+        x: 0,
+        y: 2,
+        width: 130,
+        height: 20,
+        defaults: {
+          type: "text",
+          fontSize: 17,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "left",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "42р · Пневмонія",
+        x: 135,
+        y: 2,
+        width: 120,
+        height: 20,
+        defaults: {
+          type: "text",
+          fontSize: 14,
+          fontWeight: "300",
+          textColor: "#9a958f",
+          textAlign: "left",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+      {
+        content: "",
+        x: 258,
+        y: 9,
+        width: 6,
+        height: 14,
+        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
+      },
+      {
+        content: "",
+        x: 266,
+        y: 9,
+        width: 6,
+        height: 14,
+        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
+      },
+      {
+        content: "",
+        x: 274,
+        y: 9,
+        width: 6,
+        height: 14,
+        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
+      },
+      {
+        content: "",
+        x: 282,
+        y: 9,
+        width: 6,
+        height: 14,
+        defaults: { type: "block", customBgColor: "#000000", bgOpacity: 1, borderRadius: 1, padding: 0 },
+      },
+      {
+        content: "4 дні",
+        x: 294,
+        y: 4,
+        width: 46,
+        height: 18,
+        defaults: {
+          type: "text",
+          fontSize: 14,
+          fontWeight: "300",
+          textColor: "#b27c8b",
+          textAlign: "right",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+        },
+      },
+    ],
+  },
 ];
 
 // "Бібліотека" — окрема панель, де користувач сам зберігає вибраний
@@ -324,6 +833,18 @@ interface LibraryItem {
   // "рідними" id/parentId. Ці id використовуються лише як внутрішні
   // посилання для перезв'язки при вставці (handleAddLibraryItem) — самі
   // елементи на полотні не з'являються, доки пункт не додадуть.
+  elements: CanvasElement[];
+  rootIds: number[];
+}
+
+// Користувацькі "складні об'єкти" — та сама механіка, що й LibraryItem
+// (виділений фрагмент простих елементів → повторно вставний блок), лише
+// зберігаються окремим списком у панелі "Складні об'єкти", поруч із
+// вбудованими пресетами COMPLEX_OBJECTS: це спосіб зібрати новий складний
+// об'єкт із простих фігур (прямокутник, текст тощо) прямо на полотні.
+interface CustomComplexObject {
+  id: string;
+  name: string;
   elements: CanvasElement[];
   rootIds: number[];
 }
@@ -681,6 +1202,22 @@ export default function AppBoundedCanvas() {
     });
   };
 
+  // Власні складні об'єкти користувача (панель "Складні об'єкти") — той
+  // самий принцип збереження, що й "Бібліотека" вище: виділяєш прості
+  // фігури на полотні, зберігаєш під назвою, і вони з'являються тут поруч
+  // із вбудованими пресетами COMPLEX_OBJECTS.
+  const [customComplexObjects, setCustomComplexObjects] = useState<CustomComplexObject[]>([]);
+  const [complexObjectNameDraft, setComplexObjectNameDraft] = useState<string>("");
+  const [openCustomComplexObjectIds, setOpenCustomComplexObjectIds] = useState<Set<string>>(new Set());
+  const toggleCustomComplexObjectOpen = (id: string) => {
+    setOpenCustomComplexObjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   // Пошук пацієнта — не окрема панель, а один із пунктів "Складні об'єкти"
   // (selectedComplexObjectId === "patient-search"): пошук по
   // /api/patients/search (service_role, лише сервер), вибір результату і
@@ -728,6 +1265,9 @@ export default function AppBoundedCanvas() {
       { id: "value", label: "Значення", width: 2 },
     ];
     const listId = Date.now();
+    const cardWidth = 360;
+    const cardHeight = 520;
+    const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
     const listElement: CanvasElement = {
       id: listId,
       pageId: currentPageId,
@@ -737,10 +1277,10 @@ export default function AppBoundedCanvas() {
       showOnClickId: null,
       type: "list",
       content: `Пацієнт: ${formatPatientFieldValue(selectedPatient.full_name)}`,
-      width: 360,
-      height: 520,
-      x: 1,
-      y: 1,
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: freePos.y,
       textColor: "#ffffff",
       padding: 8,
       borderRadius: 0,
@@ -783,6 +1323,211 @@ export default function AppBoundedCanvas() {
     handleSelectElement(listId);
   };
 
+  // Пошук лікаря — той самий принцип, що й пошук пацієнта, лише інше
+  // джерело: public.mv_doctor_full (/api/doctors/search, service_role —
+  // view не має GRANT на anon/authenticated).
+  const [doctorSearchQuery, setDoctorSearchQuery] = useState("");
+  const [doctorSearchResults, setDoctorSearchResults] = useState<LpzEntityRecord[]>([]);
+  const [doctorSearchLoading, setDoctorSearchLoading] = useState(false);
+  const [doctorSearchError, setDoctorSearchError] = useState<string | null>(null);
+  const [selectedDoctor, setSelectedDoctor] = useState<LpzEntityRecord | null>(null);
+
+  const handleSearchDoctors = async () => {
+    const q = doctorSearchQuery.trim();
+    if (q.length < 2) {
+      setDoctorSearchError("Введіть щонайменше 2 символи");
+      return;
+    }
+    setDoctorSearchLoading(true);
+    setDoctorSearchError(null);
+    setSelectedDoctor(null);
+    try {
+      const res = await fetch(`/api/doctors/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setDoctorSearchError(data.error || "Помилка пошуку");
+        setDoctorSearchResults([]);
+        return;
+      }
+      setDoctorSearchResults(data.doctors || []);
+      if ((data.doctors || []).length === 0) setDoctorSearchError("Нічого не знайдено");
+    } catch {
+      setDoctorSearchError("Не вдалося звернутись до сервера");
+      setDoctorSearchResults([]);
+    } finally {
+      setDoctorSearchLoading(false);
+    }
+  };
+
+  const handleAddDoctorCard = () => {
+    if (!selectedDoctor) return;
+    const columns: ListColumn[] = [
+      { id: "field", label: "Поле", width: 1.5 },
+      { id: "value", label: "Значення", width: 2 },
+    ];
+    const listId = Date.now();
+    const cardWidth = 320;
+    const cardHeight = 420;
+    const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
+    const listElement: CanvasElement = {
+      id: listId,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "list",
+      content: `Лікар: ${formatLpzFieldValue(selectedDoctor.full_name)}`,
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: freePos.y,
+      textColor: "#ffffff",
+      padding: 8,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: forcedParentId,
+      targetPageId: null,
+      columns,
+    };
+    const rowElements: CanvasElement[] = DOCTOR_FIELD_LABELS.map((f, i) => ({
+      id: listId + 1 + i,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "text",
+      content: f.label,
+      width: 120,
+      height: 26,
+      x: 1,
+      y: 1,
+      textColor: "#000000",
+      padding: 4,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: listId,
+      targetPageId: null,
+      columnValues: {
+        field: f.label,
+        value: formatLpzFieldValue(selectedDoctor[f.key]),
+      },
+    }));
+    updateElementsAndHistory([...elements, listElement, ...rowElements]);
+    handleSelectElement(listId);
+  };
+
+  // Пошук відділення (реальні дані) — та сама механіка, що й пошук
+  // пацієнта/лікаря, але джерело — RPC public.lpz_department_stats
+  // (/api/departments/stats, service_role): рахує напряму з
+  // lpz.lpz_hospitalizations, бо готовий view v_department_stats (public)
+  // порожній через баг у v_case_metrics.discharge_department (ніде не
+  // заповнене в базовому шарі).
+  const [deptStatsQuery, setDeptStatsQuery] = useState("");
+  const [deptStatsResults, setDeptStatsResults] = useState<LpzEntityRecord[]>([]);
+  const [deptStatsLoading, setDeptStatsLoading] = useState(false);
+  const [deptStatsError, setDeptStatsError] = useState<string | null>(null);
+  const [selectedDeptStat, setSelectedDeptStat] = useState<LpzEntityRecord | null>(null);
+
+  const handleSearchDeptStats = async () => {
+    const q = deptStatsQuery.trim();
+    if (q.length < 2) {
+      setDeptStatsError("Введіть щонайменше 2 символи");
+      return;
+    }
+    setDeptStatsLoading(true);
+    setDeptStatsError(null);
+    setSelectedDeptStat(null);
+    try {
+      const res = await fetch(`/api/departments/stats?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setDeptStatsError(data.error || "Помилка пошуку");
+        setDeptStatsResults([]);
+        return;
+      }
+      setDeptStatsResults(data.departments || []);
+      if ((data.departments || []).length === 0) setDeptStatsError("Нічого не знайдено");
+    } catch {
+      setDeptStatsError("Не вдалося звернутись до сервера");
+      setDeptStatsResults([]);
+    } finally {
+      setDeptStatsLoading(false);
+    }
+  };
+
+  const handleAddDeptStatCard = () => {
+    if (!selectedDeptStat) return;
+    const columns: ListColumn[] = [
+      { id: "field", label: "Поле", width: 1.5 },
+      { id: "value", label: "Значення", width: 2 },
+    ];
+    const listId = Date.now();
+    const cardWidth = 320;
+    const cardHeight = 260;
+    const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
+    const listElement: CanvasElement = {
+      id: listId,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "list",
+      content: `Відділення: ${formatLpzFieldValue(selectedDeptStat.department_name)}`,
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: freePos.y,
+      textColor: "#ffffff",
+      padding: 8,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: forcedParentId,
+      targetPageId: null,
+      columns,
+    };
+    const rowElements: CanvasElement[] = DEPARTMENT_STAT_FIELD_LABELS.map((f, i) => ({
+      id: listId + 1 + i,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "text",
+      content: f.label,
+      width: 120,
+      height: 26,
+      x: 1,
+      y: 1,
+      textColor: "#000000",
+      padding: 4,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: listId,
+      targetPageId: null,
+      columnValues: {
+        field: f.label,
+        value: formatLpzFieldValue(selectedDeptStat[f.key]),
+      },
+    }));
+    updateElementsAndHistory([...elements, listElement, ...rowElements]);
+    handleSelectElement(listId);
+  };
+
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
   const [collapsedIds, setCollapsedIds] = useState<Set<number>>(new Set());
 
@@ -809,6 +1554,19 @@ export default function AppBoundedCanvas() {
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Захист від "паразитного" кліку по порожньому полотну одразу після
+  // drag/resize. Вкладений елемент обмежений bounds="parent" — якщо курсор
+  // під час перетягування виїжджає за межі тісного батька (а плитки КПІ,
+  // картки відділення/лікаря тощо саме такі — впритул заповнені дочірніми
+  // текстами), сам елемент коректно лишається в межах батька, але mouseup
+  // відбувається вже над порожнім <main>. За стандартом DOM click спливає
+  // до найближчого спільного предка mousedown/mouseup-цілей — а це <main>
+  // (він предок і елемента, і порожньої області) — тож клік там одразу
+  // скидає щойно встановлене виділення, і перетягування виглядає так, ніби
+  // "нічого не відбулось". onDragStop/onResizeStop виставляють цей прапорець,
+  // <main>-клік перевіряє й одноразово гасить сам себе.
+  const suppressNextCanvasClickRef = useRef(false);
 
   const saveToHistory = (newPages: Page[], newElements: CanvasElement[]) => {
     const updatedHistory = history.slice(0, historyIndex + 1);
@@ -921,6 +1679,11 @@ export default function AppBoundedCanvas() {
       try { setLibraryPanelOpacity(JSON.parse(savedLibraryPanelOpacity)); } catch (e) {}
     }
 
+    const savedCustomComplexObjects = localStorage.getItem("mis_canvas_custom_complex_objects");
+    if (savedCustomComplexObjects) {
+      try { setCustomComplexObjects(JSON.parse(savedCustomComplexObjects)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements }]);
     setHistoryIndex(0);
   }, []);
@@ -946,6 +1709,7 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_library_panel_pos", JSON.stringify(libraryPanelPos));
       localStorage.setItem("mis_canvas_library_panel_size", JSON.stringify(libraryPanelSize));
       localStorage.setItem("mis_canvas_library_panel_opacity", JSON.stringify(libraryPanelOpacity));
+      localStorage.setItem("mis_canvas_custom_complex_objects", JSON.stringify(customComplexObjects));
     }
   }, [
     elements,
@@ -967,6 +1731,7 @@ export default function AppBoundedCanvas() {
     libraryPanelPos,
     libraryPanelSize,
     libraryPanelOpacity,
+    customComplexObjects,
     isMounted,
   ]);
 
@@ -1281,6 +2046,7 @@ export default function AppBoundedCanvas() {
       libraryPanelPos,
       libraryPanelSize,
       libraryPanelOpacity,
+      customComplexObjects,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -1524,6 +2290,7 @@ export default function AppBoundedCanvas() {
           if (parsed.libraryPanelPos) setLibraryPanelPos(clampPanelPos(parsed.libraryPanelPos));
           if (parsed.libraryPanelSize) setLibraryPanelSize(parsed.libraryPanelSize);
           if (typeof parsed.libraryPanelOpacity === "number") setLibraryPanelOpacity(parsed.libraryPanelOpacity);
+          if (Array.isArray(parsed.customComplexObjects)) setCustomComplexObjects(parsed.customComplexObjects);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -1573,6 +2340,9 @@ export default function AppBoundedCanvas() {
       ];
 
       const listId = Date.now();
+      const cardWidth = 640;
+      const cardHeight = 420;
+      const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
       const listElement: CanvasElement = {
         id: listId,
         pageId: currentPageId,
@@ -1582,10 +2352,10 @@ export default function AppBoundedCanvas() {
         showOnClickId: null,
         type: "list",
         content: "Відділення (Supabase, схема lpz)",
-        width: 640,
-        height: 420,
-        x: 1,
-        y: 1,
+        width: cardWidth,
+        height: cardHeight,
+        x: freePos.x,
+        y: freePos.y,
         textColor: "#ffffff",
         padding: 8,
         borderRadius: 0,
@@ -1926,6 +2696,326 @@ export default function AppBoundedCanvas() {
     handleSelectElement(newElement.id);
   };
 
+  // "КПІ лікарні (реальні дані)" — не пошук, а одна кнопка "Завантажити"
+  // (як "Завантажити відділення"): у v_hospital_summary один рядок на всю
+  // лікарню, тож нема що шукати. Тягне /api/hospital-summary (service_role)
+  // і ставить рядок з 4 плиток у стилі вже наявної "Картки КПІ" (число 36px
+  // над підписом 20px ВЕЛИКИМИ, обидва праворуч) на полотно. death_rate_pct
+  // і urgent_pct свідомо НЕ показуємо — вони завжди null у цьому view: поле
+  // discharge_status, з якого вони рахуються, не заповнене в жодному з
+  // 10 497 рядків базового v_case_metrics (окремий баг пайплайну даних).
+  const [hospitalKpiLoading, setHospitalKpiLoading] = useState(false);
+  const [hospitalKpiError, setHospitalKpiError] = useState<string | null>(null);
+
+  const handleLoadHospitalKpi = async () => {
+    setHospitalKpiLoading(true);
+    setHospitalKpiError(null);
+    try {
+      const res = await fetch("/api/hospital-summary");
+      const data = await res.json();
+      if (!res.ok || !data.summary) {
+        setHospitalKpiError(data.error || "Помилка завантаження");
+        return;
+      }
+      const summary = data.summary as Record<string, number>;
+      const tiles: { value: string; label: string }[] = [
+        { value: String(summary.total_cases ?? "—"), label: "ВИПАДКІВ" },
+        { value: String(summary.unique_patients ?? "—"), label: "ПАЦІЄНТІВ" },
+        { value: String(summary.total_bed_days ?? "—"), label: "ЛІЖКО-ДНІВ" },
+        { value: String(summary.avg_bed_days ?? "—"), label: "СЕР. ЛІЖКО-ДНІВ" },
+      ];
+
+      const gap = 24;
+      const tileWidth = 200;
+      const tileHeight = 70;
+      const totalWidth = tileWidth * tiles.length + gap * (tiles.length - 1);
+      const freePos = findFreePosition(forcedParentId, totalWidth, tileHeight);
+
+      const newElements: CanvasElement[] = [];
+      const tileIds: number[] = [];
+      tiles.forEach((tile, i) => {
+        const parentId = Date.now() + i * 10;
+        tileIds.push(parentId);
+        const x = freePos.x + i * (tileWidth + gap);
+        newElements.push({
+          ...buildComplexObjectBase(parentId, ""),
+          type: "block",
+          width: tileWidth,
+          height: tileHeight,
+          x,
+          y: freePos.y,
+          customBgColor: "#ffffff",
+          bgOpacity: 0,
+          padding: 0,
+          borderRadius: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 1, tile.value),
+          type: "text",
+          width: tileWidth,
+          height: 44,
+          x: 0,
+          y: 0,
+          parentId,
+          fontSize: 36,
+          fontWeight: "300",
+          textColor: "#1a1a1a",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 2, tile.label),
+          type: "text",
+          width: tileWidth,
+          height: 26,
+          x: 0,
+          y: 44,
+          parentId,
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#9a958f",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+      });
+
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds(tileIds);
+    } catch {
+      setHospitalKpiError("Не вдалося звернутись до сервера");
+    } finally {
+      setHospitalKpiLoading(false);
+    }
+  };
+
+  // "Показник (за списком)" — форма-конструктор картки КПІ на основі
+  // довідника ЛСМД (той самий INDICATOR_SECTIONS, що й панель "Показники"):
+  // шукаєш показник за кодом/назвою, вписуєш його поточне значення вручну
+  // (це НЕ живий запит до бази — переважна більшість показників довідника
+  // не прив'язана до жодного окремого API-ендпоінта, лише документує
+  // код+назву+SQL-формулу), і додаєш на полотно готову плитку 1:1 у стилі
+  // "Картки КПІ" (число 36px над підписом 20px ВЕЛИКИМИ, обидва праворуч).
+  const [indicatorFormQuery, setIndicatorFormQuery] = useState("");
+  const [indicatorFormSelected, setIndicatorFormSelected] = useState<
+    (IndicatorRow & { sectionTitle: string }) | null
+  >(null);
+  const [indicatorFormValue, setIndicatorFormValue] = useState("");
+
+  const normalizedIndicatorFormQuery = indicatorFormQuery.trim().toLowerCase();
+  const indicatorFormMatches = normalizedIndicatorFormQuery
+    ? INDICATOR_SECTIONS.flatMap((section) =>
+        section.rows
+          .filter(
+            (row) =>
+              row.code.toLowerCase().includes(normalizedIndicatorFormQuery) ||
+              row.nameUk.toLowerCase().includes(normalizedIndicatorFormQuery)
+          )
+          .map((row) => ({ ...row, sectionTitle: section.title }))
+      ).slice(0, 30)
+    : [];
+
+  const handleAddIndicatorCard = () => {
+    if (!indicatorFormSelected || !indicatorFormValue.trim()) return;
+
+    const tileWidth = 200;
+    const tileHeight = 70;
+    const freePos = findFreePosition(forcedParentId, tileWidth, tileHeight);
+    const parentId = Date.now();
+
+    const parentEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId, ""),
+      type: "block",
+      width: tileWidth,
+      height: tileHeight,
+      x: freePos.x,
+      y: freePos.y,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+    const valueEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId + 1, indicatorFormValue.trim()),
+      type: "text",
+      width: tileWidth,
+      height: 44,
+      x: 0,
+      y: 0,
+      parentId,
+      fontSize: 36,
+      fontWeight: "300",
+      textColor: "#1a1a1a",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+    };
+    const labelEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId + 2, indicatorFormSelected.nameUk.toUpperCase()),
+      type: "text",
+      width: tileWidth,
+      height: 26,
+      x: 0,
+      y: 44,
+      parentId,
+      fontSize: 20,
+      fontWeight: "300",
+      textColor: "#9a958f",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+    };
+
+    updateElementsAndHistory([...elements, parentEl, valueEl, labelEl]);
+    setSelectedIds([parentId]);
+    setIndicatorFormSelected(null);
+    setIndicatorFormValue("");
+    setIndicatorFormQuery("");
+  };
+
+  // "Ординаторська відділення" — 1:1 з .docs-list/.doc-item на сторінці
+  // завідувача старого проекту (public/shared/head-cabinet.css +
+  // head-cabinet.js:loadStaff): шукаєш відділення (список тягнеться один
+  // раз з /api/departments, як і кнопка "Завантажити відділення", фільтр —
+  // на клієнті, бо відділень лише ~50), тоді "Завантажити ординаторську"
+  // тягне реальних лікарів (/api/staff, lpz.lpz_empl) і ставить на полотно
+  // стовпчик рядків doc-item (ім'я над посадою, підсвітка при наведенні) —
+  // ту саму пресет-трійку (батько-кнопка + 2 текстові діти), що й пресет
+  // "🩺 Рядок лікаря (ординаторська)", лише заповнена реальними даними й
+  // повторена по одному разу на кожного лікаря.
+  type StaffDepartment = { structure_id: string; name: string; org_edrpou: string };
+  const [staffDeptQuery, setStaffDeptQuery] = useState("");
+  const [staffDeptList, setStaffDeptList] = useState<StaffDepartment[] | null>(null);
+  const [staffDeptListLoading, setStaffDeptListLoading] = useState(false);
+  const [staffSelectedDept, setStaffSelectedDept] = useState<StaffDepartment | null>(null);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+
+  const ensureStaffDeptList = async () => {
+    if (staffDeptList !== null || staffDeptListLoading) return;
+    setStaffDeptListLoading(true);
+    try {
+      const res = await fetch("/api/departments");
+      const data = await res.json();
+      setStaffDeptList(res.ok && data.departments ? data.departments : []);
+    } catch {
+      setStaffDeptList([]);
+    } finally {
+      setStaffDeptListLoading(false);
+    }
+  };
+
+  const normalizedStaffDeptQuery = staffDeptQuery.trim().toLowerCase();
+  const staffDeptMatches = (staffDeptList ?? []).filter((d) =>
+    normalizedStaffDeptQuery ? d.name.toLowerCase().includes(normalizedStaffDeptQuery) : true
+  );
+
+  const handleLoadOrdinatorska = async () => {
+    if (!staffSelectedDept) return;
+    setStaffLoading(true);
+    setStaffError(null);
+    try {
+      const res = await fetch(`/api/staff?department=${encodeURIComponent(staffSelectedDept.structure_id)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setStaffError(data.error || "Помилка завантаження");
+        return;
+      }
+      const staff: { resource_id: string; last_name: string; first_name: string; middle_name: string | null; position_name: string | null }[] =
+        data.staff || [];
+      if (staff.length === 0) {
+        setStaffError("У цього відділення немає працівників у lpz_empl");
+        return;
+      }
+
+      const itemWidth = 220;
+      const itemHeight = 46;
+      const gap = 6;
+      const wrapperPadding = 12;
+      const wrapperWidth = itemWidth + wrapperPadding * 2;
+      const wrapperHeight = staff.length * itemHeight + (staff.length - 1) * gap + wrapperPadding * 2;
+      const freePos = findFreePosition(forcedParentId, wrapperWidth, wrapperHeight);
+
+      const wrapperId = Date.now();
+      const wrapperEl: CanvasElement = {
+        ...buildComplexObjectBase(wrapperId, ""),
+        type: "block",
+        width: wrapperWidth,
+        height: wrapperHeight,
+        x: freePos.x,
+        y: freePos.y,
+        customBgColor: "#ffffff",
+        bgOpacity: 0,
+        padding: 0,
+        borderRadius: 0,
+        parentId: forcedParentId,
+      };
+
+      const newElements: CanvasElement[] = [wrapperEl];
+      staff.forEach((doc, i) => {
+        const itemParentId = wrapperId + 1 + i * 10;
+        const fullName = [doc.last_name, doc.first_name, doc.middle_name].filter(Boolean).join(" ");
+        newElements.push({
+          ...buildComplexObjectBase(itemParentId, ""),
+          type: "button",
+          width: itemWidth,
+          height: itemHeight,
+          x: wrapperPadding,
+          y: wrapperPadding + i * (itemHeight + gap),
+          parentId: wrapperId,
+          customBgColor: "#ffffff",
+          bgOpacity: 0,
+          textColor: "#3a3a3a",
+          hoverBgColor: "#ffffff",
+          hoverTextColor: "#3a3a3a",
+          glowColor: "#b27c8b",
+          glowBlur: 16,
+          borderRadius: 0,
+          fontSize: 20,
+          fontWeight: "300",
+        });
+        newElements.push({
+          ...buildComplexObjectBase(itemParentId + 1, fullName),
+          type: "text",
+          width: itemWidth,
+          height: 28,
+          x: 0,
+          y: 0,
+          parentId: itemParentId,
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#3a3a3a",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(itemParentId + 2, (doc.position_name || "—").toUpperCase()),
+          type: "text",
+          width: itemWidth,
+          height: 18,
+          x: 0,
+          y: 28,
+          parentId: itemParentId,
+          fontSize: 12,
+          fontWeight: "400",
+          textColor: "#9a958f",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+      });
+
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds([wrapperId]);
+    } catch {
+      setStaffError("Не вдалося звернутись до сервера");
+    } finally {
+      setStaffLoading(false);
+    }
+  };
+
   const updateSelectedFields = (field: keyof CanvasElement, value: any) => {
     if (selectedIds.length === 0) return;
     const nextElements = elements.map((el) => {
@@ -2041,6 +3131,34 @@ export default function AppBoundedCanvas() {
 
   const handleDeleteLibraryItem = (id: string) => {
     setLibraryItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // Зберігає поточне виділення як новий ВЛАСНИЙ складний об'єкт (панель
+  // "Складні об'єкти") — та сама логіка визначення коренів і збору
+  // піддерева, що й handleSaveSelectionToLibrary, лише пише в інший список.
+  const handleSaveSelectionAsComplexObject = (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName || selectedIds.length === 0) return;
+
+    const rootIds = selectedIds.filter((id) => {
+      const el = elements.find((e) => e.id === id);
+      return el && !(el.parentId !== null && selectedIds.includes(el.parentId));
+    });
+    if (rootIds.length === 0) return;
+
+    const itemElements = rootIds.flatMap((id) => collectSubtreeElements(id, elements));
+    const newItem: CustomComplexObject = {
+      id: `cobj-${Date.now()}`,
+      name: trimmedName,
+      elements: itemElements,
+      rootIds,
+    };
+    setCustomComplexObjects((prev) => [...prev, newItem]);
+    setComplexObjectNameDraft("");
+  };
+
+  const handleDeleteCustomComplexObject = (id: string) => {
+    setCustomComplexObjects((prev) => prev.filter((item) => item.id !== id));
   };
 
   // Компактне дерево складу пункту бібліотеки (лише перегляд) — показує, з
@@ -2217,6 +3335,13 @@ export default function AppBoundedCanvas() {
         }}
         onDragStop={(e, d) => {
           e.stopPropagation();
+          // Див. коментар біля suppressNextCanvasClickRef: якщо це вкладений
+          // елемент у тісному батькові, курсор при відпусканні кнопки миші
+          // цілком міг опинитись далеко за межами самого елемента (bounds=
+          // "parent" не пускає його самого так далеко) — над порожнім
+          // полотном, чий click-обробник інакше одразу скинув би щойно
+          // встановлене виділення.
+          suppressNextCanvasClickRef.current = true;
           const siblings = elements.filter(
             (other) => other.id !== el.id && other.parentId === el.parentId && isVisibleOnPage(other, currentPageId)
           );
@@ -2226,6 +3351,7 @@ export default function AppBoundedCanvas() {
         }}
         onResizeStop={(e, dir, ref, delta, pos) => {
           e.stopPropagation();
+          suppressNextCanvasClickRef.current = true;
           const siblings = elements.filter(
             (other) => other.id !== el.id && other.parentId === el.parentId && isVisibleOnPage(other, currentPageId)
           );
@@ -2359,7 +3485,7 @@ export default function AppBoundedCanvas() {
                   ))}
                 </div>
               )}
-              <div className="flex-1 min-h-0 overflow-y-auto">
+              <div className="flex-1 min-h-0 overflow-y-auto" ref={attachScrollFadeMask}>
                 {children.length === 0 ? (
                   <div className="px-1 py-2 text-[11px] opacity-50 pointer-events-none">
                     Порожньо — виберіть цей список і додайте елемент
@@ -3854,6 +4980,94 @@ export default function AppBoundedCanvas() {
                   Пошук за ПІБ/ІПН (service_role) — картка з усіма полями на полотні
                 </div>
               </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("doctor-search")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "doctor-search"
+                    ? "bg-sky-600 border-sky-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-sky-50"
+                }`}
+              >
+                <div className="font-bold">👨‍⚕️ Пошук лікаря</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "doctor-search" ? "text-sky-100" : "text-slate-500"
+                  }`}
+                >
+                  Пошук за ПІБ (mv_doctor_full, service_role) — картка з профілем і статистикою випадків
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("dept-stats-search")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "dept-stats-search"
+                    ? "bg-amber-600 border-amber-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-amber-50"
+                }`}
+              >
+                <div className="font-bold">🏢 Пошук відділення (реальні дані)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "dept-stats-search" ? "text-amber-100" : "text-slate-500"
+                  }`}
+                >
+                  Пошук за назвою — картка з реальними випадками/летальністю/ліжко-днями, пораховано напряму з lpz.lpz_hospitalizations (v_department_stats порожній через баг)
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("hospital-kpi")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "hospital-kpi"
+                    ? "bg-emerald-600 border-emerald-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-emerald-50"
+                }`}
+              >
+                <div className="font-bold">📊 КПІ лікарні (реальні дані)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "hospital-kpi" ? "text-emerald-100" : "text-slate-500"
+                  }`}
+                >
+                  Один клік — рядок з 4 плиток (випадки/пацієнти/ліжко-дні/сер. ліжко-дні) з v_hospital_summary
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("indicator-form")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "indicator-form"
+                    ? "bg-fuchsia-600 border-fuchsia-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-fuchsia-50"
+                }`}
+              >
+                <div className="font-bold">🔢 Показник (за списком)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "indicator-form" ? "text-fuchsia-100" : "text-slate-500"
+                  }`}
+                >
+                  Знайди показник з довідника ЛСМД (той самий, що й у &quot;Показниках&quot;), впиши значення — і додай готову плитку в стилі &quot;Картки КПІ&quot;
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedComplexObjectId("staff-ordinatorska");
+                  ensureStaffDeptList();
+                }}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "staff-ordinatorska"
+                    ? "bg-rose-700 border-rose-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-rose-50"
+                }`}
+              >
+                <div className="font-bold">🩺 Ординаторська відділення</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "staff-ordinatorska" ? "text-rose-100" : "text-slate-500"
+                  }`}
+                >
+                  1:1 з .docs-list/.doc-item сторінки завідувача (head-cabinet.css) — обери відділення, і реальний список лікарів (lpz_empl) стовпчиком ляже на полотно
+                </div>
+              </button>
             </div>
 
             {selectedComplexObjectId === "patient-search" && (
@@ -3918,8 +5132,382 @@ export default function AppBoundedCanvas() {
               </div>
             )}
 
+            {selectedComplexObjectId === "doctor-search" && (
+              <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-lg space-y-2.5">
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={doctorSearchQuery}
+                    onChange={(e) => setDoctorSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearchDoctors()}
+                    placeholder="ПІБ лікаря (мін. 2 символи)…"
+                    className="flex-1 p-1.5 border rounded-md text-xs"
+                  />
+                  <button
+                    onClick={handleSearchDoctors}
+                    disabled={doctorSearchLoading}
+                    className="px-2.5 bg-sky-700 hover:bg-sky-800 disabled:opacity-50 text-white text-xs rounded-md shrink-0"
+                  >
+                    {doctorSearchLoading ? "…" : "🔍"}
+                  </button>
+                </div>
+                {doctorSearchError && <div className="text-xs text-red-500 text-center py-1">{doctorSearchError}</div>}
+                {!selectedDoctor && doctorSearchResults.length > 0 && (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {doctorSearchResults.map((d, i) => (
+                      <button
+                        key={String(d.doctor_id ?? i)}
+                        onClick={() => setSelectedDoctor(d)}
+                        className="w-full text-left p-2 rounded-lg border border-sky-200 bg-white hover:bg-sky-50 text-xs"
+                      >
+                        <div className="font-bold text-slate-700">{formatLpzFieldValue(d.full_name)}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {formatLpzFieldValue(d.position)} · {formatLpzFieldValue(d.dept_name)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedDoctor && (
+                  <div className="space-y-1.5">
+                    <button onClick={() => setSelectedDoctor(null)} className="text-[10px] text-sky-700 hover:underline">
+                      ← До результатів пошуку
+                    </button>
+                    <div className="border border-sky-200 bg-white rounded-lg p-2 space-y-1 max-h-56 overflow-y-auto">
+                      {DOCTOR_FIELD_LABELS.map((f) => (
+                        <div key={f.key} className="text-[10px] flex justify-between gap-2">
+                          <span className="text-slate-500 shrink-0">{f.label}:</span>
+                          <span className="text-slate-800 text-right break-all">
+                            {formatLpzFieldValue(selectedDoctor[f.key])}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={handleAddDoctorCard}
+                      className="w-full bg-sky-700 hover:bg-sky-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                    >
+                      ➕ Додати картку на полотно
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "dept-stats-search" && (
+              <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-lg space-y-2.5">
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={deptStatsQuery}
+                    onChange={(e) => setDeptStatsQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearchDeptStats()}
+                    placeholder="Назва відділення (мін. 2 символи)…"
+                    className="flex-1 p-1.5 border rounded-md text-xs"
+                  />
+                  <button
+                    onClick={handleSearchDeptStats}
+                    disabled={deptStatsLoading}
+                    className="px-2.5 bg-amber-700 hover:bg-amber-800 disabled:opacity-50 text-white text-xs rounded-md shrink-0"
+                  >
+                    {deptStatsLoading ? "…" : "🔍"}
+                  </button>
+                </div>
+                {deptStatsError && <div className="text-xs text-red-500 text-center py-1">{deptStatsError}</div>}
+                {!selectedDeptStat && deptStatsResults.length > 0 && (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {deptStatsResults.map((d, i) => (
+                      <button
+                        key={String(d.department_name ?? i)}
+                        onClick={() => setSelectedDeptStat(d)}
+                        className="w-full text-left p-2 rounded-lg border border-amber-200 bg-white hover:bg-amber-50 text-xs"
+                      >
+                        <div className="font-bold text-slate-700">{formatLpzFieldValue(d.department_name)}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {formatLpzFieldValue(d.total_cases)} випадків · летальність {formatLpzFieldValue(d.death_rate_pct)}%
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedDeptStat && (
+                  <div className="space-y-1.5">
+                    <button onClick={() => setSelectedDeptStat(null)} className="text-[10px] text-amber-700 hover:underline">
+                      ← До результатів пошуку
+                    </button>
+                    <div className="border border-amber-200 bg-white rounded-lg p-2 space-y-1 max-h-56 overflow-y-auto">
+                      {DEPARTMENT_STAT_FIELD_LABELS.map((f) => (
+                        <div key={f.key} className="text-[10px] flex justify-between gap-2">
+                          <span className="text-slate-500 shrink-0">{f.label}:</span>
+                          <span className="text-slate-800 text-right break-all">
+                            {formatLpzFieldValue(selectedDeptStat[f.key])}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={handleAddDeptStatCard}
+                      className="w-full bg-amber-700 hover:bg-amber-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                    >
+                      ➕ Додати картку на полотно
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "hospital-kpi" && (
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2.5">
+                <div className="text-[10px] text-slate-500">
+                  Один рядок на всю лікарню (v_hospital_summary) — нема що шукати, просто завантаж і постав на полотно.
+                </div>
+                {hospitalKpiError && <div className="text-xs text-red-500 text-center py-1">{hospitalKpiError}</div>}
+                <button
+                  onClick={handleLoadHospitalKpi}
+                  disabled={hospitalKpiLoading}
+                  className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {hospitalKpiLoading ? "Завантаження…" : "➕ Завантажити й додати на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "indicator-form" && (
+              <div className="p-3 bg-fuchsia-50/70 border border-fuchsia-200 rounded-lg space-y-2.5">
+                <input
+                  type="text"
+                  value={indicatorFormQuery}
+                  onChange={(e) => {
+                    setIndicatorFormQuery(e.target.value);
+                    setIndicatorFormSelected(null);
+                  }}
+                  placeholder="🔍 Пошук за кодом або назвою показника…"
+                  className="w-full p-1.5 border rounded-md text-xs"
+                />
+                {!indicatorFormSelected && indicatorFormQuery.trim() && (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {indicatorFormMatches.length === 0 ? (
+                      <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
+                    ) : (
+                      indicatorFormMatches.map((row) => (
+                        <button
+                          key={`${row.sectionTitle}-${row.code}`}
+                          onClick={() => setIndicatorFormSelected(row)}
+                          className="w-full text-left p-2 rounded-lg border border-fuchsia-200 bg-white hover:bg-fuchsia-50 text-xs"
+                        >
+                          <div className="font-bold text-slate-700">{row.nameUk}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">{row.code}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+                {indicatorFormSelected && (
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => setIndicatorFormSelected(null)}
+                      className="text-[10px] text-fuchsia-700 hover:underline"
+                    >
+                      ← До результатів пошуку
+                    </button>
+                    <div className="border border-fuchsia-200 bg-white rounded-lg p-2 space-y-1">
+                      <div className="text-xs font-bold text-slate-700">{indicatorFormSelected.nameUk}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">{indicatorFormSelected.code}</div>
+                      {indicatorFormSelected.formula && (
+                        <div className="text-[10px] text-slate-400 font-mono break-all">
+                          {indicatorFormSelected.formula}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                        Значення (впиши вручну — не живий запит до бази):
+                      </label>
+                      <input
+                        type="text"
+                        value={indicatorFormValue}
+                        onChange={(e) => setIndicatorFormValue(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleAddIndicatorCard()}
+                        placeholder="напр. 20 500 або 12,4%"
+                        className="w-full p-1.5 border rounded-md text-xs"
+                      />
+                    </div>
+                    <button
+                      onClick={handleAddIndicatorCard}
+                      disabled={!indicatorFormValue.trim()}
+                      className="w-full bg-fuchsia-700 hover:bg-fuchsia-800 disabled:opacity-40 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                    >
+                      ➕ Додати плитку на полотно
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "staff-ordinatorska" && (
+              <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg space-y-2.5">
+                <input
+                  type="text"
+                  value={staffDeptQuery}
+                  onChange={(e) => {
+                    setStaffDeptQuery(e.target.value);
+                    setStaffSelectedDept(null);
+                  }}
+                  placeholder={staffDeptListLoading ? "Завантаження списку відділень…" : "🔍 Назва відділення…"}
+                  disabled={staffDeptListLoading}
+                  className="w-full p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
+                />
+                {!staffSelectedDept && staffDeptQuery.trim() && (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {staffDeptMatches.length === 0 ? (
+                      <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
+                    ) : (
+                      staffDeptMatches.map((d) => (
+                        <button
+                          key={d.structure_id}
+                          onClick={() => setStaffSelectedDept(d)}
+                          className="w-full text-left p-2 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-xs"
+                        >
+                          <div className="font-bold text-slate-700">{d.name}</div>
+                          <div className="text-[10px] text-slate-500">{d.org_edrpou}</div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+                {staffSelectedDept && (
+                  <div className="space-y-2">
+                    <button
+                      onClick={() => setStaffSelectedDept(null)}
+                      className="text-[10px] text-rose-700 hover:underline"
+                    >
+                      ← До результатів пошуку
+                    </button>
+                    <div className="border border-rose-200 bg-white rounded-lg p-2">
+                      <div className="text-xs font-bold text-slate-700">{staffSelectedDept.name}</div>
+                      <div className="text-[10px] text-slate-500">{staffSelectedDept.org_edrpou}</div>
+                    </div>
+                    {staffError && <div className="text-xs text-red-500 text-center py-1">{staffError}</div>}
+                    <button
+                      onClick={handleLoadOrdinatorska}
+                      disabled={staffLoading}
+                      className="w-full bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                    >
+                      {staffLoading ? "Завантаження…" : "➕ Завантажити ординаторську на полотно"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Власні складні об'єкти — зібрані з простих фігур на полотні
+                (прямокутник, текст тощо), той самий принцип збереження, що
+                й у "Бібліотеці": виділити → зберегти під назвою → додавати
+                повторно. handleAddLibraryItem/renderLibraryItemTree тут
+                свідомо переюзані — вони вже узагальнені (працюють з будь-
+                яким { id, name, elements, rootIds }), а не прив'язані до
+                самого списку libraryItems. Розташовано ПІСЛЯ всіх форм
+                пошуку/завантаження (а не одразу під списком кнопок) — інакше
+                кожна нова спеціальна форма (Пошук лікаря, Ординаторська…)
+                опинялася б усе нижче й нижче під цим (потенційно довгим)
+                списком, і її не було б видно без прокрутки. */}
+            <div className="pt-2 border-t border-slate-200 space-y-1.5">
+              <div className="text-[10px] text-slate-400">
+                Свій складний об&apos;єкт — зберіть його з простих фігур на полотні (прямокутник, текст тощо), виділіть і збережіть тут.
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={complexObjectNameDraft}
+                  onChange={(e) => setComplexObjectNameDraft(e.target.value)}
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && handleSaveSelectionAsComplexObject(complexObjectNameDraft)
+                  }
+                  placeholder={
+                    selectedIds.length === 0 ? "Виділіть елемент(и) на полотні…" : "Назва складного об'єкта…"
+                  }
+                  disabled={selectedIds.length === 0}
+                  className="flex-1 p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
+                />
+                <button
+                  onClick={() => handleSaveSelectionAsComplexObject(complexObjectNameDraft)}
+                  disabled={selectedIds.length === 0 || !complexObjectNameDraft.trim()}
+                  className="px-2.5 bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white text-xs rounded-md shrink-0"
+                  title="Зберегти виділене як складний об'єкт"
+                >
+                  💾
+                </button>
+              </div>
+              {customComplexObjects.length === 0 ? (
+                <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                  Поки немає власних складних об&apos;єктів.
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {customComplexObjects.map((item) => {
+                    const isOpen = openCustomComplexObjectIds.has(item.id);
+                    const hasStructure = item.elements.length > 1;
+                    return (
+                      <div key={item.id} className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                        <div className="p-2 flex items-center gap-2">
+                          {hasStructure ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleCustomComplexObjectOpen(item.id)}
+                              className="shrink-0 w-3.5 text-center text-[10px] text-slate-400"
+                              title={isOpen ? "Згорнути склад" : "Показати склад"}
+                            >
+                              {isOpen ? "▼" : "▶"}
+                            </button>
+                          ) : (
+                            <span className="shrink-0 w-3.5" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-slate-700 truncate">{item.name}</div>
+                            <div className="text-[10px] text-slate-400">
+                              {item.rootIds.length > 1 ? `${item.rootIds.length} елем.` : "1 елемент"}
+                              {item.elements.length > item.rootIds.length
+                                ? ` + ${item.elements.length - item.rootIds.length} вклад.`
+                                : ""}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleAddLibraryItem(item)}
+                            className="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white text-[11px] rounded-md shrink-0"
+                            title="Додати на полотно"
+                          >
+                            ➕
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Видалити «${item.name}» зі складних об'єктів?`))
+                                handleDeleteCustomComplexObject(item.id);
+                            }}
+                            className="px-2 py-1 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-500 text-[11px] rounded-md shrink-0"
+                            title="Видалити"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                        {isOpen && hasStructure && (
+                          <div className="px-2 pb-2 pt-1 border-t border-slate-100 bg-slate-50/60">
+                            {renderLibraryItemTree(item)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             {selectedComplexObjectId &&
               selectedComplexObjectId !== "patient-search" &&
+              selectedComplexObjectId !== "doctor-search" &&
+              selectedComplexObjectId !== "dept-stats-search" &&
+              selectedComplexObjectId !== "hospital-kpi" &&
+              selectedComplexObjectId !== "indicator-form" &&
+              selectedComplexObjectId !== "staff-ordinatorska" &&
               (() => {
                 const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
                 // Редагування вже існуючої кнопки на полотні (обрана через
@@ -4356,6 +5944,10 @@ export default function AppBoundedCanvas() {
         {/* Полотно на всю сторінку */}
         <main
           onClick={() => {
+            if (suppressNextCanvasClickRef.current) {
+              suppressNextCanvasClickRef.current = false;
+              return;
+            }
             handleSelectElement(null);
             setClickedElementId(null);
           }}
