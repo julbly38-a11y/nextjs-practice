@@ -134,6 +134,20 @@ interface CanvasElement {
   columns?: ListColumn[];
   // Рядок списку (дитина list-елемента зі стовпцями) — значення по кожному стовпцю
   columnValues?: Record<string, string>;
+  // Рядки списку — два стековані рядки (основний content + дрібніший підпис
+  // знизу, ВЕЛИКИМИ) замість колонок поруч. 1:1 з .doc-item з hospital-
+  // analytics (ім'я над посадою) — для списків, де потрібен саме такий
+  // вигляд рядка, а не таблична колонка "Поле"/"Значення".
+  stackedRows?: boolean;
+  // Підпис під основним content рядка — використовується лише коли
+  // stackedRows === true на батьківському списку.
+  subContent?: string;
+  // Ключ зв'язку між рядками РІЗНИХ списків на тій самій сторінці — 1:1 із
+  // старим принципом census-row[data-doctor] ↔ doc-item[data-doctor]
+  // (utils.js:loadCensus): клік на рядку з linkKey підсвічує (рожеве
+  // світіння) і прокручує до всіх ІНШИХ рядків з тим самим linkKey, де б
+  // вони не були — напр. пацієнт ↔ його лікар в ординаторській.
+  linkKey?: string;
 
   // Налаштування появи
   showOnHoverId?: number | null; // ціль за замовчуванням, якщо для сторінки немає власного запису в *TargetByPage
@@ -1098,6 +1112,18 @@ export default function AppBoundedCanvas() {
 
   const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
   const [clickedElementId, setClickedElementId] = useState<number | null>(null);
+
+  // Крос-підсвітка рядків з однаковим linkKey (пацієнт ↔ лікар тощо) — див.
+  // коментар біля CanvasElement.linkKey. Клік на рядку з linkKey перезаписує
+  // цей набір id-шників усіх ІНШИХ рядків з тим самим ключем на поточній
+  // сторінці; ефект нижче прокручує до першого знайденого.
+  const [linkedHighlightIds, setLinkedHighlightIds] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    if (linkedHighlightIds.size === 0) return;
+    const firstId = Array.from(linkedHighlightIds)[0];
+    const node = document.querySelector(`[data-el-id="${firstId}"]`);
+    if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [linkedHighlightIds]);
 
   const [newType, setNewType] = useState<ElementType>("block");
   const [newContent, setNewContent] = useState<string>("Елемент");
@@ -2929,90 +2955,136 @@ export default function AppBoundedCanvas() {
         return;
       }
 
-      const itemWidth = 220;
-      const itemHeight = 46;
-      const gap = 6;
-      const wrapperPadding = 12;
-      const wrapperWidth = itemWidth + wrapperPadding * 2;
-      const wrapperHeight = staff.length * itemHeight + (staff.length - 1) * gap + wrapperPadding * 2;
-      const freePos = findFreePosition(forcedParentId, wrapperWidth, wrapperHeight);
+      // Тип "Список" з stackedRows — фіксований розмір (не розтягує поле,
+      // куди вкладений: getMinDimensions рахує лише саму цю коробку, не
+      // висоту всіх рядків усередині) + внутрішній скрол із fade-маскою,
+      // замість стовпчика окремих doc-item-елементів (той розтягував поле-
+      // контейнер під ВСІХ лікарів і показував список без жодного
+      // обмеження — 10 видимих рядків і скрол для решти, як і мало бути).
+      // stackedRows: true — кожен рядок сам двоповерховий (ім'я над
+      // посадою, ВЕЛИКИМИ, підсвітка при наведенні), 1:1 з .doc-item, а не
+      // звична колонка "Поле"/"Значення" поруч.
+      const listWidth = 280;
+      const listHeight = 360;
+      const freePos = findFreePosition(forcedParentId, listWidth, listHeight);
+      const listId = Date.now();
 
-      const wrapperId = Date.now();
-      const wrapperEl: CanvasElement = {
-        ...buildComplexObjectBase(wrapperId, ""),
-        type: "block",
-        width: wrapperWidth,
-        height: wrapperHeight,
+      const listElement: CanvasElement = {
+        ...buildComplexObjectBase(listId, `Ординаторська: ${staffSelectedDept.name}`),
+        type: "list",
+        width: listWidth,
+        height: listHeight,
         x: freePos.x,
         y: freePos.y,
-        customBgColor: "#ffffff",
-        bgOpacity: 0,
-        padding: 0,
-        borderRadius: 0,
         parentId: forcedParentId,
+        stackedRows: true,
       };
 
-      const newElements: CanvasElement[] = [wrapperEl];
-      staff.forEach((doc, i) => {
-        const itemParentId = wrapperId + 1 + i * 10;
+      const rowElements: CanvasElement[] = staff.map((doc, i) => {
         const fullName = [doc.last_name, doc.first_name, doc.middle_name].filter(Boolean).join(" ");
-        newElements.push({
-          ...buildComplexObjectBase(itemParentId, ""),
-          type: "button",
-          width: itemWidth,
-          height: itemHeight,
-          x: wrapperPadding,
-          y: wrapperPadding + i * (itemHeight + gap),
-          parentId: wrapperId,
-          customBgColor: "#ffffff",
-          bgOpacity: 0,
-          textColor: "#3a3a3a",
-          hoverBgColor: "#ffffff",
-          hoverTextColor: "#3a3a3a",
-          glowColor: "#b27c8b",
-          glowBlur: 16,
-          borderRadius: 0,
-          fontSize: 20,
-          fontWeight: "300",
-        });
-        newElements.push({
-          ...buildComplexObjectBase(itemParentId + 1, fullName),
+        return {
+          ...buildComplexObjectBase(listId + 1 + i, fullName),
           type: "text",
-          width: itemWidth,
-          height: 28,
-          x: 0,
-          y: 0,
-          parentId: itemParentId,
-          fontSize: 20,
-          fontWeight: "300",
+          width: 120,
+          height: 26,
+          x: 1,
+          y: 1,
           textColor: "#3a3a3a",
-          textAlign: "right",
-          bgOpacity: 0,
-          padding: 0,
-        });
-        newElements.push({
-          ...buildComplexObjectBase(itemParentId + 2, (doc.position_name || "—").toUpperCase()),
-          type: "text",
-          width: itemWidth,
-          height: 18,
-          x: 0,
-          y: 28,
-          parentId: itemParentId,
-          fontSize: 12,
-          fontWeight: "400",
-          textColor: "#9a958f",
-          textAlign: "right",
-          bgOpacity: 0,
-          padding: 0,
-        });
+          padding: 4,
+          fontSize: 17,
+          fontWeight: "300",
+          parentId: listId,
+          subContent: doc.position_name || "—",
+          // Ключ зв'язку з "Перебуває у відділенні" — той самий resource_id,
+          // що lpz_hospitalization_doctors.doctor_id (перевірено join'ом).
+          linkKey: doc.resource_id,
+        };
       });
 
-      updateElementsAndHistory([...elements, ...newElements]);
-      setSelectedIds([wrapperId]);
+      updateElementsAndHistory([...elements, listElement, ...rowElements]);
+      setSelectedIds([listId]);
     } catch {
       setStaffError("Не вдалося звернутись до сервера");
     } finally {
       setStaffLoading(false);
+    }
+  };
+
+  // "Перебуває у відділенні" (реальні дані) — 1:1 за смислом з utils.js:
+  // loadCensus, джерело — lpz.lpz_hospitalization_doctors (discharge_date
+  // IS NULL), не lpz_hospitalizations.doc_resource_id (заповнений лише у
+  // 4 з 2599 живих випадків — непридатно). linkKey = doctor_id — той самий
+  // ключ, що на рядках Ординаторської (lpz_empl.resource_id) — клік на
+  // пацієнта підсвітить і прокрутить до його лікаря, якщо той теж на
+  // полотні (і навпаки — клік на лікаря підсвітить його пацієнтів).
+  const [censusLoading, setCensusLoading] = useState(false);
+  const [censusError, setCensusError] = useState<string | null>(null);
+
+  const handleLoadCensus = async () => {
+    if (!staffSelectedDept) return;
+    setCensusLoading(true);
+    setCensusError(null);
+    try {
+      const res = await fetch(`/api/departments/census?department=${encodeURIComponent(staffSelectedDept.name)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setCensusError(data.error || "Помилка завантаження");
+        return;
+      }
+      const patients: { patient_name: string; admission_date: string | null; doctor_id: string | null; doctor_name: string | null }[] =
+        data.patients || [];
+      if (patients.length === 0) {
+        setCensusError("У цього відділення зараз немає пацієнтів у lpz_hospitalization_doctors");
+        return;
+      }
+
+      const listWidth = 280;
+      const listHeight = 360;
+      const freePos = findFreePosition(forcedParentId, listWidth, listHeight);
+      const listId = Date.now();
+
+      const listElement: CanvasElement = {
+        ...buildComplexObjectBase(listId, `Перебуває у відділенні: ${staffSelectedDept.name}`),
+        type: "list",
+        width: listWidth,
+        height: listHeight,
+        x: freePos.x,
+        y: freePos.y,
+        parentId: forcedParentId,
+        stackedRows: true,
+      };
+
+      const today = new Date();
+      const rowElements: CanvasElement[] = patients.map((p, i) => {
+        const days = p.admission_date
+          ? Math.max(0, Math.round((today.getTime() - new Date(p.admission_date).getTime()) / 86400000))
+          : null;
+        const sub = [days !== null ? `${days} дн.` : null, p.doctor_name ? `лікар: ${p.doctor_name}` : null]
+          .filter(Boolean)
+          .join(" · ");
+        return {
+          ...buildComplexObjectBase(listId + 1 + i, p.patient_name || "—"),
+          type: "text",
+          width: 120,
+          height: 26,
+          x: 1,
+          y: 1,
+          textColor: "#3a3a3a",
+          padding: 4,
+          fontSize: 17,
+          fontWeight: "300",
+          parentId: listId,
+          subContent: sub || "—",
+          linkKey: p.doctor_id || undefined,
+        };
+      });
+
+      updateElementsAndHistory([...elements, listElement, ...rowElements]);
+      setSelectedIds([listId]);
+    } catch {
+      setCensusError("Не вдалося звернутись до сервера");
+    } finally {
+      setCensusLoading(false);
     }
   };
 
@@ -3494,22 +3566,41 @@ export default function AppBoundedCanvas() {
                   children.map((child) => (
                     <div
                       key={child.id}
+                      data-el-id={child.id}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleSelectElement(child.id, e.shiftKey || e.ctrlKey || e.metaKey);
+                        if (child.linkKey) {
+                          const matches = elements.filter(
+                            (o) => o.id !== child.id && o.linkKey === child.linkKey && isVisibleOnPage(o, currentPageId)
+                          );
+                          setLinkedHighlightIds(new Set(matches.map((m) => m.id)));
+                        } else if (linkedHighlightIds.size > 0) {
+                          setLinkedHighlightIds(new Set());
+                        }
                       }}
-                      className={`flex items-center gap-2 px-1 py-1.5 border-b border-black/10 last:border-b-0 cursor-pointer ${
-                        selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""
-                      }`}
+                      className={`px-1 py-1.5 border-b border-black/10 last:border-b-0 cursor-pointer transition-colors ${
+                        el.stackedRows ? "text-right hover:text-[#b27c8b]" : "flex items-center gap-2"
+                      } ${selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""}`}
                       style={{
                         color: child.textColor || "#000000",
                         backgroundColor: child.customBgColor || "transparent",
                         fontSize: `${child.fontSize || 12}px`,
                         fontFamily: child.fontFamily || "inherit",
                         fontWeight: child.fontWeight || "500",
+                        textShadow: linkedHighlightIds.has(child.id)
+                          ? "0 0 6px rgba(178,124,139,.55), 0 0 16px rgba(178,124,139,.45), 0 0 30px rgba(178,124,139,.3)"
+                          : undefined,
                       }}
                     >
-                      {el.columns && el.columns.length > 0 ? (
+                      {el.stackedRows ? (
+                        <>
+                          <div className="truncate">{child.content}</div>
+                          {child.subContent && (
+                            <div className="truncate text-[0.6em] uppercase opacity-60">{child.subContent}</div>
+                          )}
+                        </>
+                      ) : el.columns && el.columns.length > 0 ? (
                         el.columns.map((col) => (
                           <span
                             key={col.id}
@@ -5065,7 +5156,7 @@ export default function AppBoundedCanvas() {
                     selectedComplexObjectId === "staff-ordinatorska" ? "text-rose-100" : "text-slate-500"
                   }`}
                 >
-                  1:1 з .docs-list/.doc-item сторінки завідувача (head-cabinet.css) — обери відділення, і реальний список лікарів (lpz_empl) стовпчиком ляже на полотно
+                  Наближення до .docs-list сторінки завідувача (head-cabinet.css) — обери відділення, завантаж лікарів і/або пацієнтів, що зараз перебувають там; клік на рядку підсвітить і прокрутить до пов&apos;язаного рядка в іншому списку (1:1 з census-row↔doc-item зі старого проекту)
                 </div>
               </button>
             </div>
@@ -5395,6 +5486,18 @@ export default function AppBoundedCanvas() {
                     >
                       {staffLoading ? "Завантаження…" : "➕ Завантажити ординаторську на полотно"}
                     </button>
+                    {censusError && <div className="text-xs text-red-500 text-center py-1">{censusError}</div>}
+                    <button
+                      onClick={handleLoadCensus}
+                      disabled={censusLoading}
+                      className="w-full bg-blue-700 hover:bg-blue-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                      title="Клік на пацієнта підсвітить і прокрутить до його лікаря в Ординаторській (і навпаки) — якщо обидва списки на полотні"
+                    >
+                      {censusLoading ? "Завантаження…" : "➕ Завантажити «Перебуває у відділенні»"}
+                    </button>
+                    <div className="text-[10px] text-slate-400">
+                      Обидва списки пов&apos;язані: клік на рядку підсвітить і прокрутить до відповідного рядка в іншому списку (lpz_hospitalization_doctors.doctor_id ↔ lpz_empl.resource_id) — якщо обидва вже на полотні.
+                    </div>
                   </div>
                 )}
               </div>
@@ -5950,6 +6053,7 @@ export default function AppBoundedCanvas() {
             }
             handleSelectElement(null);
             setClickedElementId(null);
+            if (linkedHighlightIds.size > 0) setLinkedHighlightIds(new Set());
           }}
           className="absolute inset-0 overflow-auto"
           style={{ backgroundColor: currentPage.meshBackground ? "#f0ece8" : "#ffffff" }}
