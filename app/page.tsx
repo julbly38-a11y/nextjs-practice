@@ -182,6 +182,16 @@ interface CanvasElement {
   isToggle?: boolean;
   isPressed?: boolean;
   groupExclusive?: boolean; // клік активує лише цю кнопку — всі сестри з тим самим parentId і groupExclusive=true втрачають isPressed (як пігулки років у старому проекті)
+
+  // Зв'язок "пігулка року" ↔ "КПІ лікарні": спільний kpiGroupId з'єднує
+  // кнопку-пігулку (задає kpiYear — рік для запиту, null/undefined = весь
+  // час) з текстовими полями значень усередині плиток КПІ (задають kpiField
+  // — яке саме поле відповіді показувати). Клік на пігулці тягне
+  // /api/hospital-summary?year=… і живцем оновлює content усіх текстових
+  // полів з тим самим kpiGroupId — заміна ручного вибору року в панелі.
+  kpiGroupId?: string;
+  kpiYear?: number | null;
+  kpiField?: "total_cases" | "unique_patients" | "death_rate_pct" | "avg_age" | "avg_bed_days";
 }
 
 interface Page {
@@ -274,6 +284,18 @@ const PILL_STYLE_FIELDS: ComplexObjectField[] = [
   { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
   { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
   { key: "borderRadius", label: "Скруглення (px)", type: "number" },
+];
+
+// Поля відповіді public.lpz_hospital_summary → плитки "КПІ лікарні" (див.
+// handleLoadHospitalKpi/handleKpiPillClick): кожному текстовому полю значення
+// плитки присвоюється kpiField з цього списку, щоб пігулка-рік знала, яке
+// саме число туди підставити після живого запиту.
+const HOSPITAL_KPI_FIELDS: { field: NonNullable<CanvasElement["kpiField"]>; label: string }[] = [
+  { field: "total_cases", label: "ВИПАДКІВ" },
+  { field: "unique_patients", label: "ПАЦІЄНТІВ" },
+  { field: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ" },
+  { field: "avg_age", label: "СЕРЕДНІЙ ВІК" },
+  { field: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
 ];
 
 const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
@@ -1135,26 +1157,32 @@ export default function AppBoundedCanvas() {
   const [history, setHistory] = useState<{ pages: Page[]; elements: CanvasElement[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
-  // Позиція та розмір плаваючої панелі управління (винесена з полотна, щоб не заважала)
+  // Позиція та розмір плаваючої панелі "🧱 Інструменти" (Створити/Сторінка/
+  // Параметри/Складні об'єкти/Бібліотека — усе, що додає/редагує вміст
+  // полотна, об'єднане в одну панель із вкладками замість окремих вікон).
   const [panelPos, setPanelPos] = useState<{ x: number; y: number }>({ x: 24, y: 24 });
   const [panelSize, setPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 640 });
   const [panelOpacity, setPanelOpacity] = useState<number>(0.8);
+  const [toolsPanelCollapsed, setToolsPanelCollapsed] = useState<boolean>(false);
 
-  // Окрема плаваюча панель "Складні об'єкти" — список пресетів (пігулка тощо),
-  // при виборі відкриває поля налаштувань (підсвітка/кольори/розміри), перед
-  // тим як додати готовий елемент на полотно.
-  const [complexPanelPos, setComplexPanelPos] = useState<{ x: number; y: number }>({ x: 380, y: 24 });
-  const [complexPanelSize, setComplexPanelSize] = useState<{ width: number; height: number }>({ width: 300, height: 480 });
-  const [complexPanelOpacity, setComplexPanelOpacity] = useState<number>(0.9);
+  // Плаваюча панель "📖 Довідники" — Показники й Підключення до бази, обидві
+  // суто довідкові (не додають нічого на полотно), об'єднані вкладками в
+  // одну панель так само, як і "Інструменти" вище.
+  const [refsPanelPos, setRefsPanelPos] = useState<{ x: number; y: number }>({ x: 380, y: 24 });
+  const [refsPanelSize, setRefsPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 560 });
+  const [refsPanelOpacity, setRefsPanelOpacity] = useState<number>(0.92);
+  const [refsPanelCollapsed, setRefsPanelCollapsed] = useState<boolean>(false);
+  const [refsActiveTab, setRefsActiveTab] = useState<"indicators" | "connections">("indicators");
+
+  // Список пресетів "Складних об'єктів" (пігулка тощо) — при виборі
+  // відкриває поля налаштувань (підсвітка/кольори/розміри), перед тим як
+  // додати готовий елемент на полотно. Вкладка "🧩 Об'єкти" панелі "Інструменти".
   const [selectedComplexObjectId, setSelectedComplexObjectId] = useState<string | null>(null);
   const [complexObjectDraft, setComplexObjectDraft] = useState<Partial<CanvasElement>>({});
 
-  // Окрема плаваюча панель "Показники" — довідник обчислюваних полів ЛСМД
-  // (код + українська назва + SQL-формула), щоб шукати код показника, коли
-  // картці (напр. КПІ) треба прив'язати реальне поле замість тестового тексту.
-  const [indicatorsPanelPos, setIndicatorsPanelPos] = useState<{ x: number; y: number }>({ x: 700, y: 24 });
-  const [indicatorsPanelSize, setIndicatorsPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 520 });
-  const [indicatorsPanelOpacity, setIndicatorsPanelOpacity] = useState<number>(0.92);
+  // Довідник обчислюваних полів ЛСМД (код + українська назва + SQL-формула),
+  // щоб шукати код показника, коли картці (напр. КПІ) треба прив'язати
+  // реальне поле замість тестового тексту. Вкладка "Показники" панелі "Довідники".
   const [indicatorSearch, setIndicatorSearch] = useState("");
   const [openIndicatorSections, setOpenIndicatorSections] = useState<Set<string>>(new Set());
   const [copiedIndicatorCode, setCopiedIndicatorCode] = useState<string | null>(null);
@@ -1183,13 +1211,10 @@ export default function AppBoundedCanvas() {
       : section.rows,
   })).filter((section) => section.rows.length > 0);
 
-  // Окрема плаваюча панель "Підключення до бази" — довідник способів API-
-  // доступу до Supabase (публічний, service role, пряме підключення до
-  // Postgres, GraphQL, Management API/MCP, Storage/Auth/Realtime). Лише
-  // довідник: реальні ключі/паролі в env-змінних, сюди не потрапляють.
-  const [connectionsPanelPos, setConnectionsPanelPos] = useState<{ x: number; y: number }>({ x: 1050, y: 24 });
-  const [connectionsPanelSize, setConnectionsPanelSize] = useState<{ width: number; height: number }>({ width: 320, height: 520 });
-  const [connectionsPanelOpacity, setConnectionsPanelOpacity] = useState<number>(0.92);
+  // Довідник способів API-доступу до Supabase (публічний, service role,
+  // пряме підключення до Postgres, GraphQL, Management API/MCP, Storage/
+  // Auth/Realtime). Лише довідник: реальні ключі/паролі в env-змінних, сюди
+  // не потрапляють. Вкладка "Підключення до бази" панелі "Довідники".
   const [openConnectionIds, setOpenConnectionIds] = useState<Set<string>>(new Set());
   const toggleConnectionOpen = (id: string) => {
     setOpenConnectionIds((prev) => {
@@ -1205,16 +1230,13 @@ export default function AppBoundedCanvas() {
     tooling: "bg-slate-200 text-slate-700",
   };
 
-  // Окрема плаваюча панель "Бібліотека" — власні готові елементи
-  // користувача: зберігаєш виділений фрагмент полотна під назвою, потім
-  // вставляєш той самий фрагмент (зі збереженою внутрішньою структурою й
-  // відносним розташуванням) повторно на цій чи інших сторінках. На
-  // відміну від "Складних об'єктів" (вбудовані пресети), наповнення тут
-  // повністю визначає сам користувач.
+  // Власні готові елементи користувача: зберігаєш виділений фрагмент
+  // полотна під назвою, потім вставляєш той самий фрагмент (зі збереженою
+  // внутрішньою структурою й відносним розташуванням) повторно на цій чи
+  // інших сторінках. На відміну від "Складних об'єктів" (вбудовані
+  // пресети), наповнення тут повністю визначає сам користувач. Вкладка
+  // "📚 Бібліотека" панелі "Інструменти".
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
-  const [libraryPanelPos, setLibraryPanelPos] = useState<{ x: number; y: number }>({ x: 380, y: 520 });
-  const [libraryPanelSize, setLibraryPanelSize] = useState<{ width: number; height: number }>({ width: 300, height: 380 });
-  const [libraryPanelOpacity, setLibraryPanelOpacity] = useState<number>(0.9);
   const [libraryNameDraft, setLibraryNameDraft] = useState<string>("");
   // Які пункти бібліотеки розгорнуті — показують дерево складу (з яких
   // простих елементів і в якій вкладеності зібраний цей складний елемент).
@@ -1560,7 +1582,9 @@ export default function AppBoundedCanvas() {
   // Вкладки головної панелі управління — замість одного суцільного скролу
   // (Створити елемент + Ієрархія + Сторінка + Параметри в одному стовпці).
   // "params" відкривається автоматично при виборі елемента (див. ефект нижче).
-  const [activePanelTab, setActivePanelTab] = useState<"create" | "page" | "params">("create");
+  const [activePanelTab, setActivePanelTab] = useState<"create" | "page" | "params" | "complex" | "library">(
+    "create"
+  );
 
   // Які кольорові секції всередині вкладки "Параметри" розгорнуті — акордеон,
   // не взаємовиключний (можна тримати відкритими кілька одразу). Позиція,
@@ -1634,6 +1658,7 @@ export default function AppBoundedCanvas() {
     const savedPanelPos = localStorage.getItem("mis_canvas_panel_pos");
     const savedPanelSize = localStorage.getItem("mis_canvas_panel_size");
     const savedPanelOpacity = localStorage.getItem("mis_canvas_panel_opacity");
+    const savedToolsPanelCollapsed = localStorage.getItem("mis_canvas_tools_panel_collapsed");
     if (savedPanelPos) {
       try { setPanelPos(clampPanelPos(JSON.parse(savedPanelPos))); } catch (e) {}
     }
@@ -1643,18 +1668,8 @@ export default function AppBoundedCanvas() {
     if (savedPanelOpacity) {
       try { setPanelOpacity(JSON.parse(savedPanelOpacity)); } catch (e) {}
     }
-
-    const savedComplexPanelPos = localStorage.getItem("mis_canvas_complex_panel_pos");
-    const savedComplexPanelSize = localStorage.getItem("mis_canvas_complex_panel_size");
-    const savedComplexPanelOpacity = localStorage.getItem("mis_canvas_complex_panel_opacity");
-    if (savedComplexPanelPos) {
-      try { setComplexPanelPos(clampPanelPos(JSON.parse(savedComplexPanelPos))); } catch (e) {}
-    }
-    if (savedComplexPanelSize) {
-      try { setComplexPanelSize(JSON.parse(savedComplexPanelSize)); } catch (e) {}
-    }
-    if (savedComplexPanelOpacity) {
-      try { setComplexPanelOpacity(JSON.parse(savedComplexPanelOpacity)); } catch (e) {}
+    if (savedToolsPanelCollapsed) {
+      try { setToolsPanelCollapsed(JSON.parse(savedToolsPanelCollapsed)); } catch (e) {}
     }
 
     const savedOpenParamSections = localStorage.getItem("mis_canvas_open_param_sections");
@@ -1662,47 +1677,26 @@ export default function AppBoundedCanvas() {
       try { setOpenParamSections(new Set(JSON.parse(savedOpenParamSections))); } catch (e) {}
     }
 
-    const savedIndicatorsPanelPos = localStorage.getItem("mis_canvas_indicators_panel_pos");
-    const savedIndicatorsPanelSize = localStorage.getItem("mis_canvas_indicators_panel_size");
-    const savedIndicatorsPanelOpacity = localStorage.getItem("mis_canvas_indicators_panel_opacity");
-    if (savedIndicatorsPanelPos) {
-      try { setIndicatorsPanelPos(clampPanelPos(JSON.parse(savedIndicatorsPanelPos))); } catch (e) {}
+    const savedRefsPanelPos = localStorage.getItem("mis_canvas_refs_panel_pos");
+    const savedRefsPanelSize = localStorage.getItem("mis_canvas_refs_panel_size");
+    const savedRefsPanelOpacity = localStorage.getItem("mis_canvas_refs_panel_opacity");
+    const savedRefsPanelCollapsed = localStorage.getItem("mis_canvas_refs_panel_collapsed");
+    if (savedRefsPanelPos) {
+      try { setRefsPanelPos(clampPanelPos(JSON.parse(savedRefsPanelPos))); } catch (e) {}
     }
-    if (savedIndicatorsPanelSize) {
-      try { setIndicatorsPanelSize(JSON.parse(savedIndicatorsPanelSize)); } catch (e) {}
+    if (savedRefsPanelSize) {
+      try { setRefsPanelSize(JSON.parse(savedRefsPanelSize)); } catch (e) {}
     }
-    if (savedIndicatorsPanelOpacity) {
-      try { setIndicatorsPanelOpacity(JSON.parse(savedIndicatorsPanelOpacity)); } catch (e) {}
+    if (savedRefsPanelOpacity) {
+      try { setRefsPanelOpacity(JSON.parse(savedRefsPanelOpacity)); } catch (e) {}
     }
-
-    const savedConnectionsPanelPos = localStorage.getItem("mis_canvas_connections_panel_pos");
-    const savedConnectionsPanelSize = localStorage.getItem("mis_canvas_connections_panel_size");
-    const savedConnectionsPanelOpacity = localStorage.getItem("mis_canvas_connections_panel_opacity");
-    if (savedConnectionsPanelPos) {
-      try { setConnectionsPanelPos(clampPanelPos(JSON.parse(savedConnectionsPanelPos))); } catch (e) {}
-    }
-    if (savedConnectionsPanelSize) {
-      try { setConnectionsPanelSize(JSON.parse(savedConnectionsPanelSize)); } catch (e) {}
-    }
-    if (savedConnectionsPanelOpacity) {
-      try { setConnectionsPanelOpacity(JSON.parse(savedConnectionsPanelOpacity)); } catch (e) {}
+    if (savedRefsPanelCollapsed) {
+      try { setRefsPanelCollapsed(JSON.parse(savedRefsPanelCollapsed)); } catch (e) {}
     }
 
     const savedLibraryItems = localStorage.getItem("mis_canvas_library_items");
-    const savedLibraryPanelPos = localStorage.getItem("mis_canvas_library_panel_pos");
-    const savedLibraryPanelSize = localStorage.getItem("mis_canvas_library_panel_size");
-    const savedLibraryPanelOpacity = localStorage.getItem("mis_canvas_library_panel_opacity");
     if (savedLibraryItems) {
       try { setLibraryItems(JSON.parse(savedLibraryItems)); } catch (e) {}
-    }
-    if (savedLibraryPanelPos) {
-      try { setLibraryPanelPos(clampPanelPos(JSON.parse(savedLibraryPanelPos))); } catch (e) {}
-    }
-    if (savedLibraryPanelSize) {
-      try { setLibraryPanelSize(JSON.parse(savedLibraryPanelSize)); } catch (e) {}
-    }
-    if (savedLibraryPanelOpacity) {
-      try { setLibraryPanelOpacity(JSON.parse(savedLibraryPanelOpacity)); } catch (e) {}
     }
 
     const savedCustomComplexObjects = localStorage.getItem("mis_canvas_custom_complex_objects");
@@ -1721,20 +1715,13 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_panel_pos", JSON.stringify(panelPos));
       localStorage.setItem("mis_canvas_panel_size", JSON.stringify(panelSize));
       localStorage.setItem("mis_canvas_panel_opacity", JSON.stringify(panelOpacity));
-      localStorage.setItem("mis_canvas_complex_panel_pos", JSON.stringify(complexPanelPos));
-      localStorage.setItem("mis_canvas_complex_panel_size", JSON.stringify(complexPanelSize));
-      localStorage.setItem("mis_canvas_complex_panel_opacity", JSON.stringify(complexPanelOpacity));
+      localStorage.setItem("mis_canvas_tools_panel_collapsed", JSON.stringify(toolsPanelCollapsed));
       localStorage.setItem("mis_canvas_open_param_sections", JSON.stringify(Array.from(openParamSections)));
-      localStorage.setItem("mis_canvas_indicators_panel_pos", JSON.stringify(indicatorsPanelPos));
-      localStorage.setItem("mis_canvas_indicators_panel_size", JSON.stringify(indicatorsPanelSize));
-      localStorage.setItem("mis_canvas_indicators_panel_opacity", JSON.stringify(indicatorsPanelOpacity));
-      localStorage.setItem("mis_canvas_connections_panel_pos", JSON.stringify(connectionsPanelPos));
-      localStorage.setItem("mis_canvas_connections_panel_size", JSON.stringify(connectionsPanelSize));
-      localStorage.setItem("mis_canvas_connections_panel_opacity", JSON.stringify(connectionsPanelOpacity));
+      localStorage.setItem("mis_canvas_refs_panel_pos", JSON.stringify(refsPanelPos));
+      localStorage.setItem("mis_canvas_refs_panel_size", JSON.stringify(refsPanelSize));
+      localStorage.setItem("mis_canvas_refs_panel_opacity", JSON.stringify(refsPanelOpacity));
+      localStorage.setItem("mis_canvas_refs_panel_collapsed", JSON.stringify(refsPanelCollapsed));
       localStorage.setItem("mis_canvas_library_items", JSON.stringify(libraryItems));
-      localStorage.setItem("mis_canvas_library_panel_pos", JSON.stringify(libraryPanelPos));
-      localStorage.setItem("mis_canvas_library_panel_size", JSON.stringify(libraryPanelSize));
-      localStorage.setItem("mis_canvas_library_panel_opacity", JSON.stringify(libraryPanelOpacity));
       localStorage.setItem("mis_canvas_custom_complex_objects", JSON.stringify(customComplexObjects));
     }
   }, [
@@ -1743,20 +1730,13 @@ export default function AppBoundedCanvas() {
     panelPos,
     panelSize,
     panelOpacity,
-    complexPanelPos,
-    complexPanelSize,
-    complexPanelOpacity,
+    toolsPanelCollapsed,
     openParamSections,
-    indicatorsPanelPos,
-    indicatorsPanelSize,
-    indicatorsPanelOpacity,
-    connectionsPanelPos,
-    connectionsPanelSize,
-    connectionsPanelOpacity,
+    refsPanelPos,
+    refsPanelSize,
+    refsPanelOpacity,
+    refsPanelCollapsed,
     libraryItems,
-    libraryPanelPos,
-    libraryPanelSize,
-    libraryPanelOpacity,
     customComplexObjects,
     isMounted,
   ]);
@@ -2059,19 +2039,12 @@ export default function AppBoundedCanvas() {
       panelPos,
       panelSize,
       panelOpacity,
-      complexPanelPos,
-      complexPanelSize,
-      complexPanelOpacity,
-      indicatorsPanelPos,
-      indicatorsPanelSize,
-      indicatorsPanelOpacity,
-      connectionsPanelPos,
-      connectionsPanelSize,
-      connectionsPanelOpacity,
+      toolsPanelCollapsed,
+      refsPanelPos,
+      refsPanelSize,
+      refsPanelOpacity,
+      refsPanelCollapsed,
       libraryItems,
-      libraryPanelPos,
-      libraryPanelSize,
-      libraryPanelOpacity,
       customComplexObjects,
       openParamSections: Array.from(openParamSections),
     };
@@ -2303,19 +2276,12 @@ export default function AppBoundedCanvas() {
           if (parsed.panelPos) setPanelPos(clampPanelPos(parsed.panelPos));
           if (parsed.panelSize) setPanelSize(parsed.panelSize);
           if (typeof parsed.panelOpacity === "number") setPanelOpacity(parsed.panelOpacity);
-          if (parsed.complexPanelPos) setComplexPanelPos(clampPanelPos(parsed.complexPanelPos));
-          if (parsed.complexPanelSize) setComplexPanelSize(parsed.complexPanelSize);
-          if (typeof parsed.complexPanelOpacity === "number") setComplexPanelOpacity(parsed.complexPanelOpacity);
-          if (parsed.indicatorsPanelPos) setIndicatorsPanelPos(clampPanelPos(parsed.indicatorsPanelPos));
-          if (parsed.indicatorsPanelSize) setIndicatorsPanelSize(parsed.indicatorsPanelSize);
-          if (typeof parsed.indicatorsPanelOpacity === "number") setIndicatorsPanelOpacity(parsed.indicatorsPanelOpacity);
-          if (parsed.connectionsPanelPos) setConnectionsPanelPos(clampPanelPos(parsed.connectionsPanelPos));
-          if (parsed.connectionsPanelSize) setConnectionsPanelSize(parsed.connectionsPanelSize);
-          if (typeof parsed.connectionsPanelOpacity === "number") setConnectionsPanelOpacity(parsed.connectionsPanelOpacity);
+          if (typeof parsed.toolsPanelCollapsed === "boolean") setToolsPanelCollapsed(parsed.toolsPanelCollapsed);
+          if (parsed.refsPanelPos) setRefsPanelPos(clampPanelPos(parsed.refsPanelPos));
+          if (parsed.refsPanelSize) setRefsPanelSize(parsed.refsPanelSize);
+          if (typeof parsed.refsPanelOpacity === "number") setRefsPanelOpacity(parsed.refsPanelOpacity);
+          if (typeof parsed.refsPanelCollapsed === "boolean") setRefsPanelCollapsed(parsed.refsPanelCollapsed);
           if (Array.isArray(parsed.libraryItems)) setLibraryItems(parsed.libraryItems);
-          if (parsed.libraryPanelPos) setLibraryPanelPos(clampPanelPos(parsed.libraryPanelPos));
-          if (parsed.libraryPanelSize) setLibraryPanelSize(parsed.libraryPanelSize);
-          if (typeof parsed.libraryPanelOpacity === "number") setLibraryPanelOpacity(parsed.libraryPanelOpacity);
           if (Array.isArray(parsed.customComplexObjects)) setCustomComplexObjects(parsed.customComplexObjects);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
@@ -2539,6 +2505,42 @@ export default function AppBoundedCanvas() {
         });
         updateElementsAndHistory(nextElements);
       }
+
+      // Пігулка-фільтр КПІ (kpiGroupId) — тягне свіжі дані й живцем оновлює
+      // текстові поля значень з тим самим kpiGroupId. Функціональний
+      // setElements навмисно, а не nextElements/updateElementsAndHistory
+      // вище: fetch асинхронний, і на момент відповіді state вже міг
+      // змінитись (напр. від toggle-оновлення isPressed щойно вище).
+      if (el.kpiGroupId) {
+        void handleKpiPillClick(el.kpiGroupId, el.kpiYear ?? null);
+      }
+    }
+  };
+
+  const handleKpiPillClick = async (groupId: string, year: number | null) => {
+    try {
+      const url = year ? `/api/hospital-summary?year=${year}` : "/api/hospital-summary";
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok || !data.summary) return;
+      const summary = data.summary as Record<string, number>;
+      setElements((prev) => {
+        const next = prev.map((item) =>
+          item.kpiGroupId === groupId && item.kpiField
+            ? {
+                ...item,
+                content:
+                  item.kpiField === "death_rate_pct"
+                    ? `${summary[item.kpiField] ?? "—"}%`
+                    : String(summary[item.kpiField] ?? "—"),
+              }
+            : item
+        );
+        saveToHistory(pages, next);
+        return next;
+      });
+    } catch {
+      // мовчки ігноруємо — пігулка просто не оновить значення цього разу
     }
   };
 
@@ -2722,16 +2724,28 @@ export default function AppBoundedCanvas() {
     handleSelectElement(newElement.id);
   };
 
-  // "КПІ лікарні (реальні дані)" — не пошук, а одна кнопка "Завантажити"
-  // (як "Завантажити відділення"): у v_hospital_summary один рядок на всю
-  // лікарню, тож нема що шукати. Тягне /api/hospital-summary (service_role)
-  // і ставить рядок з 4 плиток у стилі вже наявної "Картки КПІ" (число 36px
-  // над підписом 20px ВЕЛИКИМИ, обидва праворуч) на полотно. death_rate_pct
-  // і urgent_pct свідомо НЕ показуємо — вони завжди null у цьому view: поле
-  // discharge_status, з якого вони рахуються, не заповнене в жодному з
-  // 10 497 рядків базового v_case_metrics (окремий баг пайплайну даних).
+  // "КПІ лікарні (реальні дані)" — одна кнопка одразу ставить на полотно ДВА
+  // пов'язаних об'єкти: ряд пігулок-років (стиль 1:1 з "Пігулка"/"Блок
+  // пігулок (місяці)", groupExclusive) і ряд плиток "Картка КПІ" під ними.
+  // Рік більше НЕ обирається в цій панелі — обирається кліком по пігулці на
+  // полотні (kpiGroupId зв'язує пігулку з плитками, kpiYear/kpiField —
+  // handleKpiPillClick вище). Початково завантажується "Весь час". Тягне
+  // /api/hospital-summary?year=… (service_role, RPC public.lpz_hospital_summary
+  // — рахує напряму з lpz.lpz_hospitalizations, той самий підхід, що й
+  // lpz_department_stats) — на відміну від старого v_hospital_summary, тут
+  // death_rate_pct/avg_age РЕАЛЬНІ (не завжди null).
+  const HOSPITAL_KPI_MIN_YEAR = 2020;
+  const hospitalKpiYearOptions = Array.from(
+    { length: new Date().getFullYear() - HOSPITAL_KPI_MIN_YEAR + 1 },
+    (_, i) => HOSPITAL_KPI_MIN_YEAR + i
+  );
   const [hospitalKpiLoading, setHospitalKpiLoading] = useState(false);
   const [hospitalKpiError, setHospitalKpiError] = useState<string | null>(null);
+
+  const formatKpiFieldValue = (
+    field: NonNullable<CanvasElement["kpiField"]>,
+    summary: Record<string, number>
+  ) => (field === "death_rate_pct" ? `${summary[field] ?? "—"}%` : String(summary[field] ?? "—"));
 
   const handleLoadHospitalKpi = async () => {
     setHospitalKpiLoading(true);
@@ -2744,39 +2758,67 @@ export default function AppBoundedCanvas() {
         return;
       }
       const summary = data.summary as Record<string, number>;
-      const tiles: { value: string; label: string }[] = [
-        { value: String(summary.total_cases ?? "—"), label: "ВИПАДКІВ" },
-        { value: String(summary.unique_patients ?? "—"), label: "ПАЦІЄНТІВ" },
-        { value: String(summary.total_bed_days ?? "—"), label: "ЛІЖКО-ДНІВ" },
-        { value: String(summary.avg_bed_days ?? "—"), label: "СЕР. ЛІЖКО-ДНІВ" },
-      ];
+      const kpiGroupId = `kpi-${Date.now()}`;
 
-      const gap = 24;
+      const tileGap = 24;
       const tileWidth = 200;
       const tileHeight = 70;
-      const totalWidth = tileWidth * tiles.length + gap * (tiles.length - 1);
-      const freePos = findFreePosition(forcedParentId, totalWidth, tileHeight);
+      const tilesTotalWidth =
+        tileWidth * HOSPITAL_KPI_FIELDS.length + tileGap * (HOSPITAL_KPI_FIELDS.length - 1);
+
+      const pillGap = 8;
+      const pillHeight = 30;
+      const pillLabels = ["ВЕСЬ ЧАС", ...hospitalKpiYearOptions.map(String)];
+      const pillWidths = pillLabels.map((label) => Math.max(60, Math.round(label.length * 9 + 32)));
+      const pillsTotalWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+
+      const totalWidth = Math.max(tilesTotalWidth, pillsTotalWidth);
+      const rowGap = 12;
+      const totalHeight = pillHeight + rowGap + tileHeight;
+      const freePos = findFreePosition(forcedParentId, totalWidth, totalHeight);
 
       const newElements: CanvasElement[] = [];
-      const tileIds: number[] = [];
-      tiles.forEach((tile, i) => {
-        const parentId = Date.now() + i * 10;
-        tileIds.push(parentId);
-        const x = freePos.x + i * (tileWidth + gap);
+      const selectedIdsNext: number[] = [];
+
+      let pillX = freePos.x;
+      pillLabels.forEach((label, i) => {
+        const width = pillWidths[i];
+        const year = i === 0 ? null : hospitalKpiYearOptions[i - 1];
+        const id = Date.now() + 1000 + i;
+        newElements.push({
+          ...buildComplexObjectBase(id, label),
+          ...PILL_STYLE_DEFAULTS,
+          width,
+          height: pillHeight,
+          x: pillX,
+          y: freePos.y,
+          content: label,
+          kpiGroupId,
+          kpiYear: year,
+          isPressed: year === null,
+        });
+        pillX += width + pillGap;
+        selectedIdsNext.push(id);
+      });
+
+      const tileY = freePos.y + pillHeight + rowGap;
+      HOSPITAL_KPI_FIELDS.forEach((tile, i) => {
+        const parentId = Date.now() + 2000 + i * 10;
+        const x = freePos.x + i * (tileWidth + tileGap);
         newElements.push({
           ...buildComplexObjectBase(parentId, ""),
           type: "block",
           width: tileWidth,
           height: tileHeight,
           x,
-          y: freePos.y,
+          y: tileY,
           customBgColor: "#ffffff",
           bgOpacity: 0,
           padding: 0,
           borderRadius: 0,
         });
         newElements.push({
-          ...buildComplexObjectBase(parentId + 1, tile.value),
+          ...buildComplexObjectBase(parentId + 1, formatKpiFieldValue(tile.field, summary)),
           type: "text",
           width: tileWidth,
           height: 44,
@@ -2789,6 +2831,8 @@ export default function AppBoundedCanvas() {
           textAlign: "right",
           bgOpacity: 0,
           padding: 0,
+          kpiGroupId,
+          kpiField: tile.field,
         });
         newElements.push({
           ...buildComplexObjectBase(parentId + 2, tile.label),
@@ -2805,10 +2849,11 @@ export default function AppBoundedCanvas() {
           bgOpacity: 0,
           padding: 0,
         });
+        selectedIdsNext.push(parentId);
       });
 
       updateElementsAndHistory([...elements, ...newElements]);
-      setSelectedIds(tileIds);
+      setSelectedIds(selectedIdsNext);
     } catch {
       setHospitalKpiError("Не вдалося звернутись до сервера");
     } finally {
@@ -3868,7 +3913,7 @@ export default function AppBoundedCanvas() {
       <div className="relative flex-1 overflow-hidden">
         <Rnd
           position={panelPos}
-          size={panelSize}
+          size={toolsPanelCollapsed ? { width: panelSize.width, height: 44 } : panelSize}
           onDragStop={(e, d) => setPanelPos({ x: d.x, y: d.y })}
           onResizeStop={(e, dir, ref, delta, pos) => {
             setPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
@@ -3877,7 +3922,8 @@ export default function AppBoundedCanvas() {
           dragHandleClassName="panel-drag-handle"
           bounds="window"
           minWidth={260}
-          minHeight={200}
+          minHeight={toolsPanelCollapsed ? 44 : 200}
+          enableResizing={!toolsPanelCollapsed}
           style={{ zIndex: 50 }}
         >
         <aside
@@ -3885,7 +3931,7 @@ export default function AppBoundedCanvas() {
           style={{ backgroundColor: `rgba(255, 255, 255, ${panelOpacity})` }}
         >
           <div className="panel-drag-handle cursor-move bg-slate-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>⠿ Панель управління</span>
+            <span>⠿ 🧱 Інструменти</span>
             <div
               className="flex items-center gap-1.5 font-normal"
               onMouseDown={(e) => e.stopPropagation()}
@@ -3901,8 +3947,19 @@ export default function AppBoundedCanvas() {
                 className="w-16 cursor-pointer"
               />
             </div>
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setToolsPanelCollapsed((prev) => !prev)}
+              className="text-xs leading-none hover:text-slate-300 shrink-0"
+              title={toolsPanelCollapsed ? "Розгорнути панель" : "Згорнути панель"}
+            >
+              {toolsPanelCollapsed ? "▶" : "▼"}
+            </button>
           </div>
-          <div className="flex items-center gap-1 px-3 pt-3 shrink-0">
+          {!toolsPanelCollapsed && (
+          <>
+          <div className="flex items-center gap-1 px-3 pt-3 shrink-0 flex-wrap">
             {(
               [
                 { key: "create" as const, label: "🧱 Створити" },
@@ -3911,13 +3968,15 @@ export default function AppBoundedCanvas() {
                   key: "params" as const,
                   label: `⚙️ Параметри${selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}`,
                 },
+                { key: "complex" as const, label: "🧩 Об'єкти" },
+                { key: "library" as const, label: "📚 Бібліотека" },
               ]
             ).map((tab) => (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setActivePanelTab(tab.key)}
-                className={`flex-1 text-[11px] font-bold py-1.5 rounded-md transition-colors ${
+                className={`flex-1 min-w-[30%] text-[11px] font-bold py-1.5 px-1 rounded-md transition-colors ${
                   activePanelTab === tab.key
                     ? "bg-slate-900 text-white"
                     : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -4986,49 +5045,7 @@ export default function AppBoundedCanvas() {
           </div>
           </>
           )}
-          </div>
-        </aside>
-        </Rnd>
-
-        {/* Окрема плаваюча панель "Складні об'єкти" — список пресетів, при
-            виборі відкриваються поля налаштувань (підсвітка/кольори/розміри
-            тощо), перед тим як додати готовий елемент на полотно. */}
-        <Rnd
-          position={complexPanelPos}
-          size={complexPanelSize}
-          onDragStop={(e, d) => setComplexPanelPos({ x: d.x, y: d.y })}
-          onResizeStop={(e, dir, ref, delta, pos) => {
-            setComplexPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
-            setComplexPanelPos(pos);
-          }}
-          dragHandleClassName="complex-panel-drag-handle"
-          bounds="window"
-          minWidth={240}
-          minHeight={200}
-          style={{ zIndex: 45 }}
-        >
-        <aside
-          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
-          style={{ backgroundColor: `rgba(255, 255, 255, ${complexPanelOpacity})` }}
-        >
-          <div className="complex-panel-drag-handle cursor-move bg-teal-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>🧩 Складні об'єкти</span>
-            <div
-              className="flex items-center gap-1.5 font-normal"
-              onMouseDown={(e) => e.stopPropagation()}
-              title="Прозорість панелі"
-            >
-              <span>👁️</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(complexPanelOpacity * 100)}
-                onChange={(e) => setComplexPanelOpacity(Number(e.target.value) / 100)}
-                className="w-16 cursor-pointer"
-              />
-            </div>
-          </div>
+          {activePanelTab === "complex" && (
           <div className="flex-1 flex flex-col gap-3 overflow-y-auto p-4">
             <div className="space-y-1.5">
               {COMPLEX_OBJECTS.map((tpl) => (
@@ -5119,7 +5136,7 @@ export default function AppBoundedCanvas() {
                     selectedComplexObjectId === "hospital-kpi" ? "text-emerald-100" : "text-slate-500"
                   }`}
                 >
-                  Один клік — рядок з 4 плиток (випадки/пацієнти/ліжко-дні/сер. ліжко-дні) з v_hospital_summary
+                  Один клік ставить пігулки-роки й ряд з 5 плиток (випадки/пацієнти/летальність/сер. вік/сер. ліжко-дні) — рік обираєш пігулкою на полотні, дані живі з lpz.lpz_hospitalizations
                 </div>
               </button>
               <button
@@ -5350,7 +5367,7 @@ export default function AppBoundedCanvas() {
             {selectedComplexObjectId === "hospital-kpi" && (
               <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2.5">
                 <div className="text-[10px] text-slate-500">
-                  Один рядок на всю лікарню (v_hospital_summary) — нема що шукати, просто завантаж і постав на полотно.
+                  Додає ряд пігулок-років (Весь час, {HOSPITAL_KPI_MIN_YEAR}…{new Date().getFullYear()}) і ряд плиток КПІ під ними, вже пов&apos;язані — клік на пігулці після додавання живцем оновлює плитки за обраний рік.
                 </div>
                 {hospitalKpiError && <div className="text-xs text-red-500 text-center py-1">{hospitalKpiError}</div>}
                 <button
@@ -5358,7 +5375,7 @@ export default function AppBoundedCanvas() {
                   disabled={hospitalKpiLoading}
                   className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
-                  {hospitalKpiLoading ? "Завантаження…" : "➕ Завантажити й додати на полотно"}
+                  {hospitalKpiLoading ? "Завантаження…" : "➕ Додати пігулки й плитки на полотно"}
                 </button>
               </div>
             )}
@@ -5697,260 +5714,9 @@ export default function AppBoundedCanvas() {
                 );
               })()}
           </div>
-        </aside>
-        </Rnd>
-
-        {/* Окрема плаваюча панель "Показники" — довідник обчислюваних полів
-            ЛСМД (код + українська назва + SQL-формула) з пошуком; клік на
-            рядок копіює код показника в буфер обміну для вставки в картку. */}
-        <Rnd
-          position={indicatorsPanelPos}
-          size={indicatorsPanelSize}
-          onDragStop={(e, d) => setIndicatorsPanelPos({ x: d.x, y: d.y })}
-          onResizeStop={(e, dir, ref, delta, pos) => {
-            setIndicatorsPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
-            setIndicatorsPanelPos(pos);
-          }}
-          dragHandleClassName="indicators-panel-drag-handle"
-          bounds="window"
-          minWidth={260}
-          minHeight={200}
-          style={{ zIndex: 45 }}
-        >
-        <aside
-          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
-          style={{ backgroundColor: `rgba(255, 255, 255, ${indicatorsPanelOpacity})` }}
-        >
-          <div className="indicators-panel-drag-handle cursor-move bg-indigo-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>📖 Показники</span>
-            <div
-              className="flex items-center gap-1.5 font-normal"
-              onMouseDown={(e) => e.stopPropagation()}
-              title="Прозорість панелі"
-            >
-              <span>👁️</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(indicatorsPanelOpacity * 100)}
-                onChange={(e) => setIndicatorsPanelOpacity(Number(e.target.value) / 100)}
-                className="w-16 cursor-pointer"
-              />
-            </div>
-          </div>
-          <div className="p-2 border-b border-slate-200 shrink-0">
-            <input
-              type="text"
-              value={indicatorSearch}
-              onChange={(e) => setIndicatorSearch(e.target.value)}
-              placeholder="🔍 Пошук за кодом або назвою…"
-              className="w-full p-1.5 border rounded-md text-xs"
-            />
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-            {filteredIndicatorSections.length === 0 && (
-              <div className="text-xs text-slate-400 text-center py-4">Нічого не знайдено</div>
-            )}
-            {filteredIndicatorSections.map((section) => {
-              const isOpen = normalizedIndicatorSearch ? true : openIndicatorSections.has(section.title);
-              return (
-                <div key={section.title} className="border border-slate-200 rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => toggleIndicatorSection(section.title)}
-                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
-                  >
-                    <span className="text-[11px] font-bold text-slate-700">
-                      {isOpen ? "▼" : "▶"} {section.title}
-                    </span>
-                    <span className="text-[10px] text-slate-400">{section.rows.length}</span>
-                  </button>
-                  {section.source && isOpen && (
-                    <div className="px-2 pt-1 text-[10px] text-slate-400 italic">{section.source}</div>
-                  )}
-                  {isOpen && (
-                    <div className="divide-y divide-slate-100">
-                      {section.rows.map((row, idx) => (
-                        <button
-                          key={`${row.code}-${idx}`}
-                          onClick={() => handleCopyIndicatorCode(row.code)}
-                          title="Копіювати код"
-                          className="w-full text-left px-2 py-1.5 hover:bg-indigo-50 transition-colors"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <code className="text-[11px] font-mono text-indigo-700">{row.code}</code>
-                            {copiedIndicatorCode === row.code && (
-                              <span className="text-[10px] text-emerald-600 font-semibold">скопійовано ✓</span>
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-600">{row.nameUk}</div>
-                          {row.formula && (
-                            <div className="text-[10px] font-mono text-slate-400 mt-0.5 break-all">{row.formula}</div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-        </Rnd>
-
-        {/* Окрема плаваюча панель "Підключення до бази" — довідник способів
-            API-доступу до Supabase. Лише довідник: показує, ЯКИЙ спосіб
-            використовується де і навіщо, реальні ключі/паролі не вставляються
-            і не зберігаються тут — вони лишаються в env-змінних. */}
-        <Rnd
-          position={connectionsPanelPos}
-          size={connectionsPanelSize}
-          onDragStop={(e, d) => setConnectionsPanelPos({ x: d.x, y: d.y })}
-          onResizeStop={(e, dir, ref, delta, pos) => {
-            setConnectionsPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
-            setConnectionsPanelPos(pos);
-          }}
-          dragHandleClassName="connections-panel-drag-handle"
-          bounds="window"
-          minWidth={260}
-          minHeight={200}
-          style={{ zIndex: 45 }}
-        >
-        <aside
-          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
-          style={{ backgroundColor: `rgba(255, 255, 255, ${connectionsPanelOpacity})` }}
-        >
-          <div className="connections-panel-drag-handle cursor-move bg-amber-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>🔌 Підключення до бази</span>
-            <div
-              className="flex items-center gap-1.5 font-normal"
-              onMouseDown={(e) => e.stopPropagation()}
-              title="Прозорість панелі"
-            >
-              <span>👁️</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(connectionsPanelOpacity * 100)}
-                onChange={(e) => setConnectionsPanelOpacity(Number(e.target.value) / 100)}
-                className="w-16 cursor-pointer"
-              />
-            </div>
-          </div>
-          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
-            Довідник способів API-доступу до Supabase — без секретів, лише опис і де саме в проєкті використано.
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-            {API_CONNECTION_VARIANTS.map((variant) => {
-              const isOpen = openConnectionIds.has(variant.id);
-              return (
-                <div key={variant.id} className="border border-slate-200 rounded-lg overflow-hidden">
-                  <button
-                    onClick={() => toggleConnectionOpen(variant.id)}
-                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
-                  >
-                    <span className="text-[11px] font-bold text-slate-700">
-                      {isOpen ? "▼" : "▶"} {variant.title}
-                    </span>
-                    <span
-                      className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
-                        variant.status === "used" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"
-                      }`}
-                    >
-                      {variant.status === "used" ? "використовується" : "доступно"}
-                    </span>
-                  </button>
-                  {isOpen && (
-                    <div className="p-2 space-y-1.5 text-[10px] text-slate-600">
-                      <span className={`inline-block font-semibold px-1.5 py-0.5 rounded-full ${SCOPE_BADGE_STYLE[variant.scope]}`}>
-                        {SCOPE_LABELS[variant.scope]}
-                      </span>
-                      <div>{variant.description}</div>
-                      {variant.envVars && (
-                        <div className="font-mono text-slate-500">
-                          {variant.envVars.map((v) => (
-                            <div key={v}>• {v}</div>
-                          ))}
-                        </div>
-                      )}
-                      {variant.example && (
-                        <div className="font-mono bg-slate-50 border border-slate-200 rounded p-1.5 break-all text-slate-500">
-                          {variant.example}
-                        </div>
-                      )}
-                      {variant.getTokenUrl && (
-                        <a
-                          href={variant.getTokenUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-indigo-600 hover:underline"
-                        >
-                          🔗 Де взяти ключ/токен →
-                        </a>
-                      )}
-                      {variant.whereToAdd && <div className="text-slate-500">📥 Куди вписати: {variant.whereToAdd}</div>}
-                      {variant.sqlEditorUrl && (
-                        <a
-                          href={variant.sqlEditorUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-indigo-600 hover:underline"
-                        >
-                          🛠️ SQL Editor (перевірити/змінити права) →
-                        </a>
-                      )}
-                      {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-        </Rnd>
-
-        {/* Окрема плаваюча панель "Бібліотека" — власні готові елементи
-            користувача: зберігаєш виділений фрагмент полотна під назвою,
-            потім вставляєш той самий фрагмент повторно на цій чи інших
-            сторінках. На відміну від "Складних об'єктів" (вбудовані
-            пресети), наповнення тут повністю визначає сам користувач. */}
-        <Rnd
-          position={libraryPanelPos}
-          size={libraryPanelSize}
-          onDragStop={(e, d) => setLibraryPanelPos({ x: d.x, y: d.y })}
-          onResizeStop={(e, dir, ref, delta, pos) => {
-            setLibraryPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
-            setLibraryPanelPos(pos);
-          }}
-          dragHandleClassName="library-panel-drag-handle"
-          bounds="window"
-          minWidth={240}
-          minHeight={200}
-          style={{ zIndex: 45 }}
-        >
-        <aside
-          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
-          style={{ backgroundColor: `rgba(255, 255, 255, ${libraryPanelOpacity})` }}
-        >
-          <div className="library-panel-drag-handle cursor-move bg-violet-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
-            <span>📚 Бібліотека</span>
-            <div
-              className="flex items-center gap-1.5 font-normal"
-              onMouseDown={(e) => e.stopPropagation()}
-              title="Прозорість панелі"
-            >
-              <span>👁️</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={Math.round(libraryPanelOpacity * 100)}
-                onChange={(e) => setLibraryPanelOpacity(Number(e.target.value) / 100)}
-                className="w-16 cursor-pointer"
-              />
-            </div>
-          </div>
+          )}
+          {activePanelTab === "library" && (
+          <>
           <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
             Власні готові елементи — збережіть виділене на полотні під назвою, щоб вставляти його повторно.
           </div>
@@ -6041,10 +5807,227 @@ export default function AppBoundedCanvas() {
               );
             })}
           </div>
+          </>
+          )}
+          </div>
+          </>
+          )}
         </aside>
         </Rnd>
 
-        {/* Полотно на всю сторінку */}
+        {/* Плаваюча панель "📖 Довідники" — Показники й Підключення до бази,
+            обидві суто довідкові (не додають нічого на полотно), об'єднані
+            вкладками в одну панель замість двох окремих вікон. */}
+        <Rnd
+          position={refsPanelPos}
+          size={refsPanelCollapsed ? { width: refsPanelSize.width, height: 44 } : refsPanelSize}
+          onDragStop={(e, d) => setRefsPanelPos({ x: d.x, y: d.y })}
+          onResizeStop={(e, dir, ref, delta, pos) => {
+            setRefsPanelSize({ width: parseInt(ref.style.width), height: parseInt(ref.style.height) });
+            setRefsPanelPos(pos);
+          }}
+          dragHandleClassName="refs-panel-drag-handle"
+          bounds="window"
+          minWidth={260}
+          minHeight={refsPanelCollapsed ? 44 : 200}
+          enableResizing={!refsPanelCollapsed}
+          style={{ zIndex: 45 }}
+        >
+        <aside
+          className="w-full h-full backdrop-blur-sm rounded-xl border border-slate-200 shadow-lg flex flex-col overflow-hidden"
+          style={{ backgroundColor: `rgba(255, 255, 255, ${refsPanelOpacity})` }}
+        >
+          <div className="refs-panel-drag-handle cursor-move bg-indigo-900/80 text-white text-[11px] font-bold px-3 py-2 rounded-t-xl flex items-center justify-between gap-2 shrink-0 select-none">
+            <span>⠿ 📖 Довідники</span>
+            <div className="flex items-center gap-2 font-normal">
+              <div
+                className="flex items-center gap-1.5"
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Прозорість панелі"
+              >
+                <span>👁️</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(refsPanelOpacity * 100)}
+                  onChange={(e) => setRefsPanelOpacity(Number(e.target.value) / 100)}
+                  className="w-16 cursor-pointer"
+                />
+              </div>
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setRefsPanelCollapsed((prev) => !prev)}
+                className="text-xs leading-none hover:text-slate-300 shrink-0"
+                title={refsPanelCollapsed ? "Розгорнути панель" : "Згорнути панель"}
+              >
+                {refsPanelCollapsed ? "▶" : "▼"}
+              </button>
+            </div>
+          </div>
+          {!refsPanelCollapsed && (
+          <>
+          <div className="flex items-center gap-1 px-3 pt-3 shrink-0">
+            {(
+              [
+                { key: "indicators" as const, label: "📖 Показники" },
+                { key: "connections" as const, label: "🔌 Підключення" },
+              ]
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setRefsActiveTab(tab.key)}
+                className={`flex-1 text-[11px] font-bold py-1.5 rounded-md transition-colors ${
+                  refsActiveTab === tab.key
+                    ? "bg-indigo-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {refsActiveTab === "indicators" && (
+          <>
+          <div className="p-2 border-b border-slate-200 shrink-0">
+            <input
+              type="text"
+              value={indicatorSearch}
+              onChange={(e) => setIndicatorSearch(e.target.value)}
+              placeholder="🔍 Пошук за кодом або назвою…"
+              className="w-full p-1.5 border rounded-md text-xs"
+            />
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {filteredIndicatorSections.length === 0 && (
+              <div className="text-xs text-slate-400 text-center py-4">Нічого не знайдено</div>
+            )}
+            {filteredIndicatorSections.map((section) => {
+              const isOpen = normalizedIndicatorSearch ? true : openIndicatorSections.has(section.title);
+              return (
+                <div key={section.title} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleIndicatorSection(section.title)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
+                  >
+                    <span className="text-[11px] font-bold text-slate-700">
+                      {isOpen ? "▼" : "▶"} {section.title}
+                    </span>
+                    <span className="text-[10px] text-slate-400">{section.rows.length}</span>
+                  </button>
+                  {section.source && isOpen && (
+                    <div className="px-2 pt-1 text-[10px] text-slate-400 italic">{section.source}</div>
+                  )}
+                  {isOpen && (
+                    <div className="divide-y divide-slate-100">
+                      {section.rows.map((row, idx) => (
+                        <button
+                          key={`${row.code}-${idx}`}
+                          onClick={() => handleCopyIndicatorCode(row.code)}
+                          title="Копіювати код"
+                          className="w-full text-left px-2 py-1.5 hover:bg-indigo-50 transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <code className="text-[11px] font-mono text-indigo-700">{row.code}</code>
+                            {copiedIndicatorCode === row.code && (
+                              <span className="text-[10px] text-emerald-600 font-semibold">скопійовано ✓</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-600">{row.nameUk}</div>
+                          {row.formula && (
+                            <div className="text-[10px] font-mono text-slate-400 mt-0.5 break-all">{row.formula}</div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          </>
+          )}
+          {refsActiveTab === "connections" && (
+          <>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Довідник способів API-доступу до Supabase — без секретів, лише опис і де саме в проєкті використано.
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {API_CONNECTION_VARIANTS.map((variant) => {
+              const isOpen = openConnectionIds.has(variant.id);
+              return (
+                <div key={variant.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleConnectionOpen(variant.id)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
+                  >
+                    <span className="text-[11px] font-bold text-slate-700">
+                      {isOpen ? "▼" : "▶"} {variant.title}
+                    </span>
+                    <span
+                      className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                        variant.status === "used" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"
+                      }`}
+                    >
+                      {variant.status === "used" ? "використовується" : "доступно"}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="p-2 space-y-1.5 text-[10px] text-slate-600">
+                      <span className={`inline-block font-semibold px-1.5 py-0.5 rounded-full ${SCOPE_BADGE_STYLE[variant.scope]}`}>
+                        {SCOPE_LABELS[variant.scope]}
+                      </span>
+                      <div>{variant.description}</div>
+                      {variant.envVars && (
+                        <div className="font-mono text-slate-500">
+                          {variant.envVars.map((v) => (
+                            <div key={v}>• {v}</div>
+                          ))}
+                        </div>
+                      )}
+                      {variant.example && (
+                        <div className="font-mono bg-slate-50 border border-slate-200 rounded p-1.5 break-all text-slate-500">
+                          {variant.example}
+                        </div>
+                      )}
+                      {variant.getTokenUrl && (
+                        <a
+                          href={variant.getTokenUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-indigo-600 hover:underline"
+                        >
+                          🔗 Де взяти ключ/токен →
+                        </a>
+                      )}
+                      {variant.whereToAdd && <div className="text-slate-500">📥 Куди вписати: {variant.whereToAdd}</div>}
+                      {variant.sqlEditorUrl && (
+                        <a
+                          href={variant.sqlEditorUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-indigo-600 hover:underline"
+                        >
+                          🛠️ SQL Editor (перевірити/змінити права) →
+                        </a>
+                      )}
+                      {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          </>
+          )}
+          </>
+          )}
+        </aside>
+        </Rnd>
+
+                {/* Полотно на всю сторінку */}
         <main
           onClick={() => {
             if (suppressNextCanvasClickRef.current) {
