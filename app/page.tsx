@@ -2861,6 +2861,370 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  // Спільний рендерер для "кубів" показників (ієрархія/повторні
+  // госпіталізації/діагнози/демографія/часові патерни) — усі повертають
+  // масив рядків з однаковими за духом полями (лічильники + group_key/
+  // period_label чи еквівалент). Один рядок → ряд плиток у стилі "Картки
+  // КПІ" (число 36px над підписом 20px, ITFLight, праворуч). Кілька рядків
+  // (розбивка по періоду/групі) → "Список" зі стовпцями, той самий підхід,
+  // що й "🏥 Список відділень".
+  type CubeFieldDef = { key: string; label: string; suffix?: string };
+  const addCubeRowsToCanvas = (
+    rows: Record<string, unknown>[],
+    fields: CubeFieldDef[],
+    labelField: string,
+    title: string
+  ) => {
+    if (!rows || rows.length === 0) {
+      alert("Немає даних за цим запитом");
+      return;
+    }
+
+    if (rows.length === 1) {
+      const row = rows[0];
+      const tileWidth = 200;
+      const tileHeight = 70;
+      const gap = 24;
+      const totalWidth = tileWidth * fields.length + gap * (fields.length - 1);
+      const freePos = findFreePosition(forcedParentId, totalWidth, tileHeight);
+      const newElements: CanvasElement[] = [];
+      const tileIds: number[] = [];
+      fields.forEach((f, i) => {
+        const parentId = Date.now() + i * 10;
+        tileIds.push(parentId);
+        const raw = row[f.key];
+        const value = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
+        const x = freePos.x + i * (tileWidth + gap);
+        newElements.push({
+          ...buildComplexObjectBase(parentId, ""),
+          type: "block",
+          width: tileWidth,
+          height: tileHeight,
+          x,
+          y: freePos.y,
+          customBgColor: "#ffffff",
+          bgOpacity: 0,
+          padding: 0,
+          borderRadius: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 1, value),
+          type: "text",
+          width: tileWidth,
+          height: 44,
+          x: 0,
+          y: 0,
+          parentId,
+          fontSize: 36,
+          fontWeight: "300",
+          textColor: "#1a1a1a",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 2, f.label),
+          type: "text",
+          width: tileWidth,
+          height: 26,
+          x: 0,
+          y: 44,
+          parentId,
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#9a958f",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+      });
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds(tileIds);
+      return;
+    }
+
+    const columns: ListColumn[] = [
+      { id: "__label", label: "Група/період", width: 1.6 },
+      ...fields.map((f) => ({ id: f.key, label: f.label, width: 1 })),
+    ];
+    const listId = Date.now();
+    const cardWidth = Math.min(820, 200 + columns.length * 90);
+    const cardHeight = 420;
+    const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
+    const listElement: CanvasElement = {
+      ...buildComplexObjectBase(listId, title),
+      type: "list",
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: freePos.y,
+      textColor: "#ffffff",
+      padding: 8,
+      borderRadius: 0,
+      columns,
+    };
+    const rowElements: CanvasElement[] = rows.map((row, i) => {
+      const columnValues: Record<string, string> = { __label: String(row[labelField] ?? "") };
+      fields.forEach((f) => {
+        const raw = row[f.key];
+        columnValues[f.key] = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
+      });
+      return {
+        ...buildComplexObjectBase(listId + 1 + i, String(row[labelField] ?? "")),
+        type: "text",
+        width: 120,
+        height: 30,
+        x: 1,
+        y: 1,
+        textColor: "#000000",
+        parentId: listId,
+        columnValues,
+      };
+    });
+    updateElementsAndHistory([...elements, listElement, ...rowElements]);
+    handleSelectElement(listId);
+  };
+
+  // Додає похідне поле row_label до рядків куба (group_key + period_label,
+  // об'єднані), щоб "Список" (при кількох рядках) мав змістовний підпис
+  // рядка навіть коли обидва поля заповнені одночасно (напр. відділення×місяць).
+  const withRowLabel = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
+    rows.map((r) => {
+      const group = r.group_key ? String(r.group_key) : "";
+      const period = r.period_label && r.period_label !== "Весь час" ? String(r.period_label) : "";
+      const row_label = [group, period].filter(Boolean).join(" · ") || "Весь час";
+      return { ...r, row_label };
+    });
+
+  // "📊 Показники (лікарня/напрямок/відділення)" — рівень + часова
+  // гранулярність + опційний фільтр напрямку/відділення, RPC
+  // public.lpz_indicator_cube (/api/indicators/hierarchy).
+  const [hierarchyLevel, setHierarchyLevel] = useState<"hospital" | "direction" | "department">("hospital");
+  const [hierarchyGrain, setHierarchyGrain] = useState<string>("");
+  const [hierarchyDirection, setHierarchyDirection] = useState("");
+  const [hierarchyDepartment, setHierarchyDepartment] = useState("");
+  const [hierarchyLoading, setHierarchyLoading] = useState(false);
+
+  const HIERARCHY_FIELDS: CubeFieldDef[] = [
+    { key: "total_cases", label: "ВИПАДКІВ" },
+    { key: "unique_patients", label: "ПАЦІЄНТІВ" },
+    { key: "deaths", label: "СМЕРТЕЙ" },
+    { key: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
+    { key: "improved", label: "ПОЛІПШЕННЯ" },
+    { key: "nochange", label: "БЕЗ ЗМІН" },
+    { key: "worse", label: "ПОГІРШЕННЯ" },
+    { key: "transferred", label: "ПЕРЕВЕДЕНО" },
+    { key: "total_bed_days", label: "ЛІЖКО-ДНІВ" },
+    { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
+    { key: "max_bed_days", label: "МАКС. ЛІЖКО-ДНІВ" },
+    { key: "avg_age", label: "СЕРЕДНІЙ ВІК" },
+    { key: "women", label: "ЖІНОК" },
+    { key: "men", label: "ЧОЛОВІКІВ" },
+    { key: "children", label: "ДІТЕЙ" },
+    { key: "elderly", label: "ПОХИЛОГО ВІКУ" },
+  ];
+
+  const handleLoadHierarchy = async () => {
+    setHierarchyLoading(true);
+    try {
+      const params = new URLSearchParams({ level: hierarchyLevel });
+      if (hierarchyGrain) params.set("grain", hierarchyGrain);
+      if (hierarchyDirection.trim()) params.set("direction", hierarchyDirection.trim());
+      if (hierarchyDepartment.trim()) params.set("department", hierarchyDepartment.trim());
+      const res = await fetch(`/api/indicators/hierarchy?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), HIERARCHY_FIELDS, "row_label", "Показники (ієрархія)");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setHierarchyLoading(false);
+    }
+  };
+
+  // "👨‍⚕️ Лікар (обсяг, ієрархія)" — RPC public.lpz_doctor_indicator_cube
+  // (/api/indicators/doctor-hierarchy). Лише обсягові показники — надійного
+  // зв'язку конкретної госпіталізації з конкретним лікарем немає.
+  const [doctorHierGrain, setDoctorHierGrain] = useState<string>("");
+  const [doctorHierDirection, setDoctorHierDirection] = useState("");
+  const [doctorHierDepartment, setDoctorHierDepartment] = useState("");
+  const [doctorHierLoading, setDoctorHierLoading] = useState(false);
+
+  const DOCTOR_HIER_FIELDS: CubeFieldDef[] = [
+    { key: "total_cases", label: "ВИПАДКІВ" },
+    { key: "unique_patients", label: "ПАЦІЄНТІВ" },
+    { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
+  ];
+
+  const handleLoadDoctorHierarchy = async () => {
+    setDoctorHierLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (doctorHierGrain) params.set("grain", doctorHierGrain);
+      if (doctorHierDirection.trim()) params.set("direction", doctorHierDirection.trim());
+      if (doctorHierDepartment.trim()) params.set("department", doctorHierDepartment.trim());
+      const res = await fetch(`/api/indicators/doctor-hierarchy?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = (data.rows || []).map((r: Record<string, unknown>) => ({
+        ...r,
+        row_label: [r.doctor_name, r.period_label && r.period_label !== "Весь час" ? r.period_label : null]
+          .filter(Boolean)
+          .join(" · "),
+      }));
+      addCubeRowsToCanvas(rows, DOCTOR_HIER_FIELDS, "row_label", "Лікарі (обсяг)");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setDoctorHierLoading(false);
+    }
+  };
+
+  // "🔁 Повторні госпіталізації" — RPC public.lpz_readmission_cube
+  // (/api/indicators/readmissions).
+  const [readmitLevel, setReadmitLevel] = useState<"hospital" | "direction" | "department">("hospital");
+  const [readmitGrain, setReadmitGrain] = useState<string>("");
+  const [readmitLoading, setReadmitLoading] = useState(false);
+
+  const READMIT_FIELDS: CubeFieldDef[] = [
+    { key: "total_with_followup", label: "З ПОДАЛЬШИМ СПОСТЕРЕЖЕННЯМ" },
+    { key: "readmit_30d", label: "ПОВТОРНИХ ЗА 30д" },
+    { key: "readmit_30d_pct", label: "% ЗА 30д", suffix: "%" },
+    { key: "readmit_90d", label: "ПОВТОРНИХ ЗА 90д" },
+    { key: "readmit_90d_pct", label: "% ЗА 90д", suffix: "%" },
+    { key: "same_dx_30d", label: "ТОЙ САМИЙ ДІАГНОЗ (30д)" },
+  ];
+
+  const handleLoadReadmissions = async () => {
+    setReadmitLoading(true);
+    try {
+      const params = new URLSearchParams({ level: readmitLevel });
+      if (readmitGrain) params.set("grain", readmitGrain);
+      const res = await fetch(`/api/indicators/readmissions?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), READMIT_FIELDS, "row_label", "Повторні госпіталізації");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setReadmitLoading(false);
+    }
+  };
+
+  // "🩻 Показники по діагнозу" — RPC public.lpz_diagnosis_cube
+  // (/api/indicators/diagnoses). Пошук за початком коду МКХ (ilike 'код%').
+  const [diagnosisIcd, setDiagnosisIcd] = useState("");
+  const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+
+  const DIAGNOSIS_FIELDS: CubeFieldDef[] = [
+    { key: "cases", label: "ВИПАДКІВ" },
+    { key: "patients", label: "ПАЦІЄНТІВ" },
+    { key: "deaths", label: "СМЕРТЕЙ" },
+    { key: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
+    { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
+    { key: "avg_age", label: "СЕРЕДНІЙ ВІК" },
+    { key: "women", label: "ЖІНОК" },
+    { key: "men", label: "ЧОЛОВІКІВ" },
+  ];
+
+  const handleLoadDiagnoses = async () => {
+    setDiagnosisLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: "30" });
+      if (diagnosisIcd.trim()) params.set("icd", diagnosisIcd.trim());
+      const res = await fetch(`/api/indicators/diagnoses?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      addCubeRowsToCanvas(data.rows || [], DIAGNOSIS_FIELDS, "icd_primary", "Показники по діагнозу");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setDiagnosisLoading(false);
+    }
+  };
+
+  // "🧑‍🤝‍🧑 Демографія пацієнтів" — RPC public.lpz_patient_demo_cube
+  // (/api/indicators/patient-demo), group by стать × вікова група.
+  const [patientDemoGrain, setPatientDemoGrain] = useState<string>("");
+  const [patientDemoLoading, setPatientDemoLoading] = useState(false);
+
+  const PATIENT_DEMO_FIELDS: CubeFieldDef[] = [
+    { key: "cases", label: "ВИПАДКІВ" },
+    { key: "unique_patients", label: "ПАЦІЄНТІВ" },
+    { key: "deaths", label: "СМЕРТЕЙ" },
+    { key: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
+    { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
+  ];
+
+  const handleLoadPatientDemo = async () => {
+    setPatientDemoLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (patientDemoGrain) params.set("grain", patientDemoGrain);
+      const res = await fetch(`/api/indicators/patient-demo?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = (data.rows || []).map((r: Record<string, unknown>) => ({
+        ...r,
+        row_label: [
+          r.gender === "Ж" ? "Жінки" : "Чоловіки",
+          r.age_group,
+          r.period_label && r.period_label !== "Весь час" ? r.period_label : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      }));
+      addCubeRowsToCanvas(rows, PATIENT_DEMO_FIELDS, "row_label", "Демографія пацієнтів");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setPatientDemoLoading(false);
+    }
+  };
+
+  // "🕐 Часові патерни" — RPC public.lpz_time_pattern_cube
+  // (/api/indicators/time-patterns), group by година/день тижня/місяць.
+  const [timePatternBucket, setTimePatternBucket] = useState<"hour" | "weekday" | "month">("weekday");
+  const [timePatternLoading, setTimePatternLoading] = useState(false);
+
+  const TIME_PATTERN_FIELDS: CubeFieldDef[] = [
+    { key: "admissions", label: "ГОСПІТАЛІЗАЦІЙ" },
+    { key: "deaths", label: "СМЕРТЕЙ" },
+    { key: "night_admissions", label: "НІЧНИХ" },
+  ];
+
+  const handleLoadTimePatterns = async () => {
+    setTimePatternLoading(true);
+    try {
+      const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      addCubeRowsToCanvas(data.rows || [], TIME_PATTERN_FIELDS, "bucket_label", "Часові патерни");
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    } finally {
+      setTimePatternLoading(false);
+    }
+  };
+
   // "Показник (за списком)" — форма-конструктор картки КПІ на основі
   // довідника ЛСМД (той самий INDICATOR_SECTIONS, що й панель "Показники"):
   // шукаєш показник за кодом/назвою, вписуєш його поточне значення вручну
@@ -5176,6 +5540,108 @@ export default function AppBoundedCanvas() {
                   Наближення до .docs-list сторінки завідувача (head-cabinet.css) — обери відділення, завантаж лікарів і/або пацієнтів, що зараз перебувають там; клік на рядку підсвітить і прокрутить до пов&apos;язаного рядка в іншому списку (1:1 з census-row↔doc-item зі старого проекту)
                 </div>
               </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("hierarchy-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "hierarchy-cube"
+                    ? "bg-cyan-700 border-cyan-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-cyan-50"
+                }`}
+              >
+                <div className="font-bold">📊 Показники (лікарня/напрямок/відділення)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
+                  }`}
+                >
+                  Обери рівень і період — 16 живих показників плитками (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("doctor-hierarchy-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "doctor-hierarchy-cube"
+                    ? "bg-cyan-700 border-cyan-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-cyan-50"
+                }`}
+              >
+                <div className="font-bold">👨‍⚕️ Лікарі (обсяг, ієрархія)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "doctor-hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
+                  }`}
+                >
+                  Випадки/пацієнти/сер. ліжко-дні по кожному лікарю, з фільтром напрямку/відділення й періодом. RPC lpz_doctor_indicator_cube
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("readmission-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "readmission-cube"
+                    ? "bg-orange-700 border-orange-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
+                }`}
+              >
+                <div className="font-bold">🔁 Повторні госпіталізації</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "readmission-cube" ? "text-orange-100" : "text-slate-500"
+                  }`}
+                >
+                  Повторні за 30/90 днів, % і той самий діагноз. RPC lpz_readmission_cube
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("diagnosis-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "diagnosis-cube"
+                    ? "bg-orange-700 border-orange-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
+                }`}
+              >
+                <div className="font-bold">🩻 Показники по діагнозу</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "diagnosis-cube" ? "text-orange-100" : "text-slate-500"
+                  }`}
+                >
+                  Пошук за кодом МКХ-10 (icd_primary) — випадки/пацієнти/летальність/вік/стать по діагнозу. RPC lpz_diagnosis_cube
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("patient-demo-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "patient-demo-cube"
+                    ? "bg-orange-700 border-orange-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
+                }`}
+              >
+                <div className="font-bold">🧑‍🤝‍🧑 Демографія пацієнтів</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "patient-demo-cube" ? "text-orange-100" : "text-slate-500"
+                  }`}
+                >
+                  Стать × вікова група — випадки/пацієнти/летальність/сер. ліжко-дні. RPC lpz_patient_demo_cube
+                </div>
+              </button>
+              <button
+                onClick={() => setSelectedComplexObjectId("time-pattern-cube")}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "time-pattern-cube"
+                    ? "bg-orange-700 border-orange-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
+                }`}
+              >
+                <div className="font-bold">🕐 Часові патерни</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "time-pattern-cube" ? "text-orange-100" : "text-slate-500"
+                  }`}
+                >
+                  Госпіталізації/смерті/нічні по годині доби, дню тижня або місяцю. RPC lpz_time_pattern_cube
+                </div>
+              </button>
             </div>
 
             {selectedComplexObjectId === "patient-search" && (
@@ -5520,6 +5986,210 @@ export default function AppBoundedCanvas() {
               </div>
             )}
 
+            {selectedComplexObjectId === "hierarchy-cube" && (
+              <div className="p-3 bg-cyan-50/70 border border-cyan-200 rounded-lg space-y-2.5">
+                <div>
+                  <label className="block text-[10px] text-cyan-900 mb-1">Рівень:</label>
+                  <select
+                    value={hierarchyLevel}
+                    onChange={(e) => setHierarchyLevel(e.target.value as typeof hierarchyLevel)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="hospital">Лікарня</option>
+                    <option value="direction">Напрямок</option>
+                    <option value="department">Відділення</option>
+                  </select>
+                </div>
+                {hierarchyLevel === "direction" && (
+                  <input
+                    type="text"
+                    value={hierarchyDirection}
+                    onChange={(e) => setHierarchyDirection(e.target.value)}
+                    placeholder="Конкретний напрямок (напр. хірургічний) — або лишити пустим для всіх"
+                    className="w-full p-1.5 border rounded-md text-xs"
+                  />
+                )}
+                {hierarchyLevel === "department" && (
+                  <input
+                    type="text"
+                    value={hierarchyDepartment}
+                    onChange={(e) => setHierarchyDepartment(e.target.value)}
+                    placeholder="Точна назва відділення — або лишити пустим для всіх"
+                    className="w-full p-1.5 border rounded-md text-xs"
+                  />
+                )}
+                <div>
+                  <label className="block text-[10px] text-cyan-900 mb-1">Період:</label>
+                  <select
+                    value={hierarchyGrain}
+                    onChange={(e) => setHierarchyGrain(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Весь час</option>
+                    <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
+                  </select>
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  Один рядок (лікарня/весь час) → 16 плиток. Кілька рядків (декілька відділень чи розбивка по періоду) → список.
+                </div>
+                <button
+                  onClick={handleLoadHierarchy}
+                  disabled={hierarchyLoading}
+                  className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {hierarchyLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "doctor-hierarchy-cube" && (
+              <div className="p-3 bg-cyan-50/70 border border-cyan-200 rounded-lg space-y-2.5">
+                <input
+                  type="text"
+                  value={doctorHierDirection}
+                  onChange={(e) => setDoctorHierDirection(e.target.value)}
+                  placeholder="Напрямок (опційно)"
+                  className="w-full p-1.5 border rounded-md text-xs"
+                />
+                <input
+                  type="text"
+                  value={doctorHierDepartment}
+                  onChange={(e) => setDoctorHierDepartment(e.target.value)}
+                  placeholder="Відділення (опційно)"
+                  className="w-full p-1.5 border rounded-md text-xs"
+                />
+                <div>
+                  <label className="block text-[10px] text-cyan-900 mb-1">Період:</label>
+                  <select
+                    value={doctorHierGrain}
+                    onChange={(e) => setDoctorHierGrain(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Весь час</option>
+                    <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
+                  </select>
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  Без фільтрів — усі лікарі одразу (список). Без деталізації по періоду — можна багато рядків.
+                </div>
+                <button
+                  onClick={handleLoadDoctorHierarchy}
+                  disabled={doctorHierLoading}
+                  className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {doctorHierLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "readmission-cube" && (
+              <div className="p-3 bg-orange-50/70 border border-orange-200 rounded-lg space-y-2.5">
+                <div>
+                  <label className="block text-[10px] text-orange-900 mb-1">Рівень:</label>
+                  <select
+                    value={readmitLevel}
+                    onChange={(e) => setReadmitLevel(e.target.value as typeof readmitLevel)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="hospital">Лікарня</option>
+                    <option value="direction">Напрямок (усі)</option>
+                    <option value="department">Відділення (усі)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-orange-900 mb-1">Період:</label>
+                  <select
+                    value={readmitGrain}
+                    onChange={(e) => setReadmitGrain(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Весь час</option>
+                    <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleLoadReadmissions}
+                  disabled={readmitLoading}
+                  className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {readmitLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "diagnosis-cube" && (
+              <div className="p-3 bg-orange-50/70 border border-orange-200 rounded-lg space-y-2.5">
+                <input
+                  type="text"
+                  value={diagnosisIcd}
+                  onChange={(e) => setDiagnosisIcd(e.target.value)}
+                  placeholder="Код МКХ-10 (напр. I63) — або пусто для топ-30"
+                  className="w-full p-1.5 border rounded-md text-xs"
+                />
+                <button
+                  onClick={handleLoadDiagnoses}
+                  disabled={diagnosisLoading}
+                  className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {diagnosisLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "patient-demo-cube" && (
+              <div className="p-3 bg-orange-50/70 border border-orange-200 rounded-lg space-y-2.5">
+                <div>
+                  <label className="block text-[10px] text-orange-900 mb-1">Період:</label>
+                  <select
+                    value={patientDemoGrain}
+                    onChange={(e) => setPatientDemoGrain(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Весь час</option>
+                    <option value="year">По роках</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleLoadPatientDemo}
+                  disabled={patientDemoLoading}
+                  className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {patientDemoLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "time-pattern-cube" && (
+              <div className="p-3 bg-orange-50/70 border border-orange-200 rounded-lg space-y-2.5">
+                <div>
+                  <label className="block text-[10px] text-orange-900 mb-1">Групувати по:</label>
+                  <select
+                    value={timePatternBucket}
+                    onChange={(e) => setTimePatternBucket(e.target.value as typeof timePatternBucket)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="hour">Годині доби</option>
+                    <option value="weekday">Дню тижня</option>
+                    <option value="month">Місяцю</option>
+                  </select>
+                </div>
+                <button
+                  onClick={handleLoadTimePatterns}
+                  disabled={timePatternLoading}
+                  className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {timePatternLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
+                </button>
+              </div>
+            )}
+
             {/* Власні складні об'єкти — зібрані з простих фігур на полотні
                 (прямокутник, текст тощо), той самий принцип збереження, що
                 й у "Бібліотеці": виділити → зберегти під назвою → додавати
@@ -5628,6 +6298,12 @@ export default function AppBoundedCanvas() {
               selectedComplexObjectId !== "hospital-kpi" &&
               selectedComplexObjectId !== "indicator-form" &&
               selectedComplexObjectId !== "staff-ordinatorska" &&
+              selectedComplexObjectId !== "hierarchy-cube" &&
+              selectedComplexObjectId !== "doctor-hierarchy-cube" &&
+              selectedComplexObjectId !== "readmission-cube" &&
+              selectedComplexObjectId !== "diagnosis-cube" &&
+              selectedComplexObjectId !== "patient-demo-cube" &&
+              selectedComplexObjectId !== "time-pattern-cube" &&
               (() => {
                 const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
                 // Редагування вже існуючої кнопки на полотні (обрана через
