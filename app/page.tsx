@@ -192,6 +192,52 @@ interface CanvasElement {
   kpiGroupId?: string;
   kpiYear?: number | null;
   kpiField?: "total_cases" | "unique_patients" | "death_rate_pct" | "avg_age" | "avg_bed_days";
+
+  // Складене з часових зв'язків (set-year/set-month/set-week/set-day —
+  // runConnectionActions) значення часового періоду цього показника.
+  // Скільки одиниць підключено джерелами — стільки й заповнено (комусь
+  // досить року, комусь треба рік+місяць+день). content елемента
+  // форматується з цього об'єкта автоматично (formatTimeContext).
+  timeContext?: { year?: string; month?: string; week?: string; day?: string };
+
+  // Позначає елемент готовим ЧАСОВИМ ДЖЕРЕЛОМ (панель Параметри → "🕐 Часове
+  // джерело"): дає елементу відповідний пікер значення (рік/місяць/тиждень/
+  // день замість вільного тексту) і записує вибране в content. Саму по собі
+  // дію ні на що не впливає — підключення до цілі й досі робиться вручну
+  // через "🔗 Зв'язки" (set-year/set-month/set-week/set-day), це поле лише
+  // спрощує СТВОРЕННЯ такого джерела.
+  timeSourceUnit?: "year" | "month" | "week" | "day";
+
+  // Динамічне поле-РІК бейджа (runConnectionActions): спочатку саме займає
+  // весь бейдж (клік по джерелу-року). Коли до ЦЬОГО Ж поля підключають
+  // джерело-місяць/тиждень/день, воно НЕ дописується в сам текст року —
+  // натомість поле року стискається й підіймається вгору, а під ним
+  // автоматично створюється (один раз) чи оновлюється рядок дати
+  // (badgeDateSubId) з місяцем (+днем в тому самому рядку). Користувачу
+  // потрібно підключити зв'язки лише до ЦЬОГО ОДНОГО поля — розкладка на
+  // два рядки відбувається сама.
+  isBadgeYearField?: boolean;
+  badgeDateSubId?: number;
+
+  // Той самий принцип, що й excludeFromCascade (каскад видимості) — розриває
+  // каскад УСПАДКУВАННЯ ЗВ'ЯЗКІВ від предків саме на цьому елементі: він і
+  // все вкладене в нього більше не успадковують зв'язки, підключені до
+  // елементів вище (runConnectionActions). Власні зв'язки, підключені прямо
+  // до цього елемента, і далі працюють як завжди.
+  excludeFromConnectionCascade?: boolean;
+}
+
+// Зв'язок між двома елементами полотна — окрема сутність (як Page), не поле
+// елемента, бо стосується одразу ДВОХ. Створюється інтерактивно в режимі
+// "🔗 Зв'язки" (клік по елементу-джерелу, потім по елементу-цілі — між ними
+// з'являється лінія зі стрілкою). actions — МАСИВ функцій, які виконує клік
+// на джерелі (напр. одночасно "показати ціль" і "задає МІСЯЦЬ цілі") —
+// один зв'язок (одна лінія) може нести кілька дій одразу, не лише одну.
+interface ElementConnection {
+  id: string;
+  fromId: number;
+  toId: number;
+  actions?: string[];
 }
 
 interface Page {
@@ -252,6 +298,24 @@ interface ComplexObjectTemplate {
 const MONTH_PILL_LABELS = [
   "СІЧЕНЬ", "ЛЮТИЙ", "БЕРЕЗЕНЬ", "КВІТЕНЬ", "ТРАВЕНЬ", "ЧЕРВЕНЬ",
   "ЛИПЕНЬ", "СЕРПЕНЬ", "ВЕРЕСЕНЬ", "ЖОВТЕНЬ", "ЛИСТОПАД", "ГРУДЕНЬ",
+];
+
+// Дні тижня (називний відмінок) — 1:1 з dayNames/clockWeekdays у
+// hospital-analytics (head-cabinet.html/doctor-cabinet.html), той самий
+// порядок від неділі (як JS Date.getDay(): 0 = неділя).
+const WEEKDAY_LABELS = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "Пʼятниця", "Субота"];
+
+// Доступні функції зв'язку (панель "🔗 Зв'язки") — чекбокси, не dropdown:
+// один зв'язок (одна лінія на полотні) може нести КІЛЬКА функцій одразу.
+const CONNECTION_ACTION_OPTIONS: { value: string; label: string }[] = [
+  { value: "show", label: "👁️ Клік на джерелі показує ціль" },
+  { value: "hide", label: "🙈 Клік на джерелі ховає ціль" },
+  { value: "toggle", label: "🔁 Клік на джерелі перемикає видимість цілі" },
+  { value: "filter", label: "🔍 Клік на джерелі фільтрує список-ціль (лишає лише рядки з тим самим linkKey, що й джерело)" },
+  { value: "set-year", label: "📅 Клік на джерелі задає РІК цілі" },
+  { value: "set-month", label: "📅 Клік на джерелі задає МІСЯЦЬ цілі" },
+  { value: "set-week", label: "📅 Клік на джерелі задає ДЕНЬ ТИЖНЯ цілі" },
+  { value: "set-day", label: "📅 Клік на джерелі задає ДЕНЬ цілі" },
 ];
 
 // Стиль спільний для одиночної пігулки й блоку пігулок-місяців — той самий
@@ -441,6 +505,46 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
           bgOpacity: 0,
           padding: 0,
+        },
+      },
+    ],
+  },
+  {
+    id: "emptyTimeBadge",
+    label: "🏷️ Бейдж (порожній, для часових джерел)",
+    description:
+      "Той самий стиль і розміри, що й 'Бейдж року', але одне порожнє поле — розумний бейдж. Підключіть джерело-рік (панель '🔗 Зв'язки', дія 'задає РІК цілі') до ЦЬОГО поля — рік займе весь бейдж. Підключіть туди ж (до ТОГО САМОГО поля) джерело-місяць — рік сам стиснеться й підійметься вгору, а під ним автоматично з'явиться рядок з місяцем; підключений так само день — до того самого поля — стане в той-таки рядок поруч із місяцем («Березень · 15»). Усі підключення йдуть до ОДНОГО поля, розкладку на два рядки система робить сама.",
+    defaults: {
+      type: "block",
+      content: "",
+      width: 147,
+      height: 80,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    },
+    fields: [
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+    children: [
+      {
+        content: "",
+        x: 0,
+        y: 0,
+        width: 147,
+        height: 80,
+        defaults: {
+          type: "text",
+          fontSize: 64,
+          fontWeight: "300",
+          textColor: "#9c5468",
+          textAlign: "center",
+          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+          bgOpacity: 0,
+          padding: 0,
+          isBadgeYearField: true,
         },
       },
     ],
@@ -871,6 +975,11 @@ interface LibraryItem {
   // елементи на полотні не з'являються, доки пункт не додадуть.
   elements: CanvasElement[];
   rootIds: number[];
+  // Зв'язки, де і джерело, і ціль — ОБИДВА всередині цього фрагмента
+  // (зв'язки назовні фрагмента не мають сенсу зберігати — ціль поза
+  // виділенням не копіюється разом з ним). При вставці (handleAddLibraryItem)
+  // fromId/toId перезв'язуються на клоновані id так само, як parentId.
+  connections?: ElementConnection[];
 }
 
 // Користувацькі "складні об'єкти" — та сама механіка, що й LibraryItem
@@ -1154,7 +1263,7 @@ export default function AppBoundedCanvas() {
 
   // СТАНТИ: Сітка (Grid Snap) та Історія (Undo/Redo)
   const [enableGrid, setEnableGrid] = useState<boolean>(true);
-  const [history, setHistory] = useState<{ pages: Page[]; elements: CanvasElement[] }[]>([]);
+  const [history, setHistory] = useState<{ pages: Page[]; elements: CanvasElement[]; connections: ElementConnection[] }[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
   // Позиція та розмір плаваючої панелі "🧱 Інструменти" (Створити/Сторінка/
@@ -1248,6 +1357,196 @@ export default function AppBoundedCanvas() {
       else next.add(id);
       return next;
     });
+  };
+
+  // Інтерактивні зв'язки між елементами полотна — клікаєш джерело, потім
+  // ціль, і між ними з'являється лінія зі стрілкою (renderConnectionsLayer).
+  // linkMode вмикає режим з'єднання (звичайне виділення/drag тимчасово
+  // вимкнені — клік по елементу лише з'єднує). pendingLinkSourceId —
+  // елемент, обраний як джерело, але ще без пари. Вкладка "🔗 Зв'язки"
+  // панелі "Інструменти".
+  const [connections, setConnections] = useState<ElementConnection[]>([]);
+  const [linkMode, setLinkMode] = useState<boolean>(false);
+  const [pendingLinkSourceId, setPendingLinkSourceId] = useState<number | null>(null);
+  // Перемикає ОДНУ функцію в масиві дій зв'язку (чекбокс) — не замінює
+  // список цілком, тож на одному зв'язку можна тримати кілька функцій
+  // одночасно (напр. "показати ціль" + "задає МІСЯЦЬ цілі").
+  const toggleConnectionAction = (id: string, action: string) => {
+    const next = connections.map((c) => {
+      if (c.id !== id) return c;
+      const currentActions = c.actions ?? [];
+      const nextActions = currentActions.includes(action)
+        ? currentActions.filter((a) => a !== action)
+        : [...currentActions, action];
+      return { ...c, actions: nextActions };
+    });
+    updateConnectionsAndHistory(next);
+  };
+
+  // Елементи, приховані дією зв'язку (show/hide/toggle) — окремо від
+  // isTriggerTarget/showOnClickId (старий механізм тригерів, який зв'язки
+  // навмисно не чіпають). Не зберігається в localStorage — той самий
+  // принцип, що й clickedElementId/hoveredElementId (проміжний стан
+  // взаємодії, не даних проєкту).
+  const [connectionHiddenIds, setConnectionHiddenIds] = useState<Set<number>>(new Set());
+
+  // Часові зв'язки (set-year/set-month/set-week/set-day) — довільна кількість
+  // елементів-джерел (рік, місяць, тиждень, день — користувач сам створює
+  // стільки, скільки треба конкретному показнику: комусь досить року,
+  // комусь треба рік+місяць+день), кожен підключається окремим зв'язком до
+  // ОДНОГО й того самого показника. Значення джерела (el.content, як
+  // написав сам користувач — "2026", "Березень", "12", "15") складається в
+  // el.timeContext цілі й одразу форматується в її content. Свідомо НЕ
+  // тягне жодного API — targeted показник міг бути будь-яким елементом, а
+  // не лише плиткою з kpiField (щоб не повторювати вже готову поведінку
+  // пресету "📊 КПІ лікарні").
+  // "week" — попри назву поля (лишена як є, щоб не чіпати вже готові
+  // set-week/timeContext.week), тепер означає ДЕНЬ ТИЖНЯ (Понеділок…Неділя,
+  // WEEKDAY_LABELS), а не номер тижня — джерело з таким пікером просто дає
+  // назву дня тижня замість числа 1–53.
+  const TIME_UNIT_LABELS_INSTR: Record<"year" | "month" | "week" | "day", string> = {
+    year: "роком",
+    month: "місяцем",
+    week: "днем тижня",
+    day: "днем",
+  };
+  // Той самий регістр/відмінок, що й текст опцій у dropdown "🔗 Зв'язки"
+  // ("задає РІК цілі" тощо) — щоб підказка в Параметрах точно збігалась з
+  // тим, що людина побачить у списку дій зв'язку.
+  const TIME_UNIT_LABELS_NOM: Record<"year" | "month" | "week" | "day", string> = {
+    year: "РІК",
+    month: "МІСЯЦЬ",
+    week: "ДЕНЬ ТИЖНЯ",
+    day: "ДЕНЬ",
+  };
+  const formatTimeContext = (ctx: NonNullable<CanvasElement["timeContext"]>): string =>
+    [ctx.year, ctx.month, ctx.week, ctx.day]
+      .filter((part): part is string => !!part)
+      .join(" · ");
+
+  const runConnectionActions = (sourceId: number) => {
+    const sourceEl = elements.find((item) => item.id === sourceId);
+    if (!sourceEl) return;
+
+    // Дочірні елементи успадковують зв'язки БУДЬ-ЯКОГО предка (не лише
+    // прямого) — досить підключити зв'язок один раз до самого БЛОКА чи
+    // СПИСКУ, і клік по кожному з, напр., 6 вкладених кнопок-років теж його
+    // запускає, зі СВОЇМ власним content/linkKey (а не батьківського
+    // блока) — не треба тягнути 6 окремих ліній до однієї цілі. Той самий
+    // принцип обриву, що й у hasVisibleCascadingAncestor (excludeFromCascade):
+    // якщо сам sourceEl виключений — узагалі не йдемо вгору; якщо виключений
+    // ПРЕДОК на шляху — зупиняємось прямо на ньому, не додаючи ні його
+    // власні зв'язки, ні щось вище за нього.
+    const ancestorIds = new Set<number>([sourceId]);
+    if (!sourceEl.excludeFromConnectionCascade) {
+      let current: CanvasElement | undefined = sourceEl;
+      while (current && current.parentId !== null) {
+        const parent = elements.find((item) => item.id === current!.parentId);
+        if (!parent) break;
+        if (parent.excludeFromConnectionCascade) break;
+        ancestorIds.add(parent.id);
+        current = parent;
+      }
+    }
+
+    const outgoing = connections.filter((c) => ancestorIds.has(c.fromId) && c.actions && c.actions.length > 0);
+    if (outgoing.length === 0) return;
+
+    // Розгортаємо [{toId, actions:[...]}] у пласкі {toId, action} пари — одна
+    // й та сама лінія-зв'язок може нести кілька дій одразу (напр. і
+    // "показати ціль", і "задає МІСЯЦЬ цілі"); решта логіки нижче однакова.
+    const flatActions: { toId: number; action: string }[] = [];
+    outgoing.forEach((c) => c.actions!.forEach((action) => flatActions.push({ toId: c.toId, action })));
+
+    setConnectionHiddenIds((prev) => {
+      const next = new Set(prev);
+      flatActions.forEach(({ toId, action }) => {
+        if (action === "hide") next.add(toId);
+        else if (action === "show") next.delete(toId);
+        else if (action === "toggle") {
+          if (next.has(toId)) next.delete(toId);
+          else next.add(toId);
+        } else if (action === "filter" && sourceEl?.linkKey) {
+          // Ціль — цілий "Список" (toId), фільтруємо його РЯДКИ (дочірні
+          // елементи): лишаємо видимими лише ті, чий linkKey збігається з
+          // linkKey клікнутого джерела (той самий принцип, що й підсвітка
+          // linkKey — просто ховає решту замість підсвічування).
+          elements
+            .filter((row) => row.parentId === toId)
+            .forEach((row) => {
+              if (row.linkKey === sourceEl.linkKey) next.delete(row.id);
+              else next.add(row.id);
+            });
+        }
+      });
+      return next;
+    });
+
+    const timeActions = sourceEl
+      ? flatActions.filter(({ action }) => action === "set-year" || action === "set-month" || action === "set-week" || action === "set-day")
+      : [];
+    if (sourceEl && timeActions.length > 0) {
+      setElements((prev) => {
+        const next = [...prev];
+        timeActions.forEach(({ toId, action }) => {
+          const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
+          const targetIdx = next.findIndex((item) => item.id === toId);
+          if (targetIdx === -1) return;
+          const target = next[targetIdx];
+
+          if (target.isBadgeYearField && unit !== "year") {
+            // Джерело місяця/тижня/дня, підключене до поля-РОКУ бейджа — не
+            // дописується в сам рік: рік стискається й підіймається вгору,
+            // а під ним створюється (один раз) чи оновлюється рядок дати.
+            const dateSubIdx = target.badgeDateSubId != null ? next.findIndex((item) => item.id === target.badgeDateSubId) : -1;
+            const prevDateContext = dateSubIdx !== -1 ? next[dateSubIdx].timeContext ?? {} : {};
+            const nextDateContext = { ...prevDateContext, [unit]: sourceEl.content };
+            const formatted = formatTimeContext(nextDateContext);
+
+            if (dateSubIdx === -1) {
+              const dateSubHeight = 26;
+              const newYearHeight = target.height - dateSubHeight;
+              const dateSub: CanvasElement = {
+                id: Date.now() + Math.floor(Math.random() * 1000),
+                pageId: target.pageId,
+                isGlobal: false,
+                isTriggerTarget: false,
+                showOnHoverId: null,
+                showOnClickId: null,
+                type: "text",
+                content: formatted,
+                width: target.width,
+                height: dateSubHeight,
+                x: target.x,
+                y: target.y + newYearHeight,
+                textColor: target.textColor,
+                padding: 0,
+                borderRadius: 0,
+                fontSize: 15,
+                fontFamily: target.fontFamily,
+                fontWeight: "300",
+                textAlign: target.textAlign,
+                bgOpacity: 0,
+                parentId: target.parentId,
+                timeContext: nextDateContext,
+              };
+              next[targetIdx] = { ...target, height: newYearHeight, fontSize: 48, badgeDateSubId: dateSub.id };
+              next.push(dateSub);
+            } else {
+              next[dateSubIdx] = { ...next[dateSubIdx], content: formatted, timeContext: nextDateContext };
+            }
+          } else {
+            // Звичайна (не-бейджева) ціль — новий клік ПОВНІСТЮ заміняє
+            // зміст, а не додається до попереднього (рік/місяць тощо не
+            // накопичуються в один рядок). Складання кількох одиниць в один
+            // рядок лишається лише для рядка дати динамічного бейджа вище.
+            next[targetIdx] = { ...target, content: sourceEl.content, timeContext: { [unit]: sourceEl.content } };
+          }
+        });
+        saveToHistory(pages, next);
+        return next;
+      });
+    }
   };
 
   // Власні складні об'єкти користувача (панель "Складні об'єкти") — той
@@ -1582,9 +1881,9 @@ export default function AppBoundedCanvas() {
   // Вкладки головної панелі управління — замість одного суцільного скролу
   // (Створити елемент + Ієрархія + Сторінка + Параметри в одному стовпці).
   // "params" відкривається автоматично при виборі елемента (див. ефект нижче).
-  const [activePanelTab, setActivePanelTab] = useState<"create" | "page" | "params" | "complex" | "library">(
-    "create"
-  );
+  const [activePanelTab, setActivePanelTab] = useState<
+    "create" | "page" | "params" | "complex" | "library" | "links"
+  >("create");
 
   // Які кольорові секції всередині вкладки "Параметри" розгорнуті — акордеон,
   // не взаємовиключний (можна тримати відкритими кілька одразу). Позиція,
@@ -1618,12 +1917,18 @@ export default function AppBoundedCanvas() {
   // <main>-клік перевіряє й одноразово гасить сам себе.
   const suppressNextCanvasClickRef = useRef(false);
 
-  const saveToHistory = (newPages: Page[], newElements: CanvasElement[]) => {
+  // newConnections не обов'язковий — якщо конкретна зміна не чіпає самі
+  // зв'язки (напр. звичайне перетягування елемента), береться поточне
+  // значення connections із замикання. Виклики, що МІНЯЮТЬ саме connections
+  // (створення/видалення зв'язку, перемикання функції), мусять передати
+  // його явно — інакше в history потрапить ще стара версія (setConnections
+  // асинхронний, як і будь-який setState).
+  const saveToHistory = (newPages: Page[], newElements: CanvasElement[], newConnections: ElementConnection[] = connections) => {
     const updatedHistory = history.slice(0, historyIndex + 1);
-    updatedHistory.push({ pages: newPages, elements: newElements });
-    
+    updatedHistory.push({ pages: newPages, elements: newElements, connections: newConnections });
+
     if (updatedHistory.length > 30) updatedHistory.shift();
-    
+
     setHistory(updatedHistory);
     setHistoryIndex(updatedHistory.length - 1);
   };
@@ -1635,6 +1940,7 @@ export default function AppBoundedCanvas() {
 
     let initialPages = pages;
     let initialElements = elements;
+    let initialConnections: ElementConnection[] = connections;
 
     if (savedPages) {
       try {
@@ -1699,12 +2005,20 @@ export default function AppBoundedCanvas() {
       try { setLibraryItems(JSON.parse(savedLibraryItems)); } catch (e) {}
     }
 
+    const savedConnections = localStorage.getItem("mis_canvas_connections");
+    if (savedConnections) {
+      try {
+        initialConnections = JSON.parse(savedConnections);
+        setConnections(initialConnections);
+      } catch (e) {}
+    }
+
     const savedCustomComplexObjects = localStorage.getItem("mis_canvas_custom_complex_objects");
     if (savedCustomComplexObjects) {
       try { setCustomComplexObjects(JSON.parse(savedCustomComplexObjects)); } catch (e) {}
     }
 
-    setHistory([{ pages: initialPages, elements: initialElements }]);
+    setHistory([{ pages: initialPages, elements: initialElements, connections: initialConnections }]);
     setHistoryIndex(0);
   }, []);
 
@@ -1722,6 +2036,7 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_refs_panel_opacity", JSON.stringify(refsPanelOpacity));
       localStorage.setItem("mis_canvas_refs_panel_collapsed", JSON.stringify(refsPanelCollapsed));
       localStorage.setItem("mis_canvas_library_items", JSON.stringify(libraryItems));
+      localStorage.setItem("mis_canvas_connections", JSON.stringify(connections));
       localStorage.setItem("mis_canvas_custom_complex_objects", JSON.stringify(customComplexObjects));
     }
   }, [
@@ -1737,6 +2052,7 @@ export default function AppBoundedCanvas() {
     refsPanelOpacity,
     refsPanelCollapsed,
     libraryItems,
+    connections,
     customComplexObjects,
     isMounted,
   ]);
@@ -1766,6 +2082,7 @@ export default function AppBoundedCanvas() {
       const prevState = history[prevIndex];
       setPages(prevState.pages);
       setElements(prevState.elements);
+      setConnections(prevState.connections ?? []);
       setHistoryIndex(prevIndex);
     }
   };
@@ -1776,6 +2093,7 @@ export default function AppBoundedCanvas() {
       const nextState = history[nextIndex];
       setPages(nextState.pages);
       setElements(nextState.elements);
+      setConnections(nextState.connections ?? []);
       setHistoryIndex(nextIndex);
     }
   };
@@ -1788,6 +2106,15 @@ export default function AppBoundedCanvas() {
   const updatePagesAndHistory = (newPages: Page[]) => {
     setPages(newPages);
     saveToHistory(newPages, elements);
+  };
+
+  // Той самий принцип, що й updateElementsAndHistory/updatePagesAndHistory —
+  // будь-яка зміна самих зв'язків (створення/видалення/перемикання функції)
+  // теж мусить лишати крок в історії, інакше Ctrl+Z відкочує елементи, а
+  // зв'язки лишаються старими (розсинхрон).
+  const updateConnectionsAndHistory = (newConnections: ElementConnection[]) => {
+    setConnections(newConnections);
+    saveToHistory(pages, elements, newConnections);
   };
 
   const handleAddPage = () => {
@@ -1824,10 +2151,15 @@ export default function AppBoundedCanvas() {
     if (confirm("Видалити цю сторінку та всі її елементи?")) {
       const remainingPages = pages.filter((p) => p.id !== currentPageId);
       const remainingElements = elements.filter((el) => el.pageId !== currentPageId);
-      
+      const deletedIds = new Set(
+        elements.filter((el) => el.pageId === currentPageId).map((el) => el.id)
+      );
+      const remainingConnections = connections.filter((c) => !deletedIds.has(c.fromId) && !deletedIds.has(c.toId));
+
       setPages(remainingPages);
       setElements(remainingElements);
-      saveToHistory(remainingPages, remainingElements);
+      setConnections(remainingConnections);
+      saveToHistory(remainingPages, remainingElements, remainingConnections);
 
       setCurrentPageId(remainingPages[0].id);
     }
@@ -1875,6 +2207,29 @@ export default function AppBoundedCanvas() {
   const getClickTargetId = (el: CanvasElement, pageId: string): number | null => {
     if (el.clickTargetByPage && pageId in el.clickTargetByPage) return el.clickTargetByPage[pageId];
     return el.showOnClickId ?? null;
+  };
+
+  // Абсолютна позиція елемента в системі координат полотна (для лінії
+  // зв'язку) — x/y елемента зберігаються відносно БАТЬКА (renderCanvasNode
+  // рендерить дочірні елементи вкладено), тож для елемента всередині блоку
+  // треба пройти весь ланцюжок parentId і підсумувати x/y кожного предка.
+  // Не працює коректно для рядків списку (stackedRows/columns) — вони
+  // рендеряться в потоці (flex), а не через власний x/y, тож лінія до
+  // окремого рядка списку поки не підтримується.
+  const getAbsolutePosition = (id: number): { x: number; y: number; width: number; height: number } | null => {
+    const el = elements.find((item) => item.id === id);
+    if (!el) return null;
+    let x = el.x;
+    let y = el.y;
+    let parentId = el.parentId;
+    while (parentId !== null) {
+      const parent = elements.find((item) => item.id === parentId);
+      if (!parent) break;
+      x += parent.x;
+      y += parent.y;
+      parentId = parent.parentId;
+    }
+    return { x, y, width: el.width, height: el.height };
   };
 
   const getMinDimensions = (parentId: number) => {
@@ -2045,6 +2400,7 @@ export default function AppBoundedCanvas() {
       refsPanelOpacity,
       refsPanelCollapsed,
       libraryItems,
+      connections,
       customComplexObjects,
       openParamSections: Array.from(openParamSections),
     };
@@ -2268,9 +2624,11 @@ export default function AppBoundedCanvas() {
       try {
         const parsed = JSON.parse(event.target?.result as string);
         if (parsed.pages && parsed.elements) {
+          const importedConnections: ElementConnection[] = Array.isArray(parsed.connections) ? parsed.connections : [];
           setPages(parsed.pages);
           setElements(parsed.elements);
-          saveToHistory(parsed.pages, parsed.elements);
+          setConnections(importedConnections);
+          saveToHistory(parsed.pages, parsed.elements, importedConnections);
           setCurrentPageId(parsed.pages[0]?.id || "home");
           setSelectedIds([]);
           if (parsed.panelPos) setPanelPos(clampPanelPos(parsed.panelPos));
@@ -2286,7 +2644,8 @@ export default function AppBoundedCanvas() {
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
-          saveToHistory(pages, parsed);
+          saveToHistory(pages, parsed, []);
+          setConnections([]);
           setSelectedIds([]);
         } else {
           alert("Невірний формат JSON!");
@@ -2476,7 +2835,30 @@ export default function AppBoundedCanvas() {
 
   const handleButtonClick = (e: React.MouseEvent, el: CanvasElement) => {
     e.stopPropagation();
+
+    // Режим з'єднання (панель "🔗 Зв'язки") "з'їдає" клік — замість
+    // звичайного виділення/toggle перший клік позначає елемент джерелом,
+    // другий (по ІНШОМУ елементу) створює зв'язок. Повторний клік по
+    // самому джерелу скасовує вибір.
+    if (linkMode) {
+      if (pendingLinkSourceId === null) {
+        setPendingLinkSourceId(el.id);
+      } else if (pendingLinkSourceId === el.id) {
+        setPendingLinkSourceId(null);
+      } else {
+        const newConnection: ElementConnection = {
+          id: `link-${Date.now()}`,
+          fromId: pendingLinkSourceId,
+          toId: el.id,
+        };
+        updateConnectionsAndHistory([...connections, newConnection]);
+        setPendingLinkSourceId(null);
+      }
+      return;
+    }
+
     handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
+    runConnectionActions(el.id);
 
     const clickTargetId = getClickTargetId(el, currentPageId);
     if (clickTargetId) {
@@ -3525,9 +3907,33 @@ export default function AppBoundedCanvas() {
       });
     };
     selectedIds.forEach((id) => findChildren(id));
+    // Рядок дати динамічного бейджа (badgeDateSubId) — сиблінг поля-року в
+    // тому самому батькові, НЕ його parentId-дитина, тож findChildren вище
+    // його не бачить: якщо видаляють саме поле-рік (isBadgeYearField), його
+    // авто-створений рядок дати лишився б сиротою на полотні.
+    elements.forEach((el) => {
+      if (idsToDelete.has(el.id) && el.badgeDateSubId != null) idsToDelete.add(el.badgeDateSubId);
+    });
     const remaining = elements.filter((el) => !idsToDelete.has(el.id));
-    updateElementsAndHistory(remaining);
     setSelectedIds([]);
+
+    // Зв'язки, що вказують на видалений елемент (як джерело чи як ціль),
+    // самі стають "висячими" — прибираємо їх разом з елементом, інакше
+    // "🔗 Зв'язки" лишає в списку зв'язок в нікуди. Елементи й зв'язки
+    // фільтруються РАЗОМ в один крок історії (setElements/setConnections
+    // напряму, saveToHistory викликається ОДИН раз з обома оновленими
+    // значеннями) — інакше цей самий Ctrl+Z повернув би елемент без
+    // зв'язку чи навпаки.
+    const remainingConnections = connections.filter((c) => !idsToDelete.has(c.fromId) && !idsToDelete.has(c.toId));
+    setElements(remaining);
+    setConnections(remainingConnections);
+    saveToHistory(pages, remaining, remainingConnections);
+
+    setConnectionHiddenIds((prev) => {
+      const next = new Set(prev);
+      idsToDelete.forEach((id) => next.delete(id));
+      return next;
+    });
   };
 
   // Збирає елемент rootId разом з усіма нащадками як preorder-список
@@ -3556,11 +3962,17 @@ export default function AppBoundedCanvas() {
     if (rootIds.length === 0) return;
 
     const itemElements = rootIds.flatMap((id) => collectSubtreeElements(id, elements));
+    const itemIds = new Set(itemElements.map((el) => el.id));
+    // Лише зв'язки, повністю ВСЕРЕДИНІ фрагмента — і джерело, і ціль мають
+    // бути серед елементів, що зберігаються, інакше при вставці в іншому
+    // місці/іншу сторінку ціль зв'язку могла б взагалі не існувати.
+    const itemConnections = connections.filter((c) => itemIds.has(c.fromId) && itemIds.has(c.toId));
     const newItem: LibraryItem = {
       id: `lib-${Date.now()}`,
       name: trimmedName,
       elements: itemElements,
       rootIds,
+      connections: itemConnections,
     };
     setLibraryItems((prev) => [...prev, newItem]);
     setLibraryNameDraft("");
@@ -3606,7 +4018,22 @@ export default function AppBoundedCanvas() {
       };
     });
 
-    updateElementsAndHistory([...elements, ...newElements]);
+    // Зв'язки фрагмента (лише ті, де і джерело, і ціль всередині нього —
+    // гарантовано з idMap) перезв'язуються на клоновані id так само, як
+    // parentId вище, і отримують нові власні id (щоб той самий пункт
+    // бібліотеки можна було вставляти повторно без колізій).
+    const newConnections: ElementConnection[] = (item.connections ?? []).map((c, i) => ({
+      id: `link-${baseId}-${i}`,
+      fromId: idMap.get(c.fromId) ?? c.fromId,
+      toId: idMap.get(c.toId) ?? c.toId,
+      actions: c.actions,
+    }));
+
+    const nextElements = [...elements, ...newElements];
+    const nextConnections = [...connections, ...newConnections];
+    setElements(nextElements);
+    setConnections(nextConnections);
+    saveToHistory(pages, nextElements, nextConnections);
     setSelectedIds(roots.map((r) => idMap.get(r.id)!));
   };
 
@@ -3785,9 +4212,15 @@ export default function AppBoundedCanvas() {
     const isHoverTriggered = !!hoveredSourceEl && getHoverTargetId(hoveredSourceEl, currentPageId) === el.id;
     const isClickTriggered = clickedElementId === el.id;
 
-    const shouldHide = el.isTriggerTarget && (isTargetOfHover || isTargetOfClick) && !isHoverTriggered && !isClickTriggered && !isSelected;
+    const shouldHide =
+      (el.isTriggerTarget && (isTargetOfHover || isTargetOfClick) && !isHoverTriggered && !isClickTriggered && !isSelected) ||
+      connectionHiddenIds.has(el.id);
 
     if (shouldHide) return null;
+
+    // Обраний як "джерело" в режимі з'єднання (панель "🔗 Зв'язки") —
+    // підсвітка рамкою, щоб було видно, що чекає на клік по цілі.
+    const isPendingLinkSource = pendingLinkSourceId === el.id;
 
     return (
       <Rnd
@@ -3851,7 +4284,8 @@ export default function AppBoundedCanvas() {
           const nextElements = elements.map((item) => (item.id === el.id ? { ...item, ...resolved } : item));
           updateElementsAndHistory(nextElements);
         }}
-        enableResizing={true}
+        enableResizing={!linkMode}
+        disableDragging={linkMode}
         style={{ zIndex: isSelected ? 40 : 10 }}
       >
         <div
@@ -3876,7 +4310,11 @@ export default function AppBoundedCanvas() {
               fontFamily: el.fontFamily || "inherit",
               fontWeight: el.fontWeight || "500",
               textAlign: el.textAlign || "left",
-              boxShadow: el.isPressed ? activeShadow : "none",
+              boxShadow: isPendingLinkSource
+                ? "0 0 0 3px #a21caf"
+                : el.isPressed
+                ? activeShadow
+                : "none",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -3916,6 +4354,12 @@ export default function AppBoundedCanvas() {
           )}
           {el.type === "text" && (
             <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full w-full">
+              {el.content}
+            </div>
+          )}
+
+          {el.type === "block" && el.content && (
+            <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden w-full h-full">
               {el.content}
             </div>
           )}
@@ -3971,14 +4415,43 @@ export default function AppBoundedCanvas() {
                   <div className="px-1 py-2 text-[11px] opacity-50 pointer-events-none">
                     Порожньо — виберіть цей список і додайте елемент
                   </div>
+                ) : children.filter((child) => !connectionHiddenIds.has(child.id)).length === 0 ? (
+                  <div className="px-1 py-2 text-[11px] opacity-50 pointer-events-none">
+                    Немає рядків, що відповідають фільтру
+                  </div>
                 ) : (
-                  children.map((child) => (
+                  children
+                    .filter((child) => !connectionHiddenIds.has(child.id))
+                    .map((child) => (
                     <div
                       key={child.id}
                       data-el-id={child.id}
                       onClick={(e) => {
                         e.stopPropagation();
+
+                        // Той самий режим з'єднання, що й на звичайних
+                        // елементах (handleButtonClick) — рядок списку теж
+                        // може бути джерелом чи ціллю зв'язку (напр. клік
+                        // на лікарі фільтрує список пацієнтів).
+                        if (linkMode) {
+                          if (pendingLinkSourceId === null) {
+                            setPendingLinkSourceId(child.id);
+                          } else if (pendingLinkSourceId === child.id) {
+                            setPendingLinkSourceId(null);
+                          } else {
+                            const newConnection: ElementConnection = {
+                              id: `link-${Date.now()}`,
+                              fromId: pendingLinkSourceId,
+                              toId: child.id,
+                            };
+                            updateConnectionsAndHistory([...connections, newConnection]);
+                            setPendingLinkSourceId(null);
+                          }
+                          return;
+                        }
+
                         handleSelectElement(child.id, e.shiftKey || e.ctrlKey || e.metaKey);
+                        runConnectionActions(child.id);
                         if (child.linkKey) {
                           const matches = elements.filter(
                             (o) => o.id !== child.id && o.linkKey === child.linkKey && isVisibleOnPage(o, currentPageId)
@@ -3990,7 +4463,9 @@ export default function AppBoundedCanvas() {
                       }}
                       className={`px-1 py-1.5 border-b border-black/10 last:border-b-0 cursor-pointer transition-colors ${
                         el.stackedRows ? "text-right hover:text-[#b27c8b]" : "flex items-center gap-2"
-                      } ${selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""}`}
+                      } ${selectedIds.includes(child.id) ? "ring-2 ring-amber-400 ring-inset" : ""} ${
+                        pendingLinkSourceId === child.id ? "ring-2 ring-fuchsia-500 ring-inset" : ""
+                      }`}
                       style={{
                         color: child.textColor || "#000000",
                         backgroundColor: child.customBgColor || "transparent",
@@ -4050,6 +4525,56 @@ export default function AppBoundedCanvas() {
     );
   };
 
+  // SVG-шар зі стрілками зв'язків поверх полотна (той самий прийом, що й
+  // ObjectFrame — рахує позиції з x/y елементів, оновлюється на кожен
+  // рендер, тобто сам іде за drag/resize). pointer-events:none, щоб не
+  // заважати кліками по елементах під лінією.
+  const renderConnectionsLayer = () => {
+    const visibleConnections = connections.filter((c) => {
+      const from = elements.find((e) => e.id === c.fromId);
+      const to = elements.find((e) => e.id === c.toId);
+      return !!from && !!to && isVisibleOnPage(from, currentPageId) && isVisibleOnPage(to, currentPageId);
+    });
+    if (visibleConnections.length === 0) return null;
+
+    return (
+      <svg className="absolute inset-0 pointer-events-none" style={{ zIndex: 46, overflow: "visible" }}>
+        <defs>
+          <marker id="connection-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a21caf" />
+          </marker>
+        </defs>
+        {visibleConnections.map((c) => {
+          const from = getAbsolutePosition(c.fromId);
+          const to = getAbsolutePosition(c.toId);
+          if (!from || !to) return null;
+          const x1 = from.x + from.width / 2;
+          const y1 = from.y + from.height / 2;
+          const x2 = to.x + to.width / 2;
+          const y2 = to.y + to.height / 2;
+          // Легкий вигин посередині (перпендикулярно до лінії джерело→ціль),
+          // щоб зв'язок читався як крива "мотузка", а не пряма лінійка.
+          const dx = x2 - x1;
+          const dy = y2 - y1;
+          const dist = Math.hypot(dx, dy) || 1;
+          const curveOffset = Math.min(60, dist * 0.2);
+          const cx = (x1 + x2) / 2 + (-dy / dist) * curveOffset;
+          const cy = (y1 + y2) / 2 + (dx / dist) * curveOffset;
+          return (
+            <path
+              key={c.id}
+              d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
+              fill="none"
+              stroke="#a21caf"
+              strokeWidth={2}
+              markerEnd="url(#connection-arrow)"
+            />
+          );
+        })}
+      </svg>
+    );
+  };
+
   const renderSidebarTree = (parentId: number | null, depth = 0) => {
     const children = elements.filter((el) => el.parentId === parentId && isVisibleOnPage(el, currentPageId));
     if (children.length === 0) return null;
@@ -4068,7 +4593,14 @@ export default function AppBoundedCanvas() {
       return (
         <div key={el.id} className="space-y-1 my-1" style={{ marginLeft: `${depth * 10}px` }}>
           <div
-            onClick={(e) => handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey)}
+            onClick={(e) => {
+              handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
+              // Клік у дереві ієрархії — той самий "клік на елементі", що й
+              // на полотні чи в рядку списку: теж мусить запускати зв'язки,
+              // підключені до цього елемента (напр. коли елемент незручно
+              // клікнути напряму на полотні через панелі зверху).
+              runConnectionActions(el.id);
+            }}
             className={`p-2 rounded cursor-pointer text-xs flex items-center justify-between gap-2 transition-all ${
               isSelected
                 ? "bg-slate-900 text-white font-bold shadow-md ring-2 ring-amber-400"
@@ -4106,7 +4638,8 @@ export default function AppBoundedCanvas() {
                   [{TYPE_LABELS[el.type]}] {el.isGlobal ? "(🌍)" : ""}{" "}
                   {!el.isGlobal && el.extraPageIds && el.extraPageIds.length > 0 ? "(📌)" : ""}{" "}
                   {el.cascadeGlobal ? "(➡️)" : ""} {el.excludeFromCascade ? "(🚫)" : ""}{" "}
-                  {el.isTriggerTarget ? "(👁️)" : ""}
+                  {el.isTriggerTarget ? "(👁️)" : ""} {el.timeSourceUnit ? "(🕐)" : ""}{" "}
+                  {el.excludeFromConnectionCascade ? "(🔗🚫)" : ""}
                 </span>
                 {el.content}
               </span>
@@ -4334,6 +4867,7 @@ export default function AppBoundedCanvas() {
                 },
                 { key: "complex" as const, label: "🧩 Об'єкти" },
                 { key: "library" as const, label: "📚 Бібліотека" },
+                { key: "links" as const, label: "🔗 Зв'язки" },
               ]
             ).map((tab) => (
               <button
@@ -4623,6 +5157,23 @@ export default function AppBoundedCanvas() {
                         </div>
                       )}
 
+                      {singleSelected.parentId !== null && (
+                        <div className="p-2.5 bg-orange-50/70 border border-orange-200 rounded-lg">
+                          <label className="text-[11px] font-bold text-orange-900 flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={singleSelected.excludeFromConnectionCascade ?? false}
+                              onChange={(e) => updateSelectedFields("excludeFromConnectionCascade", e.target.checked)}
+                              className="rounded border-orange-300 text-orange-600 focus:ring-orange-500 h-4 w-4"
+                            />
+                            🔗🚫 Виключити з каскаду зв'язків (разом із вкладеними)
+                          </label>
+                          <p className="mt-1 text-[10px] text-orange-700/70 leading-snug">
+                            За замовчуванням клік на цьому елементі теж запускає зв'язки, підключені до будь-якого предка (напр. до батьківського блока). Увімкніть, щоб саме цей елемент (і все вкладене в нього) такі зв'язки більше не успадковував.
+                          </p>
+                        </div>
+                      )}
+
                       <div className="p-2.5 bg-cyan-50/70 border border-cyan-200 rounded-lg">
                         <label className="text-[11px] font-bold text-cyan-900 flex items-center gap-2 cursor-pointer">
                           <input
@@ -4694,6 +5245,102 @@ export default function AppBoundedCanvas() {
                     <p className="text-[10px] text-indigo-700/70 leading-snug">
                       Діє лише для сторінки «{currentPage?.name}». На інших сторінках ця сама кнопка може викликати інший об'єкт або нічого.
                     </p>
+                  </ParamSection>
+                )}
+
+                {/* ЧАСОВЕ ДЖЕРЕЛО — робить елемент готовим джерелом для
+                    зв'язків set-year/set-month/set-week/set-day (панель
+                    "🔗 Зв'язки"): замість вільного тексту дає пікер під
+                    обрану одиницю, щоб не вписувати "Березень"/"2026" вручну
+                    і не помилитись. Саме підключення до цілі — і далі через
+                    "🔗 Зв'язки" на полотні. */}
+                {singleSelected && (
+                  <ParamSection
+                    label="🕐 Часове джерело"
+                    isOpen={openParamSections.has("timeSource")}
+                    onToggle={() => toggleParamSection("timeSource")}
+                    colorClass="bg-amber-50/60 border-amber-200 text-amber-900"
+                  >
+                    <div>
+                      <label className="block text-[10px] text-amber-800 mb-1">Цей елемент — джерело:</label>
+                      <select
+                        value={singleSelected.timeSourceUnit ?? ""}
+                        onChange={(e) => updateSelectedFields("timeSourceUnit", e.target.value || undefined)}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white font-medium text-amber-900"
+                      >
+                        <option value="">(Не часове джерело)</option>
+                        <option value="year">📅 Рік</option>
+                        <option value="month">📅 Місяць</option>
+                        <option value="week">📅 День тижня</option>
+                        <option value="day">📅 День</option>
+                      </select>
+                    </div>
+
+                    {singleSelected.timeSourceUnit === "year" && (
+                      <div>
+                        <label className="block text-[10px] text-amber-800 mb-1">Рік:</label>
+                        <input
+                          type="number"
+                          value={singleSelected.content}
+                          onChange={(e) => updateSelectedFields("content", e.target.value)}
+                          className="w-full p-1.5 border rounded-md text-xs bg-white"
+                          placeholder="2026"
+                        />
+                      </div>
+                    )}
+                    {singleSelected.timeSourceUnit === "month" && (
+                      <div>
+                        <label className="block text-[10px] text-amber-800 mb-1">Місяць:</label>
+                        <select
+                          value={singleSelected.content}
+                          onChange={(e) => updateSelectedFields("content", e.target.value)}
+                          className="w-full p-1.5 border rounded-md text-xs bg-white"
+                        >
+                          <option value="">(Оберіть місяць)</option>
+                          {MONTH_PILL_LABELS.map((label) => (
+                            <option key={label} value={label}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {singleSelected.timeSourceUnit === "week" && (
+                      <div>
+                        <label className="block text-[10px] text-amber-800 mb-1">День тижня:</label>
+                        <select
+                          value={singleSelected.content}
+                          onChange={(e) => updateSelectedFields("content", e.target.value)}
+                          className="w-full p-1.5 border rounded-md text-xs bg-white"
+                        >
+                          <option value="">(Оберіть день тижня)</option>
+                          {WEEKDAY_LABELS.map((label) => (
+                            <option key={label} value={label}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {singleSelected.timeSourceUnit === "day" && (
+                      <div>
+                        <label className="block text-[10px] text-amber-800 mb-1">День (1–31):</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={singleSelected.content}
+                          onChange={(e) => updateSelectedFields("content", e.target.value)}
+                          className="w-full p-1.5 border rounded-md text-xs bg-white"
+                          placeholder="15"
+                        />
+                      </div>
+                    )}
+                    {singleSelected.timeSourceUnit && (
+                      <p className="text-[10px] text-amber-700/70 leading-snug">
+                        Готово як джерело. Підключіть його до цілі в панелі "🔗 Зв'язки" дією "Клік на джерелі задає {TIME_UNIT_LABELS_NOM[singleSelected.timeSourceUnit]} цілі".
+                      </p>
+                    )}
                   </ParamSection>
                 )}
 
@@ -6485,6 +7132,93 @@ export default function AppBoundedCanvas() {
           </div>
           </>
           )}
+
+          {activePanelTab === "links" && (
+          <>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Інтерактивні зв'язки між елементами полотна — джерело → ціль. Що саме зв'язок робить, приписується окремим кроком пізніше.
+          </div>
+          <div className="p-2 border-b border-slate-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setLinkMode((prev) => !prev);
+                setPendingLinkSourceId(null);
+              }}
+              className={`w-full py-1.5 text-xs font-bold rounded-md transition-colors ${
+                linkMode
+                  ? "bg-fuchsia-700 hover:bg-fuchsia-800 text-white"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+              }`}
+            >
+              {linkMode ? "🔗 Режим з'єднання: УВІМКНЕНО" : "🔗 Увімкнути режим з'єднання"}
+            </button>
+            {linkMode && (
+              <p className="mt-1.5 text-[10px] text-fuchsia-700 leading-snug">
+                {pendingLinkSourceId === null
+                  ? "Клікніть на елемент-джерело на полотні."
+                  : "Тепер клікніть на елемент-ціль (або ще раз на джерело, щоб скасувати)."}
+              </p>
+            )}
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {connections.length === 0 && (
+              <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                Зв'язків ще немає. Увімкніть режим з'єднання й клікніть по двох елементах на полотні.
+              </div>
+            )}
+            {connections.map((conn) => {
+              const fromEl = elements.find((item) => item.id === conn.fromId);
+              const toEl = elements.find((item) => item.id === conn.toId);
+              return (
+                <div key={conn.id} className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0 text-xs text-slate-700 truncate">
+                      <span className="font-bold">{fromEl ? fromEl.content : "?"}</span>
+                      <span className="mx-1 text-slate-400">→</span>
+                      <span className="font-bold">{toEl ? toEl.content : "?"}</span>
+                    </div>
+                    <button
+                      onClick={() => updateConnectionsAndHistory(connections.filter((c) => c.id !== conn.id))}
+                      className="px-2 py-1 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-500 text-[11px] rounded-md shrink-0"
+                      title="Видалити зв'язок"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-semibold">Функції (можна кілька):</div>
+                  <div className="space-y-1">
+                    {CONNECTION_ACTION_OPTIONS.map((opt) => (
+                      <label
+                        key={opt.value}
+                        className="flex items-start gap-1.5 text-[11px] text-slate-700 cursor-pointer leading-snug"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={conn.actions?.includes(opt.value) ?? false}
+                          onChange={() => toggleConnectionAction(conn.id, opt.value)}
+                          className="mt-0.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500 h-3.5 w-3.5 shrink-0"
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                  {conn.actions && conn.actions.some((a) => a.startsWith("set-")) && (
+                    <p className="text-[10px] text-slate-400 leading-snug">
+                      Текст джерела («{fromEl?.content ?? "?"}») стане{" "}
+                      {conn.actions
+                        .filter((a) => a.startsWith("set-"))
+                        .map((a) => TIME_UNIT_LABELS_INSTR[a.replace("set-", "") as "year" | "month" | "week" | "day"])
+                        .join(" і ")}{" "}
+                      цілі. Підключіть ще зв'язки з інших часових елементів (рік/місяць/тиждень/день) до тієї самої цілі — складуться разом.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          </>
+          )}
           </div>
           </>
           )}
@@ -6710,6 +7444,10 @@ export default function AppBoundedCanvas() {
               suppressNextCanvasClickRef.current = false;
               return;
             }
+            if (linkMode) {
+              setPendingLinkSourceId(null);
+              return;
+            }
             handleSelectElement(null);
             setClickedElementId(null);
             if (linkedHighlightIds.size > 0) setLinkedHighlightIds(new Set());
@@ -6734,6 +7472,7 @@ export default function AppBoundedCanvas() {
             {elements
               .filter((el) => el.parentId === null && isVisibleOnPage(el, currentPageId))
               .map((el) => renderCanvasNode(el))}
+            {renderConnectionsLayer()}
           </div>
         </main>
       </div>
