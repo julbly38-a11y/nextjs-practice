@@ -12,18 +12,20 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const department = (searchParams.get("department") || "").trim();
+  const org = (searchParams.get("org") || "").trim();
 
   if (!department) {
     return NextResponse.json({ error: "Не вказано відділення (department)" }, { status: 400 });
   }
 
-  const { data, error } = await getSupabaseAdmin()
+  let query = getSupabaseAdmin()
     .schema("lpz")
     .from("lpz_hospitalization_doctors")
     .select("patient_name, admission_date, doctor_id, doctor_name")
     .is("discharge_date", null)
-    .ilike("inpatient_department_name", `%${department}%`)
-    .order("admission_date");
+    .ilike("inpatient_department_name", `%${department}%`);
+  if (org) query = query.eq("org_edrpou", org);
+  const { data, error } = await query.order("admission_date");
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

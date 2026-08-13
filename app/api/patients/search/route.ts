@@ -11,6 +11,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") || "").trim();
+  const org = (searchParams.get("org") || "").trim();
 
   if (q.length < 2) {
     return NextResponse.json({ error: "Введіть щонайменше 2 символи для пошуку" }, { status: 400 });
@@ -24,6 +25,7 @@ export async function GET(request: Request) {
   query = UUID_RE.test(safeQ)
     ? query.eq("patient_id", safeQ)
     : query.or(`full_name.ilike.%${safeQ}%,tax_id.ilike.%${safeQ}%`);
+  if (org) query = query.eq("org_edrpou", org);
 
   const { data, error } = await query.limit(20);
 

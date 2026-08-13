@@ -9,17 +9,19 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const department = (searchParams.get("department") || "").trim();
+  const org = (searchParams.get("org") || "").trim();
 
   if (!department) {
     return NextResponse.json({ error: "Не вказано відділення (department)" }, { status: 400 });
   }
 
-  const { data, error } = await getSupabaseAdmin()
+  let query = getSupabaseAdmin()
     .schema("lpz")
     .from("lpz_empl")
     .select("resource_id, last_name, first_name, middle_name, position_name")
-    .eq("department_structure_id", department)
-    .order("last_name");
+    .eq("department_structure_id", department);
+  if (org) query = query.eq("org_edrpou", org);
+  const { data, error } = await query.order("last_name");
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

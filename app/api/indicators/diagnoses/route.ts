@@ -9,11 +9,13 @@ export async function GET(request: Request) {
   const grain = searchParams.get("grain");
   const icd = searchParams.get("icd");
   const limit = Number(searchParams.get("limit")) || 20;
+  const org = searchParams.get("org");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_diagnosis_cube", {
     p_time_grain: grain || null,
     p_icd: icd || null,
     p_limit: limit,
+    p_org_edrpou: org || null,
   });
 
   if (error) {

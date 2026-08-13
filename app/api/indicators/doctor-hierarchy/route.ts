@@ -10,12 +10,14 @@ export async function GET(request: Request) {
   const doctorId = searchParams.get("doctorId");
   const direction = searchParams.get("direction");
   const department = searchParams.get("department");
+  const org = searchParams.get("org");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_doctor_indicator_cube", {
     p_time_grain: grain || null,
     p_doctor_id: doctorId || null,
     p_direction: direction || null,
     p_department: department || null,
+    p_org_edrpou: org || null,
   });
 
   if (error) {

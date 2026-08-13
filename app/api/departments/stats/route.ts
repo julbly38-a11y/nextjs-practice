@@ -10,9 +10,11 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = (searchParams.get("q") || "").trim();
+  const org = (searchParams.get("org") || "").trim();
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_department_stats", {
     search_query: q || null,
+    p_org_edrpou: org || null,
   });
 
   if (error) {

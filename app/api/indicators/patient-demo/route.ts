@@ -7,9 +7,11 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const grain = searchParams.get("grain");
+  const org = searchParams.get("org");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_patient_demo_cube", {
     p_time_grain: grain || null,
+    p_org_edrpou: org || null,
   });
 
   if (error) {

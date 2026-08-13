@@ -11,8 +11,9 @@ import {
   formatLpzFieldValue,
   type LpzEntityRecord,
 } from "@/lib/lpz-object-fields";
+import { getHospitalTheme } from "@/lib/hospital-themes";
 
-type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock";
+type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | "image";
 
 // Захист від "зниклих" плаваючих панелей: якщо збережена (localStorage чи
 // імпортований JSON) позиція опиняється поза поточним вікном — напр. проєкт
@@ -83,6 +84,7 @@ const TYPE_LABELS: Record<ElementType, string> = {
   button: "Кнопка",
   list: "Список",
   clock: "Годинник",
+  image: "Зображення",
 };
 
 interface ListColumn {
@@ -108,8 +110,10 @@ interface CanvasElement {
   padding: number;
   borderRadius: number;
   fontSize: number;
+  lineHeight?: number; // множник міжрядкового інтервалу (CSS line-height, unitless); без значення — типовий leading-normal (1.5)
   parentId: number | null;
   customBgColor?: string;
+  imageUrl?: string; // джерело для type: "image" (шлях у public/, напр. /logos/khotyn.svg)
   bgOpacity?: number; // 0..1, прозорість фону елемента
   meshBg?: boolean; // анімований mesh-фон замість звичайного суцільного фону (перекриває customBgColor)
   meshSpeed?: number; // множник швидкості анімації (1 = дефолт, 18с/26с як в оригіналі)
@@ -191,7 +195,7 @@ interface CanvasElement {
   // полів з тим самим kpiGroupId — заміна ручного вибору року в панелі.
   kpiGroupId?: string;
   kpiYear?: number | null;
-  kpiField?: "total_cases" | "unique_patients" | "death_rate_pct" | "avg_age" | "avg_bed_days";
+  kpiField?: "total_cases" | "unique_patients" | "deaths" | "death_rate_pct" | "avg_age" | "avg_bed_days";
 
   // Складене з часових зв'язків (set-year/set-month/set-week/set-day —
   // runConnectionActions) значення часового періоду цього показника.
@@ -218,6 +222,10 @@ interface CanvasElement {
   // два рядки відбувається сама.
   isBadgeYearField?: boolean;
   badgeDateSubId?: number;
+  // Позначає сам авто-створений рядок дати — щоб той самий стиль (складання
+  // одиниць + ВЕЛИКІ літери) застосовувався, навіть якщо зв'язок підключили
+  // напряму до цього рядка, а не до поля-року (яке його й створило).
+  isBadgeDateSubField?: boolean;
 
   // Той самий принцип, що й excludeFromCascade (каскад видимості) — розриває
   // каскад УСПАДКУВАННЯ ЗВ'ЯЗКІВ від предків саме на цьому елементі: він і
@@ -357,6 +365,7 @@ const PILL_STYLE_FIELDS: ComplexObjectField[] = [
 const HOSPITAL_KPI_FIELDS: { field: NonNullable<CanvasElement["kpiField"]>; label: string }[] = [
   { field: "total_cases", label: "ВИПАДКІВ" },
   { field: "unique_patients", label: "ПАЦІЄНТІВ" },
+  { field: "deaths", label: "СМЕРТЕЙ" },
   { field: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ" },
   { field: "avg_age", label: "СЕРЕДНІЙ ВІК" },
   { field: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
@@ -1501,7 +1510,11 @@ export default function AppBoundedCanvas() {
             const dateSubIdx = target.badgeDateSubId != null ? next.findIndex((item) => item.id === target.badgeDateSubId) : -1;
             const prevDateContext = dateSubIdx !== -1 ? next[dateSubIdx].timeContext ?? {} : {};
             const nextDateContext = { ...prevDateContext, [unit]: sourceEl.content };
-            const formatted = formatTimeContext(nextDateContext);
+            // .date-sub в оригіналі (hospital-analytics) — text-transform:
+            // uppercase; тут немає CSS-класу під це, тож капіталізуємо сам
+            // текст. timeContext лишається з "сирими" значеннями джерел
+            // (напр. "Понеділок"), капіталізація — лише при показі.
+            const formatted = formatTimeContext(nextDateContext).toUpperCase();
 
             if (dateSubIdx === -1) {
               const dateSubHeight = 26;
@@ -1529,17 +1542,30 @@ export default function AppBoundedCanvas() {
                 bgOpacity: 0,
                 parentId: target.parentId,
                 timeContext: nextDateContext,
+                isBadgeDateSubField: true,
               };
               next[targetIdx] = { ...target, height: newYearHeight, fontSize: 48, badgeDateSubId: dateSub.id };
               next.push(dateSub);
             } else {
               next[dateSubIdx] = { ...next[dateSubIdx], content: formatted, timeContext: nextDateContext };
             }
+          } else if (target.isBadgeDateSubField) {
+            // Зв'язок підключили НАПРЯМУ до вже створеного рядка дати (не до
+            // поля-року, яке його породило) — той самий стиль: складання в
+            // ЙОГО ВЛАСНИЙ timeContext і капіталізація, а не сирий текст
+            // джерела як є. Стиль бейджа не залежить від того, куди саме з
+            // двох полів підключили зв'язок.
+            const nextOwnContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+            next[targetIdx] = {
+              ...target,
+              content: formatTimeContext(nextOwnContext).toUpperCase(),
+              timeContext: nextOwnContext,
+            };
           } else {
             // Звичайна (не-бейджева) ціль — новий клік ПОВНІСТЮ заміняє
             // зміст, а не додається до попереднього (рік/місяць тощо не
             // накопичуються в один рядок). Складання кількох одиниць в один
-            // рядок лишається лише для рядка дати динамічного бейджа вище.
+            // рядок лишається лише для рядків дати бейджа вище.
             next[targetIdx] = { ...target, content: sourceEl.content, timeContext: { [unit]: sourceEl.content } };
           }
         });
@@ -1586,7 +1612,7 @@ export default function AppBoundedCanvas() {
     setPatientSearchError(null);
     setSelectedPatient(null);
     try {
-      const res = await fetch(`/api/patients/search?q=${encodeURIComponent(q)}`);
+      const res = await fetch(`/api/patients/search?q=${encodeURIComponent(q)}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         setPatientSearchError(data.error || "Помилка пошуку");
@@ -1689,7 +1715,7 @@ export default function AppBoundedCanvas() {
     setDoctorSearchError(null);
     setSelectedDoctor(null);
     try {
-      const res = await fetch(`/api/doctors/search?q=${encodeURIComponent(q)}`);
+      const res = await fetch(`/api/doctors/search?q=${encodeURIComponent(q)}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         setDoctorSearchError(data.error || "Помилка пошуку");
@@ -1793,7 +1819,7 @@ export default function AppBoundedCanvas() {
     setDeptStatsError(null);
     setSelectedDeptStat(null);
     try {
-      const res = await fetch(`/api/departments/stats?q=${encodeURIComponent(q)}`);
+      const res = await fetch(`/api/departments/stats?q=${encodeURIComponent(q)}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         setDeptStatsError(data.error || "Помилка пошуку");
@@ -1873,6 +1899,164 @@ export default function AppBoundedCanvas() {
     }));
     updateElementsAndHistory([...elements, listElement, ...rowElements]);
     handleSelectElement(listId);
+  };
+
+  // "🏥 Лікарня (назва + емблема)" — довідник lpz.lpz_organizations (2 записи,
+  // прив'язані за edrpou), /api/organizations. Список тягнеться один раз
+  // (ensureOrgList, той самий принцип, що й ensureStaffDeptList). 1:1 порт
+  // .logo/.name-block .title з hospital-analytics (public/shared/layout.css,
+  // рендер — public/js/utils.js:initHospitalName): лого 160×160 зліва
+  // (0.9x до .logo { width:160px }), назва — text-елемент 315px праворуч із
+  // відступом 25px (221-36-160 в оригіналі), 28.8px, вагою 300, ВЕЛИКИМИ,
+  // колір #3a3a3a (--c-ink-3), розбита по словах на окремі рядки (в
+  // оригіналі — title.innerHTML = display_name.split(' ').join('<br>');
+  // текстовий елемент тут не рендерить HTML, тож перенесено як символ
+  // переносу рядка '\n' у content, який whitespace-pre-wrap показує так само).
+  // Лого й назва — окремі діти одного прозорого батька, не один злитий напис.
+  type HospitalOrg = {
+    edrpou: string;
+    name: string;
+    short_name: string;
+    display_name: string;
+    tagline: string | null;
+    logo_url: string | null;
+  };
+  const [orgList, setOrgList] = useState<HospitalOrg[] | null>(null);
+  const [orgListLoading, setOrgListLoading] = useState(false);
+  const [selectedOrg, setSelectedOrg] = useState<HospitalOrg | null>(null);
+
+  // Активна лікарня проєкту (одна на весь проєкт, усі сторінки) — визначає
+  // тему кольорів (lib/hospital-themes.ts) для НОВИХ елементів, що будуть
+  // створені далі; вже розміщені на полотні елементи не перефарбовує
+  // заднім числом. Встановлюється через handleAddHospitalOrgCard (вибір
+  // лікарні в "🧩 Об'єкти" одразу і додає картку, і робить її активною) —
+  // окремого "гейту" на старті немає, старі проєкти без вибраної лікарні
+  // просто лишаються на дефолтній темі Хотина (DEFAULT_HOSPITAL_THEME).
+  const [selectedHospital, setSelectedHospital] = useState<HospitalOrg | null>(null);
+
+  const ensureOrgList = async () => {
+    if (orgList !== null || orgListLoading) return;
+    setOrgListLoading(true);
+    try {
+      const res = await fetch("/api/organizations");
+      const data = await res.json();
+      setOrgList(res.ok && data.organizations ? data.organizations : []);
+    } catch {
+      setOrgList([]);
+    } finally {
+      setOrgListLoading(false);
+    }
+  };
+
+  // Список лікарень треба мати одразу при завантаженні (не лише при відкритті
+  // "🧩 Об'єкти") — доки лікарню не обрано, панель "🧱 Інструменти" показує
+  // ТІЛЬКИ цей вибір (гейт нижче, activePanelTab/вкладки ще не рендеряться).
+  useEffect(() => {
+    ensureOrgList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleAddHospitalOrgCard = () => {
+    if (!selectedOrg) return;
+    const theme = getHospitalTheme(selectedOrg.edrpou);
+    const logoSize = 160; // .logo { width: 160px } (layout.css) — object-contain зберігає пропорції SVG
+    const gap = 25; // 221 - 36 - 160 (left name-block − left logo − width logo, layout.css)
+    const nameWidth = 315; // .name-block { width: 315px }
+    const cardWidth = logoSize + gap + nameWidth;
+    const cardHeight = logoSize;
+    const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
+    const parentId = Date.now();
+
+    const parentElement: CanvasElement = {
+      id: parentId,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "block",
+      content: "",
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: freePos.y,
+      textColor: "#1a1a1a",
+      padding: 0,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId: forcedParentId,
+      targetPageId: null,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+    };
+
+    const emblemElement: CanvasElement = {
+      id: parentId + 1,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "image",
+      content: selectedOrg.display_name,
+      width: logoSize,
+      height: logoSize,
+      x: 0,
+      y: 0,
+      textColor: "#1a1a1a",
+      padding: 0,
+      borderRadius: 0,
+      fontSize: 12,
+      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
+      fontWeight: "500",
+      textAlign: "left",
+      parentId,
+      targetPageId: null,
+      bgOpacity: 0,
+      imageUrl: selectedOrg.logo_url || "",
+    };
+
+    const nameElement: CanvasElement = {
+      id: parentId + 2,
+      pageId: currentPageId,
+      isGlobal: false,
+      isTriggerTarget: false,
+      showOnHoverId: null,
+      showOnClickId: null,
+      type: "text",
+      content: (selectedOrg.display_name || "").toUpperCase().split(" ").join("\n"),
+      width: nameWidth,
+      height: logoSize,
+      x: logoSize + gap,
+      y: 0,
+      textColor: theme.ink3, // --c-ink-3, per-лікарня (lib/hospital-themes.ts)
+      padding: 0,
+      borderRadius: 0,
+      fontSize: 28.8, // .title { font-size: 28.8px } (layout.css)
+      lineHeight: 1, // .title { line-height: 1.0 } (layout.css) — типовий leading-normal (1.5) тут занадто розрідив би 3 рядки
+      // Реальний layout.html підключає Cormorant Garamond (subset=cyrillic)
+      // через Google Fonts — 'ITFLight' у font-family body ніде фактично не
+      // задекларований (@font-face немає), а сам файл ITFDevanagari-Light.ttf
+      // кирилиці не містить, тож те посилання й так завжди мовчки падало у
+      // Palatino. Cormorant Garamond тут вже є (layout.tsx, var(--font-cormorant),
+      // subsets: cyrillic+latin, ваги 300 і 700) — саме той шрифт, що й на
+      // реальній сторінці, лише жирнішим накресленням.
+      fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+      fontWeight: "700", // жирне накреслення (layout.tsx вантажить Cormorant Garamond у 300 і 700)
+      textAlign: "left",
+      parentId,
+      targetPageId: null,
+      bgOpacity: 0,
+    };
+
+    updateElementsAndHistory([...elements, parentElement, emblemElement, nameElement]);
+    setSelectedIds([parentId]);
+    // Ця лікарня стає активною для всього проєкту (тема кольорів для
+    // подальшого створення елементів) — вибір і додавання картки це одна дія.
+    setSelectedHospital(selectedOrg);
   };
 
   // Які вузли ієрархії в бічній панелі згорнуті (не показують своїх дочірніх елементів)
@@ -2018,6 +2202,11 @@ export default function AppBoundedCanvas() {
       try { setCustomComplexObjects(JSON.parse(savedCustomComplexObjects)); } catch (e) {}
     }
 
+    const savedSelectedHospital = localStorage.getItem("mis_canvas_selected_hospital");
+    if (savedSelectedHospital) {
+      try { setSelectedHospital(JSON.parse(savedSelectedHospital)); } catch (e) {}
+    }
+
     setHistory([{ pages: initialPages, elements: initialElements, connections: initialConnections }]);
     setHistoryIndex(0);
   }, []);
@@ -2038,6 +2227,7 @@ export default function AppBoundedCanvas() {
       localStorage.setItem("mis_canvas_library_items", JSON.stringify(libraryItems));
       localStorage.setItem("mis_canvas_connections", JSON.stringify(connections));
       localStorage.setItem("mis_canvas_custom_complex_objects", JSON.stringify(customComplexObjects));
+      localStorage.setItem("mis_canvas_selected_hospital", JSON.stringify(selectedHospital));
     }
   }, [
     elements,
@@ -2054,6 +2244,7 @@ export default function AppBoundedCanvas() {
     libraryItems,
     connections,
     customComplexObjects,
+    selectedHospital,
     isMounted,
   ]);
 
@@ -2402,6 +2593,7 @@ export default function AppBoundedCanvas() {
       libraryItems,
       connections,
       customComplexObjects,
+      selectedHospital,
       openParamSections: Array.from(openParamSections),
     };
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
@@ -2433,6 +2625,7 @@ export default function AppBoundedCanvas() {
         font-family: ${el.fontFamily || "inherit"};
         font-weight: ${el.fontWeight || "500"};
         text-align: ${el.textAlign || "left"};
+        ${el.lineHeight != null ? `line-height: ${el.lineHeight};` : ""}
         box-sizing: border-box;
       `;
 
@@ -2492,6 +2685,10 @@ export default function AppBoundedCanvas() {
             <div class="constructor-clock-date" style="opacity:.8;text-transform:capitalize;font-size:${el.fontSize || 12}px;"></div>
           </div>
         `;
+      } else if (el.type === "image") {
+        contentHTML = el.imageUrl
+          ? `<img src="${el.imageUrl}" alt="${el.content}" style="width:100%;height:100%;object-fit:contain;display:block;" />`
+          : "";
       } else {
         contentHTML = `<div>${el.content}</div>`;
         innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
@@ -2641,6 +2838,7 @@ export default function AppBoundedCanvas() {
           if (typeof parsed.refsPanelCollapsed === "boolean") setRefsPanelCollapsed(parsed.refsPanelCollapsed);
           if (Array.isArray(parsed.libraryItems)) setLibraryItems(parsed.libraryItems);
           if (Array.isArray(parsed.customComplexObjects)) setCustomComplexObjects(parsed.customComplexObjects);
+          if (parsed.selectedHospital) setSelectedHospital(parsed.selectedHospital);
           if (Array.isArray(parsed.openParamSections)) setOpenParamSections(new Set(parsed.openParamSections));
         } else if (Array.isArray(parsed)) {
           setElements(parsed);
@@ -2662,10 +2860,11 @@ export default function AppBoundedCanvas() {
 
   // Тягне канонічний список відділень з Supabase (схема lpz, /api/departments)
   // і створює з нього елемент "Список" зі стовпцями — по одному рядку на
-  // відділення, з обох лікарень (org_edrpou), той самий канон, що й у qwerty.
+  // відділення АКТИВНОЇ лікарні (org_edrpou з selectedHospital) — кнопка й
+  // так задизейблена в хедері, доки лікарню не обрано (див. гейт).
   const handleImportDepartments = async () => {
     try {
-      const res = await fetch("/api/departments");
+      const res = await fetch(`/api/departments?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok || !data.departments) {
         alert(`Помилка завантаження відділень: ${data.error || res.statusText}`);
@@ -2901,7 +3100,8 @@ export default function AppBoundedCanvas() {
 
   const handleKpiPillClick = async (groupId: string, year: number | null) => {
     try {
-      const url = year ? `/api/hospital-summary?year=${year}` : "/api/hospital-summary";
+      const orgParam = `org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`;
+      const url = year ? `/api/hospital-summary?year=${year}&${orgParam}` : `/api/hospital-summary?${orgParam}`;
       const res = await fetch(url);
       const data = await res.json();
       if (!res.ok || !data.summary) return;
@@ -2930,8 +3130,9 @@ export default function AppBoundedCanvas() {
     e.preventDefault();
     const isButton = newType === "button";
     const isClock = newType === "clock";
-    const width = isButton ? 120 : isClock ? 220 : forcedParentId ? 120 : 240;
-    const height = isButton ? 40 : isClock ? 70 : forcedParentId ? 60 : 140;
+    const isImage = newType === "image";
+    const width = isButton ? 120 : isClock ? 220 : isImage ? 100 : forcedParentId ? 120 : 240;
+    const height = isButton ? 40 : isClock ? 70 : isImage ? 100 : forcedParentId ? 60 : 140;
     const count = Math.max(1, Math.min(50, newCount || 1));
     const gap = 8; // відступ між елементами, коли створюємо кілька в ряд
 
@@ -3133,7 +3334,7 @@ export default function AppBoundedCanvas() {
     setHospitalKpiLoading(true);
     setHospitalKpiError(null);
     try {
-      const res = await fetch("/api/hospital-summary");
+      const res = await fetch(`/api/hospital-summary?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok || !data.summary) {
         setHospitalKpiError(data.error || "Помилка завантаження");
@@ -3413,6 +3614,7 @@ export default function AppBoundedCanvas() {
       if (hierarchyGrain) params.set("grain", hierarchyGrain);
       if (hierarchyDirection.trim()) params.set("direction", hierarchyDirection.trim());
       if (hierarchyDepartment.trim()) params.set("department", hierarchyDepartment.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/hierarchy?${params}`);
       const data = await res.json();
       if (!res.ok) {
@@ -3448,6 +3650,7 @@ export default function AppBoundedCanvas() {
       if (doctorHierGrain) params.set("grain", doctorHierGrain);
       if (doctorHierDirection.trim()) params.set("direction", doctorHierDirection.trim());
       if (doctorHierDepartment.trim()) params.set("department", doctorHierDepartment.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/doctor-hierarchy?${params}`);
       const data = await res.json();
       if (!res.ok) {
@@ -3488,6 +3691,7 @@ export default function AppBoundedCanvas() {
     try {
       const params = new URLSearchParams({ level: readmitLevel });
       if (readmitGrain) params.set("grain", readmitGrain);
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/readmissions?${params}`);
       const data = await res.json();
       if (!res.ok) {
@@ -3523,6 +3727,7 @@ export default function AppBoundedCanvas() {
     try {
       const params = new URLSearchParams({ limit: "30" });
       if (diagnosisIcd.trim()) params.set("icd", diagnosisIcd.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/diagnoses?${params}`);
       const data = await res.json();
       if (!res.ok) {
@@ -3555,6 +3760,7 @@ export default function AppBoundedCanvas() {
     try {
       const params = new URLSearchParams();
       if (patientDemoGrain) params.set("grain", patientDemoGrain);
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/patient-demo?${params}`);
       const data = await res.json();
       if (!res.ok) {
@@ -3593,7 +3799,7 @@ export default function AppBoundedCanvas() {
   const handleLoadTimePatterns = async () => {
     setTimePatternLoading(true);
     try {
-      const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}`);
+      const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         alert(`Помилка: ${data.error || res.statusText}`);
@@ -3605,6 +3811,80 @@ export default function AppBoundedCanvas() {
     } finally {
       setTimePatternLoading(false);
     }
+  };
+
+  // "🌙 Нічні чергування" / "🗓️ Вихідні чергування" — НЕ RPC-куб, а готові
+  // таблиці lpz.lpz_night_vs_day_admissions / lpz.lpz_weekend_vs_weekday
+  // (по 2 рядки на лікарню — рахувати наживо непотрібно). Обираєш один з
+  // двох рядків (День/Ніч чи Вихідний/Робочий день) — addCubeRowsToCanvas
+  // з масивом з ОДНОГО рядка завжди дає плитки "Картка КПІ" (не таблицю).
+  type ShiftRow = {
+    cases: number;
+    unique_patients: number;
+    avg_bed_days: number;
+    urgent_cases: number;
+    deaths: number;
+    letality_percent: number;
+  };
+  const SHIFT_FIELDS: CubeFieldDef[] = [
+    { key: "cases", label: "ГОСПІТАЛІЗАЦІЇ" },
+    { key: "unique_patients", label: "ПАЦІЄНТІВ" },
+    { key: "urgent_cases", label: "ЕКСТРЕНИХ" },
+    { key: "deaths", label: "СМЕРТЕЙ" },
+    { key: "letality_percent", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
+    { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
+  ];
+
+  const [nightShiftRows, setNightShiftRows] = useState<(ShiftRow & { time_period: string })[] | null>(null);
+  const [nightShiftLoading, setNightShiftLoading] = useState(false);
+  const [nightShiftError, setNightShiftError] = useState<string | null>(null);
+
+  const ensureNightShiftRows = async () => {
+    setNightShiftLoading(true);
+    setNightShiftError(null);
+    try {
+      const res = await fetch(`/api/indicators/night-shift?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setNightShiftError(data.error || "Помилка завантаження");
+        return;
+      }
+      setNightShiftRows(data.rows || []);
+    } catch {
+      setNightShiftError("Не вдалося звернутись до сервера");
+    } finally {
+      setNightShiftLoading(false);
+    }
+  };
+
+  const handleAddNightShiftCard = (row: ShiftRow & { time_period: string }) => {
+    addCubeRowsToCanvas([row], SHIFT_FIELDS, "time_period", `Нічні чергування — ${row.time_period}`);
+  };
+
+  const [weekendShiftRows, setWeekendShiftRows] = useState<(ShiftRow & { day_type: string })[] | null>(null);
+  const [weekendShiftLoading, setWeekendShiftLoading] = useState(false);
+  const [weekendShiftError, setWeekendShiftError] = useState<string | null>(null);
+
+  const ensureWeekendShiftRows = async () => {
+    setWeekendShiftLoading(true);
+    setWeekendShiftError(null);
+    try {
+      const res = await fetch(`/api/indicators/weekend-shift?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setWeekendShiftError(data.error || "Помилка завантаження");
+        return;
+      }
+      setWeekendShiftRows(data.rows || []);
+    } catch {
+      setWeekendShiftError("Не вдалося звернутись до сервера");
+    } finally {
+      setWeekendShiftLoading(false);
+    }
+  };
+
+  const handleAddWeekendShiftCard = (row: ShiftRow & { day_type: string }) => {
+    addCubeRowsToCanvas([row], SHIFT_FIELDS, "day_type", `Вихідні чергування — ${row.day_type}`);
   };
 
   // "Показник (за списком)" — форма-конструктор картки КПІ на основі
@@ -3709,11 +3989,20 @@ export default function AppBoundedCanvas() {
   const [staffLoading, setStaffLoading] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
 
+  // Список відділень кешується один раз (ensureStaffDeptList нижче), тож
+  // зміна активної лікарні (гейт/"Скинути" в "🏥 Лікарня") мусить скинути
+  // кеш — інакше після перемикання лишався б список відділень попередньої
+  // лікарні, доки сторінку не перезавантажать.
+  useEffect(() => {
+    setStaffDeptList(null);
+    setStaffSelectedDept(null);
+  }, [selectedHospital?.edrpou]);
+
   const ensureStaffDeptList = async () => {
     if (staffDeptList !== null || staffDeptListLoading) return;
     setStaffDeptListLoading(true);
     try {
-      const res = await fetch("/api/departments");
+      const res = await fetch(`/api/departments?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       setStaffDeptList(res.ok && data.departments ? data.departments : []);
     } catch {
@@ -3733,7 +4022,7 @@ export default function AppBoundedCanvas() {
     setStaffLoading(true);
     setStaffError(null);
     try {
-      const res = await fetch(`/api/staff?department=${encodeURIComponent(staffSelectedDept.structure_id)}`);
+      const res = await fetch(`/api/staff?department=${encodeURIComponent(staffSelectedDept.structure_id)}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         setStaffError(data.error || "Помилка завантаження");
@@ -3816,7 +4105,7 @@ export default function AppBoundedCanvas() {
     setCensusLoading(true);
     setCensusError(null);
     try {
-      const res = await fetch(`/api/departments/census?department=${encodeURIComponent(staffSelectedDept.name)}`);
+      const res = await fetch(`/api/departments/census?department=${encodeURIComponent(staffSelectedDept.name)}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
       const data = await res.json();
       if (!res.ok) {
         setCensusError(data.error || "Помилка завантаження");
@@ -3916,6 +4205,14 @@ export default function AppBoundedCanvas() {
     });
     const remaining = elements.filter((el) => !idsToDelete.has(el.id));
     setSelectedIds([]);
+    // Якщо видалили саме той "блок"/"список", в який handleSelectElement
+    // щойно "заблокував" вкладення нових елементів (forcedParentId) — скинути
+    // його теж, інакше все, що додається ПІСЛЯ видалення, тихо вкладається в
+    // уже неіснуючого батька (findFreePosition його не бачить, елемент існує
+    // в даних, але ніколи не рендериться — сирота без видимого предка).
+    if (forcedParentId != null && idsToDelete.has(forcedParentId)) {
+      setForcedParentId(null);
+    }
 
     // Зв'язки, що вказують на видалений елемент (як джерело чи як ціль),
     // самі стають "висячими" — прибираємо їх разом з елементом, інакше
@@ -4353,7 +4650,10 @@ export default function AppBoundedCanvas() {
             </div>
           )}
           {el.type === "text" && (
-            <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full w-full">
+            <div
+              className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full w-full"
+              style={el.lineHeight != null ? { lineHeight: el.lineHeight } : undefined}
+            >
               {el.content}
             </div>
           )}
@@ -4362,6 +4662,22 @@ export default function AppBoundedCanvas() {
             <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden w-full h-full">
               {el.content}
             </div>
+          )}
+
+          {el.type === "image" && (
+            el.imageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- шлях завжди public/ (лого лікарень) або довільний URL з поля, next/image тут зайвий
+              <img
+                src={el.imageUrl}
+                alt={el.content}
+                draggable={false}
+                className="pointer-events-none w-full h-full object-contain"
+              />
+            ) : (
+              <div className="pointer-events-none w-full h-full flex items-center justify-center text-[10px] text-white/60 border border-dashed border-white/40">
+                Немає URL зображення
+              </div>
+            )
           )}
 
           {el.type === "clock" && clockNow && (
@@ -4790,8 +5106,17 @@ export default function AppBoundedCanvas() {
 
             <button
               onClick={handleImportDepartments}
-              className="bg-teal-600 hover:bg-teal-700 text-white font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors"
-              title="Створити елемент 'Список' з відділеннями з Supabase (схема lpz)"
+              disabled={!selectedHospital}
+              className={`font-medium px-3 py-1.5 rounded-md text-xs shadow-sm flex items-center gap-1.5 transition-colors ${
+                selectedHospital
+                  ? "bg-teal-600 hover:bg-teal-700 text-white"
+                  : "bg-slate-200 text-slate-400 cursor-not-allowed"
+              }`}
+              title={
+                selectedHospital
+                  ? "Створити елемент 'Список' з відділеннями з Supabase (схема lpz)"
+                  : "Спочатку оберіть лікарню в панелі «🧱 Інструменти»"
+              }
             >
               🏥 Завантажити відділення
             </button>
@@ -4855,6 +5180,56 @@ export default function AppBoundedCanvas() {
             </button>
           </div>
           {!toolsPanelCollapsed && (
+          <>
+          {!selectedHospital ? (
+            // Гейт першого кроку: доки лікарню не обрано, панель "🧱 Інструменти"
+            // показує ТІЛЬКИ цей вибір — жодних вкладок (Створити/Сторінка/...),
+            // щоб подальша робота одразу йшла з активною темою кольорів
+            // (lib/hospital-themes.ts). handleAddHospitalOrgCard і додає
+            // картку, і встановлює selectedHospital — після цього гейт
+            // сам ховається (умова тут же й спадає).
+            <div className="flex-1 flex flex-col gap-3 overflow-y-auto p-5">
+              <div className="text-center space-y-1 pb-1">
+                <div className="text-2xl">🏥</div>
+                <h2 className="font-bold text-slate-900 text-sm">Оберіть лікарню</h2>
+                <p className="text-[11px] text-slate-500 leading-snug">
+                  Активна лікарня визначає тему кольорів для всього, що ви будете створювати далі — це перший крок. Решта інструментів відкриється одразу після вибору.
+                </p>
+              </div>
+              {orgListLoading && <div className="text-xs text-slate-400 text-center py-2">Завантаження…</div>}
+              {!orgListLoading && orgList && orgList.length === 0 && (
+                <div className="text-xs text-red-500 text-center py-2">Не вдалося завантажити лікарні</div>
+              )}
+              {!orgListLoading && orgList && orgList.length > 0 && (
+                <div className="space-y-1.5">
+                  {orgList.map((org) => (
+                    <button
+                      key={org.edrpou}
+                      onClick={() => setSelectedOrg(org)}
+                      className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                        selectedOrg?.edrpou === org.edrpou
+                          ? "bg-indigo-600 border-indigo-600 text-white"
+                          : "border-indigo-200 bg-white hover:bg-indigo-50"
+                      }`}
+                    >
+                      <div className="font-bold">{org.display_name}</div>
+                      <div className={`text-[10px] ${selectedOrg?.edrpou === org.edrpou ? "text-indigo-100" : "text-slate-500"}`}>
+                        ЄДРПОУ {org.edrpou}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedOrg && (
+                <button
+                  onClick={handleAddHospitalOrgCard}
+                  className="w-full bg-indigo-700 hover:bg-indigo-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  ➕ Додати назву й емблему та почати роботу
+                </button>
+              )}
+            </div>
+          ) : (
           <>
           <div className="flex items-center gap-1 px-3 pt-3 shrink-0 flex-wrap">
             {(
@@ -4993,6 +5368,7 @@ export default function AppBoundedCanvas() {
                   <option value="button">Кнопка</option>
                   <option value="list">Список</option>
                   <option value="clock">Годинник</option>
+                  <option value="image">Зображення</option>
                 </select>
               </div>
               <div>
@@ -5827,6 +6203,30 @@ export default function AppBoundedCanvas() {
                   </ParamSection>
                 )}
 
+                {/* ЗОБРАЖЕННЯ — джерело для type: "image" */}
+                {singleSelected?.type === "image" && (
+                  <ParamSection
+                    label="🖼️ Зображення"
+                    isOpen={openParamSections.has("image")}
+                    onToggle={() => toggleParamSection("image")}
+                    colorClass="bg-violet-50/60 border-violet-200 text-violet-900"
+                  >
+                    <div>
+                      <label className="block text-[10px] text-violet-800 mb-1">URL зображення:</label>
+                      <input
+                        type="text"
+                        value={singleSelected.imageUrl ?? ""}
+                        onChange={(e) => updateSelectedFields("imageUrl", e.target.value)}
+                        placeholder="/logos/khotyn.svg"
+                        className="w-full p-1.5 border rounded-md text-xs font-mono"
+                      />
+                      <p className="mt-1 text-[10px] text-violet-700/70 leading-snug">
+                        Шлях у public/ (напр. /logos/khotyn.svg) або довільний URL. Зображення вписується в межі елемента зі збереженням пропорцій (object-fit: contain).
+                      </p>
+                    </div>
+                  </ParamSection>
+                )}
+
                 {/* ПОВНІ РАЗШИРЕНІ НАЛАШТУВАННЯ КНОПКИ (ПОВЕРНУТО) */}
                 {singleSelected?.type === "button" && (
                   <ParamSection
@@ -6134,6 +6534,26 @@ export default function AppBoundedCanvas() {
                 </div>
               </button>
               <button
+                onClick={() => {
+                  setSelectedComplexObjectId("hospital-org");
+                  ensureOrgList();
+                }}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "hospital-org"
+                    ? "bg-indigo-600 border-indigo-600 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-indigo-50"
+                }`}
+              >
+                <div className="font-bold">🏥 Лікарня (назва + емблема)</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "hospital-org" ? "text-indigo-100" : "text-slate-500"
+                  }`}
+                >
+                  Довідник lpz.lpz_organizations (edrpou) — обери лікарню, додасться назва й емблема окремими пов&apos;язаними елементами
+                </div>
+              </button>
+              <button
                 onClick={() => setSelectedComplexObjectId("hospital-kpi")}
                 className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
                   selectedComplexObjectId === "hospital-kpi"
@@ -6287,6 +6707,46 @@ export default function AppBoundedCanvas() {
                   }`}
                 >
                   Госпіталізації/смерті/нічні по годині доби, дню тижня або місяцю. RPC lpz_time_pattern_cube
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedComplexObjectId("night-shift");
+                  ensureNightShiftRows();
+                }}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "night-shift"
+                    ? "bg-slate-700 border-slate-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold">🌙 Нічні чергування</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "night-shift" ? "text-slate-200" : "text-slate-500"
+                  }`}
+                >
+                  День / Ніч — госпіталізації/пацієнти/екстрені/смерті/летальність/сер. ліжко-дні. lpz_night_vs_day_admissions
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedComplexObjectId("weekend-shift");
+                  ensureWeekendShiftRows();
+                }}
+                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                  selectedComplexObjectId === "weekend-shift"
+                    ? "bg-slate-700 border-slate-700 text-white"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                <div className="font-bold">🗓️ Вихідні чергування</div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    selectedComplexObjectId === "weekend-shift" ? "text-slate-200" : "text-slate-500"
+                  }`}
+                >
+                  Вихідний / Робочий день — ті самі показники. lpz_weekend_vs_weekday
                 </div>
               </button>
             </div>
@@ -6473,6 +6933,61 @@ export default function AppBoundedCanvas() {
                       ➕ Додати картку на полотно
                     </button>
                   </div>
+                )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "hospital-org" && (
+              <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-lg space-y-2.5">
+                <div className="text-[10px] text-slate-500">
+                  1:1 з .logo/.name-block .title (hospital-analytics, layout.css) — лого 160×160 зліва, назва праворуч (28.8px, ВЕЛИКИМИ, #3a3a3a). Окремі елементи під спільним батьком, кожен можна перев&apos;язати окремо.
+                </div>
+                {selectedHospital && (
+                  <div className="flex items-center justify-between gap-2 p-2 bg-white border border-indigo-200 rounded-lg">
+                    <div className="text-[11px]">
+                      <span className="text-slate-500">Зараз активна:</span>{" "}
+                      <span className="font-bold text-indigo-900">{selectedHospital.display_name}</span>
+                    </div>
+                    <button
+                      onClick={() => setSelectedHospital(null)}
+                      className="shrink-0 text-[10px] text-red-600 hover:text-red-800 hover:underline"
+                      title="Скинути активну лікарню — знову з'явиться гейт вибору лікарні на панелі"
+                    >
+                      Скинути
+                    </button>
+                  </div>
+                )}
+                {orgListLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
+                {!orgListLoading && orgList && orgList.length === 0 && (
+                  <div className="text-xs text-red-500 text-center py-1">Не вдалося завантажити лікарні</div>
+                )}
+                {!orgListLoading && orgList && orgList.length > 0 && (
+                  <div className="space-y-1.5">
+                    {orgList.map((org) => (
+                      <button
+                        key={org.edrpou}
+                        onClick={() => setSelectedOrg(org)}
+                        className={`w-full text-left p-2 rounded-lg border text-xs transition-colors ${
+                          selectedOrg?.edrpou === org.edrpou
+                            ? "bg-indigo-600 border-indigo-600 text-white"
+                            : "border-indigo-200 bg-white hover:bg-indigo-50"
+                        }`}
+                      >
+                        <div className="font-bold">{org.display_name}</div>
+                        <div className={`text-[10px] ${selectedOrg?.edrpou === org.edrpou ? "text-indigo-100" : "text-slate-500"}`}>
+                          ЄДРПОУ {org.edrpou}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedOrg && (
+                  <button
+                    onClick={handleAddHospitalOrgCard}
+                    className="w-full bg-indigo-700 hover:bg-indigo-800 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                  >
+                    ➕ Додати назву й емблему на полотно
+                  </button>
                 )}
               </div>
             )}
@@ -6837,6 +7352,58 @@ export default function AppBoundedCanvas() {
               </div>
             )}
 
+            {selectedComplexObjectId === "night-shift" && (
+              <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
+                <div className="text-[10px] text-slate-500">
+                  Обери День чи Ніч — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього періоду доби.
+                </div>
+                {nightShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
+                {nightShiftError && <div className="text-xs text-red-500 text-center py-1">{nightShiftError}</div>}
+                {!nightShiftLoading && nightShiftRows && nightShiftRows.length > 0 && (
+                  <div className="space-y-1.5">
+                    {nightShiftRows.map((row) => (
+                      <button
+                        key={row.time_period}
+                        onClick={() => handleAddNightShiftCard(row)}
+                        className="w-full text-left p-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs"
+                      >
+                        <div className="font-bold">{row.time_period}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {row.cases} госпіталізацій · летальність {row.letality_percent}%
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "weekend-shift" && (
+              <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
+                <div className="text-[10px] text-slate-500">
+                  Обери Вихідний чи Робочий день — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього типу дня.
+                </div>
+                {weekendShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
+                {weekendShiftError && <div className="text-xs text-red-500 text-center py-1">{weekendShiftError}</div>}
+                {!weekendShiftLoading && weekendShiftRows && weekendShiftRows.length > 0 && (
+                  <div className="space-y-1.5">
+                    {weekendShiftRows.map((row) => (
+                      <button
+                        key={row.day_type}
+                        onClick={() => handleAddWeekendShiftCard(row)}
+                        className="w-full text-left p-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs"
+                      >
+                        <div className="font-bold">{row.day_type}</div>
+                        <div className="text-[10px] text-slate-500">
+                          {row.cases} госпіталізацій · летальність {row.letality_percent}%
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Власні складні об'єкти — зібрані з простих фігур на полотні
                 (прямокутник, текст тощо), той самий принцип збереження, що
                 й у "Бібліотеці": виділити → зберегти під назвою → додавати
@@ -6942,6 +7509,7 @@ export default function AppBoundedCanvas() {
               selectedComplexObjectId !== "patient-search" &&
               selectedComplexObjectId !== "doctor-search" &&
               selectedComplexObjectId !== "dept-stats-search" &&
+              selectedComplexObjectId !== "hospital-org" &&
               selectedComplexObjectId !== "hospital-kpi" &&
               selectedComplexObjectId !== "indicator-form" &&
               selectedComplexObjectId !== "staff-ordinatorska" &&
@@ -6951,6 +7519,8 @@ export default function AppBoundedCanvas() {
               selectedComplexObjectId !== "diagnosis-cube" &&
               selectedComplexObjectId !== "patient-demo-cube" &&
               selectedComplexObjectId !== "time-pattern-cube" &&
+              selectedComplexObjectId !== "night-shift" &&
+              selectedComplexObjectId !== "weekend-shift" &&
               (() => {
                 const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
                 // Редагування вже існуючої кнопки на полотні (обрана через
@@ -7220,6 +7790,8 @@ export default function AppBoundedCanvas() {
           </>
           )}
           </div>
+          </>
+          )}
           </>
           )}
         </aside>

@@ -25,7 +25,7 @@ const itfLight = localFont({
 const cormorantGaramond = Cormorant_Garamond({
   variable: "--font-cormorant",
   subsets: ["cyrillic", "latin"],
-  weight: "300",
+  weight: ["300", "700"],
 });
 
 export const metadata: Metadata = {

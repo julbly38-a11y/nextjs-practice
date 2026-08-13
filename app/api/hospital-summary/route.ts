@@ -12,9 +12,10 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const yearParam = searchParams.get("year");
   const targetYear = yearParam ? Number(yearParam) : null;
+  const org = (searchParams.get("org") || "").trim();
 
   const { data, error } = await getSupabaseAdmin()
-    .rpc("lpz_hospital_summary", { target_year: targetYear })
+    .rpc("lpz_hospital_summary", { target_year: targetYear, p_org_edrpou: org || null })
     .single();
 
   if (error) {

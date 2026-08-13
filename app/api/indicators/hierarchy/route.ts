@@ -10,12 +10,14 @@ export async function GET(request: Request) {
   const grain = searchParams.get("grain");
   const direction = searchParams.get("direction");
   const department = searchParams.get("department");
+  const org = searchParams.get("org");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_indicator_cube", {
     p_level: level,
     p_time_grain: grain || null,
     p_direction: direction || null,
     p_department: department || null,
+    p_org_edrpou: org || null,
   });
 
   if (error) {
