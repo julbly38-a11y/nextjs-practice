@@ -195,7 +195,15 @@ interface CanvasElement {
   // полів з тим самим kpiGroupId — заміна ручного вибору року в панелі.
   kpiGroupId?: string;
   kpiYear?: number | null;
-  kpiField?: "total_cases" | "unique_patients" | "deaths" | "death_rate_pct" | "avg_age" | "avg_bed_days";
+  kpiField?: string;
+  // Пігулки-періоди (рік/місяць/тиждень/день) для плиток з "кубів"
+  // показників (addCubeRowsToCanvas): на відміну від kpiYear (живий
+  // повторний запит), тут дані ВЖЕ завантажені одним запитом з обраною
+  // гранулярністю — кожна пігулка-період носить свій рядок результату
+  // прямо на собі (kpiRowData, ключ = CubeFieldDef.key, значення вже
+  // відформатоване з суфіксом), тож перемикання миттєве, без мережі, і
+  // переживає перезавантаження сторінки/JSON-експорт разом з рештою стану.
+  kpiRowData?: Record<string, string>;
 
   // Складене з часових зв'язків (set-year/set-month/set-week/set-day —
   // runConnectionActions) значення часового періоду цього показника.
@@ -3087,15 +3095,37 @@ export default function AppBoundedCanvas() {
         updateElementsAndHistory(nextElements);
       }
 
-      // Пігулка-фільтр КПІ (kpiGroupId) — тягне свіжі дані й живцем оновлює
-      // текстові поля значень з тим самим kpiGroupId. Функціональний
-      // setElements навмисно, а не nextElements/updateElementsAndHistory
-      // вище: fetch асинхронний, і на момент відповіді state вже міг
-      // змінитись (напр. від toggle-оновлення isPressed щойно вище).
+      // Пігулка-фільтр КПІ (kpiGroupId) — оновлює текстові поля значень з
+      // тим самим kpiGroupId. Два джерела даних: kpiRowData (пігулка-період
+      // з "кубів" — дані вже на самій пігулці, оновлення миттєве, без
+      // мережі) або kpiYear (стара "КПІ лікарні" — живий повторний запит).
       if (el.kpiGroupId) {
-        void handleKpiPillClick(el.kpiGroupId, el.kpiYear ?? null);
+        if (el.kpiRowData) {
+          handleKpiRowPillClick(el.kpiGroupId, el.kpiRowData);
+        } else {
+          // Функціональний setElements навмисно, а не
+          // nextElements/updateElementsAndHistory вище: fetch асинхронний,
+          // і на момент відповіді state вже міг змінитись (напр. від
+          // toggle-оновлення isPressed щойно вище).
+          void handleKpiPillClick(el.kpiGroupId, el.kpiYear ?? null);
+        }
       }
     }
+  };
+
+  // Пігулка-період (рік/місяць/тиждень/день) для плиток з "кубів" —
+  // rowData вже відформатований і лежить прямо на клікнутій пігулці
+  // (addCubeRowsToCanvas), тож перемикання синхронне й локальне.
+  const handleKpiRowPillClick = (groupId: string, rowData: Record<string, string>) => {
+    setElements((prev) => {
+      const next = prev.map((item) =>
+        item.kpiGroupId === groupId && item.kpiField
+          ? { ...item, content: rowData[item.kpiField] ?? "—" }
+          : item
+      );
+      saveToHistory(pages, next);
+      return next;
+    });
   };
 
   const handleKpiPillClick = async (groupId: string, year: number | null) => {
@@ -3449,17 +3479,131 @@ export default function AppBoundedCanvas() {
   // масив рядків з однаковими за духом полями (лічильники + group_key/
   // period_label чи еквівалент). Один рядок → ряд плиток у стилі "Картки
   // КПІ" (число 36px над підписом 20px, ITFLight, праворуч). Кілька рядків
-  // (розбивка по періоду/групі) → "Список" зі стовпцями, той самий підхід,
-  // що й "🏥 Список відділень".
+  // з обраною гранулярністю часу (timeUnitActive) → той самий ряд плиток +
+  // ряд пігулок-періодів над ними (1:1 з пігулками-роками "📊 КПІ лікарні",
+  // kpiGroupId/kpiRowData) — клік миттєво перемикає плитки на інший
+  // рядок, дані вже завантажені, без повторного запиту. Кілька рядків БЕЗ
+  // гранулярності часу (розбивка лише по групі — відділення/лікар/діагноз)
+  // → "Список" зі стовпцями, той самий підхід, що й "🏥 Список відділень".
   type CubeFieldDef = { key: string; label: string; suffix?: string };
+  const formatCubeValue = (row: Record<string, unknown>, f: CubeFieldDef) => {
+    const raw = row[f.key];
+    return raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
+  };
   const addCubeRowsToCanvas = (
     rows: Record<string, unknown>[],
     fields: CubeFieldDef[],
     labelField: string,
-    title: string
+    title: string,
+    timeUnitActive = false
   ) => {
     if (!rows || rows.length === 0) {
       alert("Немає даних за цим запитом");
+      return;
+    }
+
+    if (rows.length > 1 && timeUnitActive) {
+      const tileWidth = 200;
+      const tileHeight = 70;
+      const tileGap = 24;
+      const tilesTotalWidth = tileWidth * fields.length + tileGap * (fields.length - 1);
+
+      const pillGap = 8;
+      const pillHeight = 30;
+      const pillLabels = rows.map((row) => String(row[labelField] ?? ""));
+      const pillWidths = pillLabels.map((label) => Math.max(60, Math.round(label.length * 9 + 32)));
+      const pillsTotalWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+
+      const totalWidth = Math.max(tilesTotalWidth, pillsTotalWidth);
+      const rowGap = 12;
+      const totalHeight = pillHeight + rowGap + tileHeight;
+      const freePos = findFreePosition(forcedParentId, totalWidth, totalHeight);
+
+      const kpiGroupId = `cube-${Date.now()}`;
+      const newElements: CanvasElement[] = [];
+      const selectedIdsNext: number[] = [];
+      // Останній рядок — типово найсвіжіший період (бекенд повертає їх
+      // хронологічно) — пігулка за замовчуванням.
+      const activeIndex = rows.length - 1;
+
+      let pillX = freePos.x;
+      rows.forEach((row, i) => {
+        const width = pillWidths[i];
+        const rowData: Record<string, string> = {};
+        fields.forEach((f) => {
+          rowData[f.key] = formatCubeValue(row, f);
+        });
+        const id = Date.now() + 1000 + i;
+        newElements.push({
+          ...buildComplexObjectBase(id, pillLabels[i]),
+          ...PILL_STYLE_DEFAULTS,
+          width,
+          height: pillHeight,
+          x: pillX,
+          y: freePos.y,
+          content: pillLabels[i],
+          kpiGroupId,
+          kpiRowData: rowData,
+          isPressed: i === activeIndex,
+        });
+        pillX += width + pillGap;
+        selectedIdsNext.push(id);
+      });
+
+      const tileY = freePos.y + pillHeight + rowGap;
+      const activeRow = rows[activeIndex];
+      fields.forEach((f, i) => {
+        const parentId = Date.now() + 2000 + i * 10;
+        const x = freePos.x + i * (tileWidth + tileGap);
+        newElements.push({
+          ...buildComplexObjectBase(parentId, ""),
+          type: "block",
+          width: tileWidth,
+          height: tileHeight,
+          x,
+          y: tileY,
+          customBgColor: "#ffffff",
+          bgOpacity: 0,
+          padding: 0,
+          borderRadius: 0,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 1, formatCubeValue(activeRow, f)),
+          type: "text",
+          width: tileWidth,
+          height: 44,
+          x: 0,
+          y: 0,
+          parentId,
+          fontSize: 36,
+          fontWeight: "300",
+          textColor: "#1a1a1a",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+          kpiGroupId,
+          kpiField: f.key,
+        });
+        newElements.push({
+          ...buildComplexObjectBase(parentId + 2, f.label),
+          type: "text",
+          width: tileWidth,
+          height: 26,
+          x: 0,
+          y: 44,
+          parentId,
+          fontSize: 20,
+          fontWeight: "300",
+          textColor: "#9a958f",
+          textAlign: "right",
+          bgOpacity: 0,
+          padding: 0,
+        });
+        selectedIdsNext.push(parentId);
+      });
+
+      updateElementsAndHistory([...elements, ...newElements]);
+      setSelectedIds(selectedIdsNext);
       return;
     }
 
@@ -3475,8 +3619,7 @@ export default function AppBoundedCanvas() {
       fields.forEach((f, i) => {
         const parentId = Date.now() + i * 10;
         tileIds.push(parentId);
-        const raw = row[f.key];
-        const value = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
+        const value = formatCubeValue(row, f);
         const x = freePos.x + i * (tileWidth + gap);
         newElements.push({
           ...buildComplexObjectBase(parentId, ""),
@@ -3549,8 +3692,7 @@ export default function AppBoundedCanvas() {
     const rowElements: CanvasElement[] = rows.map((row, i) => {
       const columnValues: Record<string, string> = { __label: String(row[labelField] ?? "") };
       fields.forEach((f) => {
-        const raw = row[f.key];
-        columnValues[f.key] = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
+        columnValues[f.key] = formatCubeValue(row, f);
       });
       return {
         ...buildComplexObjectBase(listId + 1 + i, String(row[labelField] ?? "")),
@@ -3567,6 +3709,55 @@ export default function AppBoundedCanvas() {
     updateElementsAndHistory([...elements, listElement, ...rowElements]);
     handleSelectElement(listId);
   };
+
+  // Стан вибору полів для чекбокс-піпера кожного "куба" (усі поля увімкнені
+  // за замовчуванням — поведінка як раніше, доки користувач сам щось не
+  // зніме). handleLoad* фільтрує CubeFieldDef[] за цим станом ПЕРЕД запитом
+  // до бекенду — щоб не тягнути дані, які одразу відкинуть.
+  type FieldSelection = Record<string, boolean>;
+  const allFieldsSelected = (fields: CubeFieldDef[]): FieldSelection =>
+    Object.fromEntries(fields.map((f) => [f.key, true]));
+
+  const renderCubeFieldPicker = (
+    fields: CubeFieldDef[],
+    selected: FieldSelection,
+    setSelected: React.Dispatch<React.SetStateAction<FieldSelection>>
+  ) => (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="block text-[10px] text-slate-500">Які показники додати плитками:</label>
+        <div className="flex gap-1.5 text-[10px]">
+          <button
+            type="button"
+            onClick={() => setSelected(allFieldsSelected(fields))}
+            className="text-cyan-700 hover:underline"
+          >
+            усі
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelected({})}
+            className="text-slate-400 hover:underline"
+          >
+            жодного
+          </button>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-1 p-2 bg-white/70 border border-slate-200 rounded-md max-h-40 overflow-y-auto">
+        {fields.map((f) => (
+          <label key={f.key} className="flex items-center gap-1.5 text-[10px] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected[f.key] ?? false}
+              onChange={(e) => setSelected((prev) => ({ ...prev, [f.key]: e.target.checked }))}
+              className="shrink-0"
+            />
+            <span className="truncate" title={f.label}>{f.label}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 
   // Додає похідне поле row_label до рядків куба (group_key + period_label,
   // об'єднані), щоб "Список" (при кількох рядках) мав змістовний підпис
@@ -3606,8 +3797,14 @@ export default function AppBoundedCanvas() {
     { key: "children", label: "ДІТЕЙ" },
     { key: "elderly", label: "ПОХИЛОГО ВІКУ" },
   ];
+  const [hierarchySelectedFields, setHierarchySelectedFields] = useState<FieldSelection>({});
 
   const handleLoadHierarchy = async () => {
+    const fields = HIERARCHY_FIELDS.filter((f) => hierarchySelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setHierarchyLoading(true);
     try {
       const params = new URLSearchParams({ level: hierarchyLevel });
@@ -3621,7 +3818,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(withRowLabel(data.rows || []), HIERARCHY_FIELDS, "row_label", "Показники (ієрархія)");
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), fields, "row_label", "Показники (ієрархія)", Boolean(hierarchyGrain));
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3642,8 +3839,14 @@ export default function AppBoundedCanvas() {
     { key: "unique_patients", label: "ПАЦІЄНТІВ" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
+  const [doctorHierSelectedFields, setDoctorHierSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadDoctorHierarchy = async () => {
+    const fields = DOCTOR_HIER_FIELDS.filter((f) => doctorHierSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setDoctorHierLoading(true);
     try {
       const params = new URLSearchParams();
@@ -3663,7 +3866,7 @@ export default function AppBoundedCanvas() {
           .filter(Boolean)
           .join(" · "),
       }));
-      addCubeRowsToCanvas(rows, DOCTOR_HIER_FIELDS, "row_label", "Лікарі (обсяг)");
+      addCubeRowsToCanvas(rows, fields, "row_label", "Лікарі (обсяг)", Boolean(doctorHierGrain));
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3685,8 +3888,14 @@ export default function AppBoundedCanvas() {
     { key: "readmit_90d_pct", label: "% ЗА 90д", suffix: "%" },
     { key: "same_dx_30d", label: "ТОЙ САМИЙ ДІАГНОЗ (30д)" },
   ];
+  const [readmitSelectedFields, setReadmitSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadReadmissions = async () => {
+    const fields = READMIT_FIELDS.filter((f) => readmitSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setReadmitLoading(true);
     try {
       const params = new URLSearchParams({ level: readmitLevel });
@@ -3698,7 +3907,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(withRowLabel(data.rows || []), READMIT_FIELDS, "row_label", "Повторні госпіталізації");
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), fields, "row_label", "Повторні госпіталізації", Boolean(readmitGrain));
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3721,8 +3930,14 @@ export default function AppBoundedCanvas() {
     { key: "women", label: "ЖІНОК" },
     { key: "men", label: "ЧОЛОВІКІВ" },
   ];
+  const [diagnosisSelectedFields, setDiagnosisSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadDiagnoses = async () => {
+    const fields = DIAGNOSIS_FIELDS.filter((f) => diagnosisSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setDiagnosisLoading(true);
     try {
       const params = new URLSearchParams({ limit: "30" });
@@ -3734,7 +3949,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(data.rows || [], DIAGNOSIS_FIELDS, "icd_primary", "Показники по діагнозу");
+      addCubeRowsToCanvas(data.rows || [], fields, "icd_primary", "Показники по діагнозу");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3754,8 +3969,14 @@ export default function AppBoundedCanvas() {
     { key: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
+  const [patientDemoSelectedFields, setPatientDemoSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadPatientDemo = async () => {
+    const fields = PATIENT_DEMO_FIELDS.filter((f) => patientDemoSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setPatientDemoLoading(true);
     try {
       const params = new URLSearchParams();
@@ -3777,7 +3998,7 @@ export default function AppBoundedCanvas() {
           .filter(Boolean)
           .join(" · "),
       }));
-      addCubeRowsToCanvas(rows, PATIENT_DEMO_FIELDS, "row_label", "Демографія пацієнтів");
+      addCubeRowsToCanvas(rows, fields, "row_label", "Демографія пацієнтів", Boolean(patientDemoGrain));
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3795,8 +4016,14 @@ export default function AppBoundedCanvas() {
     { key: "deaths", label: "СМЕРТЕЙ" },
     { key: "night_admissions", label: "НІЧНИХ" },
   ];
+  const [timePatternSelectedFields, setTimePatternSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadTimePatterns = async () => {
+    const fields = TIME_PATTERN_FIELDS.filter((f) => timePatternSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
     setTimePatternLoading(true);
     try {
       const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
@@ -3805,7 +4032,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(data.rows || [], TIME_PATTERN_FIELDS, "bucket_label", "Часові патерни");
+      addCubeRowsToCanvas(data.rows || [], fields, "bucket_label", "Часові патерни");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3834,6 +4061,52 @@ export default function AppBoundedCanvas() {
     { key: "letality_percent", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
+  // Спільний вибір полів для нічних і вихідних чергувань — той самий
+  // SHIFT_FIELDS, немає сенсу тримати два незалежні набори чекбоксів (сам
+  // чекбокс-піпер показується ДО вибору періоду, тому підписи в ньому
+  // лишаються нейтральними — "ГОСПІТАЛІЗАЦІЇ", а не "нічних госпіталізацій").
+  const [shiftSelectedFields, setShiftSelectedFields] = useState<FieldSelection>({});
+
+  // Підписи плиток — окремі на кожен період, а не спільні SHIFT_FIELDS.label:
+  // без цього плитки "День" і "Ніч" (або "Вихідний"/"Робочий день") виглядали
+  // б однаково підписаними ("ГОСПІТАЛІЗАЦІЇ", "ЛЕТАЛЬНІСТЬ" для обох) і не
+  // розрізнялись би між собою, якщо стоять поруч на полотні.
+  const SHIFT_FIELD_LABELS: Record<string, Record<string, string>> = {
+    Ніч: {
+      cases: "НІЧНИХ ГОСПІТАЛІЗАЦІЙ",
+      unique_patients: "НІЧНИХ ПАЦІЄНТІВ",
+      urgent_cases: "НІЧНИХ ЕКСТРЕНИХ",
+      deaths: "НІЧНИХ СМЕРТЕЙ",
+      letality_percent: "НІЧНА ЛЕТАЛЬНІСТЬ",
+      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (НІЧ)",
+    },
+    День: {
+      cases: "ДЕННИХ ГОСПІТАЛІЗАЦІЙ",
+      unique_patients: "ДЕННИХ ПАЦІЄНТІВ",
+      urgent_cases: "ДЕННИХ ЕКСТРЕНИХ",
+      deaths: "ДЕННИХ СМЕРТЕЙ",
+      letality_percent: "ДЕННА ЛЕТАЛЬНІСТЬ",
+      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (ДЕНЬ)",
+    },
+    Вихідний: {
+      cases: "ГОСПІТАЛІЗАЦІЙ У ВИХІДНІ",
+      unique_patients: "ПАЦІЄНТІВ У ВИХІДНІ",
+      urgent_cases: "ЕКСТРЕНИХ У ВИХІДНІ",
+      deaths: "СМЕРТЕЙ У ВИХІДНІ",
+      letality_percent: "ЛЕТАЛЬНІСТЬ У ВИХІДНІ",
+      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (ВИХІДНІ)",
+    },
+    "Робочий день": {
+      cases: "ГОСПІТАЛІЗАЦІЙ У БУДНІ",
+      unique_patients: "ПАЦІЄНТІВ У БУДНІ",
+      urgent_cases: "ЕКСТРЕНИХ У БУДНІ",
+      deaths: "СМЕРТЕЙ У БУДНІ",
+      letality_percent: "ЛЕТАЛЬНІСТЬ У БУДНІ",
+      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (БУДНІ)",
+    },
+  };
+  const shiftFieldsForPeriod = (period: string): CubeFieldDef[] =>
+    SHIFT_FIELDS.map((f) => ({ ...f, label: SHIFT_FIELD_LABELS[period]?.[f.key] ?? f.label }));
 
   const [nightShiftRows, setNightShiftRows] = useState<(ShiftRow & { time_period: string })[] | null>(null);
   const [nightShiftLoading, setNightShiftLoading] = useState(false);
@@ -3858,7 +4131,12 @@ export default function AppBoundedCanvas() {
   };
 
   const handleAddNightShiftCard = (row: ShiftRow & { time_period: string }) => {
-    addCubeRowsToCanvas([row], SHIFT_FIELDS, "time_period", `Нічні чергування — ${row.time_period}`);
+    const fields = shiftFieldsForPeriod(row.time_period).filter((f) => shiftSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
+    addCubeRowsToCanvas([row], fields, "time_period", `Нічні чергування — ${row.time_period}`);
   };
 
   const [weekendShiftRows, setWeekendShiftRows] = useState<(ShiftRow & { day_type: string })[] | null>(null);
@@ -3884,7 +4162,12 @@ export default function AppBoundedCanvas() {
   };
 
   const handleAddWeekendShiftCard = (row: ShiftRow & { day_type: string }) => {
-    addCubeRowsToCanvas([row], SHIFT_FIELDS, "day_type", `Вихідні чергування — ${row.day_type}`);
+    const fields = shiftFieldsForPeriod(row.day_type).filter((f) => shiftSelectedFields[f.key]);
+    if (fields.length === 0) {
+      alert("Оберіть хоча б один показник");
+      return;
+    }
+    addCubeRowsToCanvas([row], fields, "day_type", `Вихідні чергування — ${row.day_type}`);
   };
 
   // "Показник (за списком)" — форма-конструктор картки КПІ на основі
@@ -6621,7 +6904,7 @@ export default function AppBoundedCanvas() {
                     selectedComplexObjectId === "hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
                   }`}
                 >
-                  Обери рівень і період — 16 живих показників плитками (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
+                  Обери рівень, період і потрібні показники (з 16 доступних) — живі плитки (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
                 </div>
               </button>
               <button
@@ -7195,11 +7478,12 @@ export default function AppBoundedCanvas() {
                   </select>
                 </div>
                 <div className="text-[10px] text-slate-400">
-                  Один рядок (лікарня/весь час) → 16 плиток. Кілька рядків (декілька відділень чи розбивка по періоду) → список.
+                  Один рядок (лікарня/весь час) → плитка на кожен обраний нижче показник. З обраним періодом і кількома рядками → ті самі плитки + пігулки-періоди над ними (клік перемикає миттєво). Кілька рядків без періоду (розбивка по відділенню) → список.
                 </div>
+                {renderCubeFieldPicker(HIERARCHY_FIELDS, hierarchySelectedFields, setHierarchySelectedFields)}
                 <button
                   onClick={handleLoadHierarchy}
-                  disabled={hierarchyLoading}
+                  disabled={hierarchyLoading || Object.values(hierarchySelectedFields).every((v) => !v)}
                   className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {hierarchyLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7238,11 +7522,12 @@ export default function AppBoundedCanvas() {
                   </select>
                 </div>
                 <div className="text-[10px] text-slate-400">
-                  Без фільтрів — усі лікарі одразу (список). Без деталізації по періоду — можна багато рядків.
+                  Без фільтрів — усі лікарі одразу (список). З фільтром на одного лікаря й обраним періодом — плитки + пігулки-періоди (клік перемикає миттєво) замість списку.
                 </div>
+                {renderCubeFieldPicker(DOCTOR_HIER_FIELDS, doctorHierSelectedFields, setDoctorHierSelectedFields)}
                 <button
                   onClick={handleLoadDoctorHierarchy}
-                  disabled={doctorHierLoading}
+                  disabled={doctorHierLoading || Object.values(doctorHierSelectedFields).every((v) => !v)}
                   className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {doctorHierLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7274,11 +7559,14 @@ export default function AppBoundedCanvas() {
                     <option value="">Весь час</option>
                     <option value="year">По роках</option>
                     <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
                   </select>
                 </div>
+                {renderCubeFieldPicker(READMIT_FIELDS, readmitSelectedFields, setReadmitSelectedFields)}
                 <button
                   onClick={handleLoadReadmissions}
-                  disabled={readmitLoading}
+                  disabled={readmitLoading || Object.values(readmitSelectedFields).every((v) => !v)}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {readmitLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7295,9 +7583,10 @@ export default function AppBoundedCanvas() {
                   placeholder="Код МКХ-10 (напр. I63) — або пусто для топ-30"
                   className="w-full p-1.5 border rounded-md text-xs"
                 />
+                {renderCubeFieldPicker(DIAGNOSIS_FIELDS, diagnosisSelectedFields, setDiagnosisSelectedFields)}
                 <button
                   onClick={handleLoadDiagnoses}
-                  disabled={diagnosisLoading}
+                  disabled={diagnosisLoading || Object.values(diagnosisSelectedFields).every((v) => !v)}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {diagnosisLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7316,11 +7605,15 @@ export default function AppBoundedCanvas() {
                   >
                     <option value="">Весь час</option>
                     <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
                   </select>
                 </div>
+                {renderCubeFieldPicker(PATIENT_DEMO_FIELDS, patientDemoSelectedFields, setPatientDemoSelectedFields)}
                 <button
                   onClick={handleLoadPatientDemo}
-                  disabled={patientDemoLoading}
+                  disabled={patientDemoLoading || Object.values(patientDemoSelectedFields).every((v) => !v)}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {patientDemoLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7342,9 +7635,10 @@ export default function AppBoundedCanvas() {
                     <option value="month">Місяцю</option>
                   </select>
                 </div>
+                {renderCubeFieldPicker(TIME_PATTERN_FIELDS, timePatternSelectedFields, setTimePatternSelectedFields)}
                 <button
                   onClick={handleLoadTimePatterns}
-                  disabled={timePatternLoading}
+                  disabled={timePatternLoading || Object.values(timePatternSelectedFields).every((v) => !v)}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {timePatternLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
@@ -7355,8 +7649,9 @@ export default function AppBoundedCanvas() {
             {selectedComplexObjectId === "night-shift" && (
               <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
                 <div className="text-[10px] text-slate-500">
-                  Обери День чи Ніч — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього періоду доби.
+                  Обери показники нижче, а тоді День чи Ніч — додасть плитку в стилі &quot;Картки КПІ&quot; на кожен обраний показник з живими даними саме для цього періоду доби.
                 </div>
+                {renderCubeFieldPicker(SHIFT_FIELDS, shiftSelectedFields, setShiftSelectedFields)}
                 {nightShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
                 {nightShiftError && <div className="text-xs text-red-500 text-center py-1">{nightShiftError}</div>}
                 {!nightShiftLoading && nightShiftRows && nightShiftRows.length > 0 && (
@@ -7381,8 +7676,9 @@ export default function AppBoundedCanvas() {
             {selectedComplexObjectId === "weekend-shift" && (
               <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
                 <div className="text-[10px] text-slate-500">
-                  Обери Вихідний чи Робочий день — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього типу дня.
+                  Обери показники нижче, а тоді Вихідний чи Робочий день — додасть плитку в стилі &quot;Картки КПІ&quot; на кожен обраний показник з живими даними саме для цього типу дня.
                 </div>
+                {renderCubeFieldPicker(SHIFT_FIELDS, shiftSelectedFields, setShiftSelectedFields)}
                 {weekendShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
                 {weekendShiftError && <div className="text-xs text-red-500 text-center py-1">{weekendShiftError}</div>}
                 {!weekendShiftLoading && weekendShiftRows && weekendShiftRows.length > 0 && (
