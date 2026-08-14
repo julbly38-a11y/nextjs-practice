@@ -12,8 +12,57 @@ import {
   type LpzEntityRecord,
 } from "@/lib/lpz-object-fields";
 import { getHospitalTheme } from "@/lib/hospital-themes";
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  PieChart,
+  Pie,
+  Cell,
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
 
-type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | "image";
+type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | "image" | "chart";
+
+// "📈 Графік" — 5 базових типів (Recharts), дані знімок на момент додавання
+// (як "Список" — не живі, повторне підключення часового джерела для
+// графіків поки не зроблено, лише для "Картки КПІ" вище). Джерело —
+// той самий /api/indicators/* куб, що й "Список"/"Картка КПІ" (rows),
+// просто замість плиток/таблиці малюється справжня діаграма.
+type ChartKind = "bar" | "line" | "area" | "pie" | "scatter";
+// Палітра — ті самі акцентні кольори, що вже вживані в панелях кубів
+// (cyan-700/orange-700 тощо), щоб графік не випадав зі стилю конструктора.
+const CHART_PALETTE = ["#0e7490", "#c2410c", "#7c3aed", "#059669", "#db2777", "#ca8a04", "#334155"];
+
+// Класи ПОВНІСТЮ статичні (не шаблонні рядки з інтерполяцією кольору) —
+// Tailwind JIT сканує сирий текст файлу на збіг із реальними назвами
+// класів; динамічно зібраний `text-${accent}-900` він не знайде й не
+// згенерує потрібний CSS. Тому 2 готові набори класів (під колір панелі
+// куба), а не один параметризований.
+const CHART_ADDER_STYLES = {
+  cyan: {
+    section: "pt-2 border-t border-cyan-200 space-y-1.5",
+    label: "text-[10px] font-bold text-cyan-900",
+    button:
+      "w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300",
+  },
+  orange: {
+    section: "pt-2 border-t border-orange-200 space-y-1.5",
+    label: "text-[10px] font-bold text-orange-900",
+    button:
+      "w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300",
+  },
+} as const;
 
 // Захист від "зниклих" плаваючих панелей: якщо збережена (localStorage чи
 // імпортований JSON) позиція опиняється поза поточним вікном — напр. проєкт
@@ -85,6 +134,7 @@ const TYPE_LABELS: Record<ElementType, string> = {
   list: "Список",
   clock: "Годинник",
   image: "Зображення",
+  chart: "Графік",
 };
 
 interface ListColumn {
@@ -195,15 +245,43 @@ interface CanvasElement {
   // полів з тим самим kpiGroupId — заміна ручного вибору року в панелі.
   kpiGroupId?: string;
   kpiYear?: number | null;
-  kpiField?: string;
-  // Пігулки-періоди (рік/місяць/тиждень/день) для плиток з "кубів"
-  // показників (addCubeRowsToCanvas): на відміну від kpiYear (живий
-  // повторний запит), тут дані ВЖЕ завантажені одним запитом з обраною
-  // гранулярністю — кожна пігулка-період носить свій рядок результату
-  // прямо на собі (kpiRowData, ключ = CubeFieldDef.key, значення вже
-  // відформатоване з суфіксом), тож перемикання миттєве, без мережі, і
-  // переживає перезавантаження сторінки/JSON-експорт разом з рештою стану.
-  kpiRowData?: Record<string, string>;
+  kpiField?: "total_cases" | "unique_patients" | "deaths" | "death_rate_pct" | "avg_age" | "avg_bed_days";
+
+  // Позначають число/підпис усередині "📊 Картка КПІ" як ПОСТІЙНІ посадочні
+  // місця (число завжди зверху, підпис завжди знизу — сам шаблон це
+  // гарантує) — за цими прапорцями handleBindLiveIndicator знаходить
+  // потрібну дитину серед children обраного елемента, з якого боку його б
+  // не виділили (клікнули на числі, підписі чи на самій рамці).
+  isKpiNumberSlot?: boolean;
+  isKpiLabelSlot?: boolean;
+
+  // Пряме підключення числового посадочного місця картки до "живого"
+  // показника (з довідника "📡 Живі показники" — лише 4 куби, що дають РІВНО
+  // один рядок на період за обраним контекстом: рівень/напрямок/відділення/
+  // лікаря/діагноз фіксує params одразу при підключенні; ПЕРІОД — єдине, що
+  // навмисно НЕ тут: він приходить окремим "часовим джерелом" через "🔗
+  // Зв'язки" (set-year/set-month/set-day), той самий механізм, що й нижче
+  // для timeContext. Доки жодного часового джерела не підключено — content
+  // лишається "—", саме так, як хотів користувач: картка порожня, поки не
+  // "вказано дату".
+  liveBinding?: {
+    source: "hierarchy" | "doctor-hierarchy" | "readmissions" | "diagnoses";
+    field: string;
+    suffix?: string;
+    params: Record<string, string>;
+  };
+
+  // "📈 Графік" (type: "chart") — знімок рядків куба (chartData) на момент
+  // додавання + яке поле мітка/X (chartLabelField), які поля значення/Y
+  // (chartValueFields — масив, бо стовпчикова/лінійна/площинна можуть
+  // малювати кілька серій одразу; секторна/точкова використовують лише
+  // chartValueFields[0]). Для "Точкова" chartLabelField теж числове поле
+  // (X-метрика), а не текстова мітка — renderChartBody сам розрізняє за
+  // chartKind.
+  chartKind?: ChartKind;
+  chartData?: Record<string, unknown>[];
+  chartLabelField?: string;
+  chartValueFields?: string[];
 
   // Складене з часових зв'язків (set-year/set-month/set-week/set-day —
   // runConnectionActions) значення часового періоду цього показника.
@@ -241,6 +319,118 @@ interface CanvasElement {
   // елементів вище (runConnectionActions). Власні зв'язки, підключені прямо
   // до цього елемента, і далі працюють як завжди.
   excludeFromConnectionCascade?: boolean;
+}
+
+// Тіло елемента "📈 Графік" (Recharts) — окремий компонент, не inline у
+// renderCanvasNode: 5 типів мають несумісні структури даних (секторна й
+// точкова — особливий випадок, не звичайний список серій), тож простіше
+// розводити раннім return, ніж однією великою умовною JSX-гілкою.
+// chartLabelField для "Точкова" — це числове поле X (не текстова мітка,
+// як у решти 4 типів) — той самий слот, різне призначення за chartKind.
+function ChartBody({ el }: { el: CanvasElement }) {
+  const data = el.chartData ?? [];
+  const labelField = el.chartLabelField ?? "__label";
+  const valueFields = el.chartValueFields ?? [];
+
+  if (data.length === 0 || valueFields.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-center text-[11px] text-slate-400 border border-dashed border-slate-300 p-2">
+        Немає даних для графіка
+      </div>
+    );
+  }
+
+  if (el.chartKind === "pie") {
+    const field = valueFields[0];
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey={field}
+            nameKey={labelField}
+            outerRadius="80%"
+            label={(props: { name?: string | number }) => String(props.name ?? "")}
+          >
+            {data.map((_, i) => (
+              <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+            ))}
+          </Pie>
+          <Tooltip />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (el.chartKind === "scatter") {
+    const yField = valueFields[0];
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={labelField} type="number" name={labelField} tick={{ fontSize: 10 }} />
+          <YAxis dataKey={yField} type="number" name={yField} tick={{ fontSize: 10 }} />
+          <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter data={data} fill={CHART_PALETTE[0]} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  const axis = (
+    <>
+      <CartesianGrid strokeDasharray="3 3" />
+      <XAxis dataKey={labelField} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
+      <YAxis tick={{ fontSize: 10 }} />
+      <Tooltip />
+      {valueFields.length > 1 && <Legend wrapperStyle={{ fontSize: 10 }} />}
+    </>
+  );
+
+  if (el.chartKind === "line") {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          {axis}
+          {valueFields.map((field, i) => (
+            <Line key={field} type="monotone" dataKey={field} stroke={CHART_PALETTE[i % CHART_PALETTE.length]} strokeWidth={2} dot={false} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (el.chartKind === "area") {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          {axis}
+          {valueFields.map((field, i) => (
+            <Area
+              key={field}
+              type="monotone"
+              dataKey={field}
+              stroke={CHART_PALETTE[i % CHART_PALETTE.length]}
+              fill={CHART_PALETTE[i % CHART_PALETTE.length]}
+              fillOpacity={0.3}
+            />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+        {axis}
+        {valueFields.map((field, i) => (
+          <Bar key={field} dataKey={field} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
 }
 
 // Зв'язок між двома елементами полотна — окрема сутність (як Page), не поле
@@ -320,6 +510,39 @@ const MONTH_PILL_LABELS = [
 // hospital-analytics (head-cabinet.html/doctor-cabinet.html), той самий
 // порядок від неділі (як JS Date.getDay(): 0 = неділя).
 const WEEKDAY_LABELS = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "Пʼятниця", "Субота"];
+
+// Ендпоінти "живих" показників, доступних для прив'язки до "📊 Картки КПІ"
+// (панель "🔗 Показник → картка" у відповідних формах кубів). Свідомо лише
+// ці 3: усі інші куби або мають додаткову розбивку, яку зараз нічим
+// зафіксувати (демографія — стать×вік; лікар без вибору конкретного лікаря
+// в UI), або період у них категорія доби/дня тижня, а не дата (часові
+// патерни, нічні/вихідні чергування) — не сумісно з моделлю
+// "показник + дата-об'єкт".
+const LIVE_INDICATOR_ENDPOINTS: Record<NonNullable<CanvasElement["liveBinding"]>["source"], string> = {
+  hierarchy: "/api/indicators/hierarchy",
+  "doctor-hierarchy": "/api/indicators/doctor-hierarchy",
+  readmissions: "/api/indicators/readmissions",
+  diagnoses: "/api/indicators/diagnoses",
+};
+
+// Складає grain + очікуваний period_label з timeContext підключених часових
+// джерел — 1:1 з тим, що реально повертають lpz_*_cube RPC (перевірено
+// живими запитами): РІК → grain=year, "2026"; +МІСЯЦЬ → grain=month,
+// "2026-03"; +ДЕНЬ → grain=day, "2026-03-15". Без року — резолвити нема як
+// (RPC не приймає рік окремим фільтром, лише повертає всю серію на обраній
+// гранулярності). "Тиждень" (день тижня) свідомо не бере участі: у RPC
+// grain=week — реальний ISO-тиждень, не назва дня тижня, це різні поняття.
+const buildPeriodKey = (ctx: NonNullable<CanvasElement["timeContext"]>): { grain: string; label: string } | null => {
+  const year = ctx.year?.trim();
+  if (!year) return null;
+  if (!ctx.month) return { grain: "year", label: year };
+  const monthIdx = MONTH_PILL_LABELS.indexOf(ctx.month);
+  if (monthIdx === -1) return null;
+  const month = String(monthIdx + 1).padStart(2, "0");
+  if (!ctx.day) return { grain: "month", label: `${year}-${month}` };
+  const day = String(Number(ctx.day)).padStart(2, "0");
+  return { grain: "day", label: `${year}-${month}-${day}` };
+};
 
 // Доступні функції зв'язку (панель "🔗 Зв'язки") — чекбокси, не dropdown:
 // один зв'язок (одна лінія на полотні) може нести КІЛЬКА функцій одразу.
@@ -413,7 +636,7 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     id: "kpiCard",
     label: "📊 Картка КПІ",
     description:
-      "1:1 з .kpi-row у khotyn_slide.html (старий проект) — число (36px, ITFLight 300, #1a1a1a) над підписом (20px, ITFLight 300, #9a958f, ВЕЛИКИМИ), обидва притиснуті вправо. Батько — прозорий контейнер-рамка; число й підпис — окремі вкладені текстові елементи, тож кожен можна перев'язати на реальні дані (лічильник тощо) окремо. Тестові дані: 20 500 / ГОСПІТАЛІЗАЦІЙ.",
+      "1:1 з .kpi-row у khotyn_slide.html (старий проект) — число (36px, ITFLight 300, #1a1a1a) над підписом (20px, ITFLight 300, #9a958f, ВЕЛИКИМИ), обидва притиснуті вправо. Батько — прозора рамка; число й підпис — 2 ПОСТІЙНІ посадочні місця (окремі вкладені текстові елементи, кожне зі своїм фіксованим призначенням — зверху завжди число, знизу завжди підпис). Картка додається ПОРОЖНЬОЮ: виділи число чи підпис і в панелі «📡 Живі показники» підключи до потрібного показника (заповнює підпис і фіксує запит), а до самої картки підклюси часове джерело («🔗 Зв'язки») — число з'явиться лише тоді.",
     defaults: {
       type: "block",
       content: "",
@@ -435,7 +658,7 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     ],
     children: [
       {
-        content: "20 500",
+        content: "—",
         x: 0,
         y: 0,
         width: 200,
@@ -449,10 +672,11 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
           bgOpacity: 0,
           padding: 0,
+          isKpiNumberSlot: true,
         },
       },
       {
-        content: "ГОСПІТАЛІЗАЦІЙ",
+        content: "ПОКАЗНИК",
         x: 0,
         y: 44,
         width: 200,
@@ -466,6 +690,7 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
           bgOpacity: 0,
           padding: 0,
+          isKpiLabelSlot: true,
         },
       },
     ],
@@ -1441,6 +1666,39 @@ export default function AppBoundedCanvas() {
       .filter((part): part is string => !!part)
       .join(" · ");
 
+  // Тягне живе число для числового посадочного місця картки, прив'язаного
+  // до показника (liveBinding) — викликається лише коли підключене часове
+  // джерело щойно оновило timeContext цілі (runConnectionActions нижче).
+  // params, зафіксовані при прив'язці (рівень/напрямок/відділення/МКХ-10),
+  // + org поточної лікарні + grain/значення з ctx (buildPeriodKey) — рядок
+  // з відповіді шукається за period_label, що збігається з побудованим
+  // ключем (RPC завжди повертає ВСЮ серію на обраній гранулярності, не
+  // фільтр по конкретному року/місяцю).
+  const resolveLiveIndicatorValue = async (
+    binding: NonNullable<CanvasElement["liveBinding"]>,
+    ctx: NonNullable<CanvasElement["timeContext"]>
+  ): Promise<string> => {
+    const period = buildPeriodKey(ctx);
+    if (!period) return "—";
+    try {
+      const params = new URLSearchParams({
+        ...binding.params,
+        grain: period.grain,
+        org: selectedHospital?.edrpou ?? "",
+      });
+      const res = await fetch(`${LIVE_INDICATOR_ENDPOINTS[binding.source]}?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) return "—";
+      const rows = (data.rows ?? []) as Record<string, unknown>[];
+      const row = rows.find((r) => r.period_label === period.label);
+      if (!row) return "—";
+      const raw = row[binding.field];
+      return raw === null || raw === undefined ? "—" : `${raw}${binding.suffix || ""}`;
+    } catch {
+      return "—";
+    }
+  };
+
   const runConnectionActions = (sourceId: number) => {
     const sourceEl = elements.find((item) => item.id === sourceId);
     if (!sourceEl) return;
@@ -1503,6 +1761,29 @@ export default function AppBoundedCanvas() {
       ? flatActions.filter(({ action }) => action === "set-year" || action === "set-month" || action === "set-week" || action === "set-day")
       : [];
     if (sourceEl && timeActions.length > 0) {
+      // Цілі з liveBinding — timeContext НАКОПИЧУЄТЬСЯ (рік і місяць
+      // підключаються окремими лініями, обидва потрібні одночасно, щоб
+      // побудувати "2026-03"), а не заміняється, як у звичайних цілей
+      // нижче. Список fetch-ів рахуємо ЗАЗДАЛЕГІДЬ, зі стану `elements`
+      // (а не всередині колбека setElements нижче): React НЕ гарантує, що
+      // функціональний updater виконається синхронно одразу після виклику
+      // setElements — читання побічного ефекту updater'а одразу після
+      // виклику (як тут спершу й було зроблено) застало б ще порожній
+      // масив. `elements` у цьому замиканні лишається чинним, бо в межах
+      // одного синхронного обробника кліку його ніщо інше не встигає змінити.
+      const liveFetches: {
+        targetId: number;
+        binding: NonNullable<CanvasElement["liveBinding"]>;
+        nextContext: NonNullable<CanvasElement["timeContext"]>;
+      }[] = [];
+      timeActions.forEach(({ toId, action }) => {
+        const target = elements.find((item) => item.id === toId);
+        if (!target?.liveBinding) return;
+        const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
+        const nextContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+        liveFetches.push({ targetId: target.id, binding: target.liveBinding, nextContext });
+      });
+
       setElements((prev) => {
         const next = [...prev];
         timeActions.forEach(({ toId, action }) => {
@@ -1511,7 +1792,10 @@ export default function AppBoundedCanvas() {
           if (targetIdx === -1) return;
           const target = next[targetIdx];
 
-          if (target.isBadgeYearField && unit !== "year") {
+          if (target.liveBinding) {
+            const nextContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+            next[targetIdx] = { ...target, timeContext: nextContext };
+          } else if (target.isBadgeYearField && unit !== "year") {
             // Джерело місяця/тижня/дня, підключене до поля-РОКУ бейджа — не
             // дописується в сам рік: рік стискається й підіймається вгору,
             // а під ним створюється (один раз) чи оновлюється рядок дати.
@@ -1579,6 +1863,16 @@ export default function AppBoundedCanvas() {
         });
         saveToHistory(pages, next);
         return next;
+      });
+
+      liveFetches.forEach(({ targetId, binding, nextContext }) => {
+        void resolveLiveIndicatorValue(binding, nextContext).then((value) => {
+          setElements((prev) => {
+            const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
+            saveToHistory(pages, next);
+            return next;
+          });
+        });
       });
     }
   };
@@ -3095,37 +3389,15 @@ export default function AppBoundedCanvas() {
         updateElementsAndHistory(nextElements);
       }
 
-      // Пігулка-фільтр КПІ (kpiGroupId) — оновлює текстові поля значень з
-      // тим самим kpiGroupId. Два джерела даних: kpiRowData (пігулка-період
-      // з "кубів" — дані вже на самій пігулці, оновлення миттєве, без
-      // мережі) або kpiYear (стара "КПІ лікарні" — живий повторний запит).
+      // Пігулка-фільтр КПІ (kpiGroupId) — тягне свіжі дані й живцем оновлює
+      // текстові поля значень з тим самим kpiGroupId. Функціональний
+      // setElements навмисно, а не nextElements/updateElementsAndHistory
+      // вище: fetch асинхронний, і на момент відповіді state вже міг
+      // змінитись (напр. від toggle-оновлення isPressed щойно вище).
       if (el.kpiGroupId) {
-        if (el.kpiRowData) {
-          handleKpiRowPillClick(el.kpiGroupId, el.kpiRowData);
-        } else {
-          // Функціональний setElements навмисно, а не
-          // nextElements/updateElementsAndHistory вище: fetch асинхронний,
-          // і на момент відповіді state вже міг змінитись (напр. від
-          // toggle-оновлення isPressed щойно вище).
-          void handleKpiPillClick(el.kpiGroupId, el.kpiYear ?? null);
-        }
+        void handleKpiPillClick(el.kpiGroupId, el.kpiYear ?? null);
       }
     }
-  };
-
-  // Пігулка-період (рік/місяць/тиждень/день) для плиток з "кубів" —
-  // rowData вже відформатований і лежить прямо на клікнутій пігулці
-  // (addCubeRowsToCanvas), тож перемикання синхронне й локальне.
-  const handleKpiRowPillClick = (groupId: string, rowData: Record<string, string>) => {
-    setElements((prev) => {
-      const next = prev.map((item) =>
-        item.kpiGroupId === groupId && item.kpiField
-          ? { ...item, content: rowData[item.kpiField] ?? "—" }
-          : item
-      );
-      saveToHistory(pages, next);
-      return next;
-    });
   };
 
   const handleKpiPillClick = async (groupId: string, year: number | null) => {
@@ -3479,131 +3751,17 @@ export default function AppBoundedCanvas() {
   // масив рядків з однаковими за духом полями (лічильники + group_key/
   // period_label чи еквівалент). Один рядок → ряд плиток у стилі "Картки
   // КПІ" (число 36px над підписом 20px, ITFLight, праворуч). Кілька рядків
-  // з обраною гранулярністю часу (timeUnitActive) → той самий ряд плиток +
-  // ряд пігулок-періодів над ними (1:1 з пігулками-роками "📊 КПІ лікарні",
-  // kpiGroupId/kpiRowData) — клік миттєво перемикає плитки на інший
-  // рядок, дані вже завантажені, без повторного запиту. Кілька рядків БЕЗ
-  // гранулярності часу (розбивка лише по групі — відділення/лікар/діагноз)
-  // → "Список" зі стовпцями, той самий підхід, що й "🏥 Список відділень".
+  // (розбивка по періоду/групі) → "Список" зі стовпцями, той самий підхід,
+  // що й "🏥 Список відділень".
   type CubeFieldDef = { key: string; label: string; suffix?: string };
-  const formatCubeValue = (row: Record<string, unknown>, f: CubeFieldDef) => {
-    const raw = row[f.key];
-    return raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
-  };
   const addCubeRowsToCanvas = (
     rows: Record<string, unknown>[],
     fields: CubeFieldDef[],
     labelField: string,
-    title: string,
-    timeUnitActive = false
+    title: string
   ) => {
     if (!rows || rows.length === 0) {
       alert("Немає даних за цим запитом");
-      return;
-    }
-
-    if (rows.length > 1 && timeUnitActive) {
-      const tileWidth = 200;
-      const tileHeight = 70;
-      const tileGap = 24;
-      const tilesTotalWidth = tileWidth * fields.length + tileGap * (fields.length - 1);
-
-      const pillGap = 8;
-      const pillHeight = 30;
-      const pillLabels = rows.map((row) => String(row[labelField] ?? ""));
-      const pillWidths = pillLabels.map((label) => Math.max(60, Math.round(label.length * 9 + 32)));
-      const pillsTotalWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
-
-      const totalWidth = Math.max(tilesTotalWidth, pillsTotalWidth);
-      const rowGap = 12;
-      const totalHeight = pillHeight + rowGap + tileHeight;
-      const freePos = findFreePosition(forcedParentId, totalWidth, totalHeight);
-
-      const kpiGroupId = `cube-${Date.now()}`;
-      const newElements: CanvasElement[] = [];
-      const selectedIdsNext: number[] = [];
-      // Останній рядок — типово найсвіжіший період (бекенд повертає їх
-      // хронологічно) — пігулка за замовчуванням.
-      const activeIndex = rows.length - 1;
-
-      let pillX = freePos.x;
-      rows.forEach((row, i) => {
-        const width = pillWidths[i];
-        const rowData: Record<string, string> = {};
-        fields.forEach((f) => {
-          rowData[f.key] = formatCubeValue(row, f);
-        });
-        const id = Date.now() + 1000 + i;
-        newElements.push({
-          ...buildComplexObjectBase(id, pillLabels[i]),
-          ...PILL_STYLE_DEFAULTS,
-          width,
-          height: pillHeight,
-          x: pillX,
-          y: freePos.y,
-          content: pillLabels[i],
-          kpiGroupId,
-          kpiRowData: rowData,
-          isPressed: i === activeIndex,
-        });
-        pillX += width + pillGap;
-        selectedIdsNext.push(id);
-      });
-
-      const tileY = freePos.y + pillHeight + rowGap;
-      const activeRow = rows[activeIndex];
-      fields.forEach((f, i) => {
-        const parentId = Date.now() + 2000 + i * 10;
-        const x = freePos.x + i * (tileWidth + tileGap);
-        newElements.push({
-          ...buildComplexObjectBase(parentId, ""),
-          type: "block",
-          width: tileWidth,
-          height: tileHeight,
-          x,
-          y: tileY,
-          customBgColor: "#ffffff",
-          bgOpacity: 0,
-          padding: 0,
-          borderRadius: 0,
-        });
-        newElements.push({
-          ...buildComplexObjectBase(parentId + 1, formatCubeValue(activeRow, f)),
-          type: "text",
-          width: tileWidth,
-          height: 44,
-          x: 0,
-          y: 0,
-          parentId,
-          fontSize: 36,
-          fontWeight: "300",
-          textColor: "#1a1a1a",
-          textAlign: "right",
-          bgOpacity: 0,
-          padding: 0,
-          kpiGroupId,
-          kpiField: f.key,
-        });
-        newElements.push({
-          ...buildComplexObjectBase(parentId + 2, f.label),
-          type: "text",
-          width: tileWidth,
-          height: 26,
-          x: 0,
-          y: 44,
-          parentId,
-          fontSize: 20,
-          fontWeight: "300",
-          textColor: "#9a958f",
-          textAlign: "right",
-          bgOpacity: 0,
-          padding: 0,
-        });
-        selectedIdsNext.push(parentId);
-      });
-
-      updateElementsAndHistory([...elements, ...newElements]);
-      setSelectedIds(selectedIdsNext);
       return;
     }
 
@@ -3619,7 +3777,8 @@ export default function AppBoundedCanvas() {
       fields.forEach((f, i) => {
         const parentId = Date.now() + i * 10;
         tileIds.push(parentId);
-        const value = formatCubeValue(row, f);
+        const raw = row[f.key];
+        const value = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
         const x = freePos.x + i * (tileWidth + gap);
         newElements.push({
           ...buildComplexObjectBase(parentId, ""),
@@ -3692,7 +3851,8 @@ export default function AppBoundedCanvas() {
     const rowElements: CanvasElement[] = rows.map((row, i) => {
       const columnValues: Record<string, string> = { __label: String(row[labelField] ?? "") };
       fields.forEach((f) => {
-        columnValues[f.key] = formatCubeValue(row, f);
+        const raw = row[f.key];
+        columnValues[f.key] = raw === null || raw === undefined ? "—" : `${raw}${f.suffix || ""}`;
       });
       return {
         ...buildComplexObjectBase(listId + 1 + i, String(row[labelField] ?? "")),
@@ -3710,55 +3870,6 @@ export default function AppBoundedCanvas() {
     handleSelectElement(listId);
   };
 
-  // Стан вибору полів для чекбокс-піпера кожного "куба" (усі поля увімкнені
-  // за замовчуванням — поведінка як раніше, доки користувач сам щось не
-  // зніме). handleLoad* фільтрує CubeFieldDef[] за цим станом ПЕРЕД запитом
-  // до бекенду — щоб не тягнути дані, які одразу відкинуть.
-  type FieldSelection = Record<string, boolean>;
-  const allFieldsSelected = (fields: CubeFieldDef[]): FieldSelection =>
-    Object.fromEntries(fields.map((f) => [f.key, true]));
-
-  const renderCubeFieldPicker = (
-    fields: CubeFieldDef[],
-    selected: FieldSelection,
-    setSelected: React.Dispatch<React.SetStateAction<FieldSelection>>
-  ) => (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="block text-[10px] text-slate-500">Які показники додати плитками:</label>
-        <div className="flex gap-1.5 text-[10px]">
-          <button
-            type="button"
-            onClick={() => setSelected(allFieldsSelected(fields))}
-            className="text-cyan-700 hover:underline"
-          >
-            усі
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelected({})}
-            className="text-slate-400 hover:underline"
-          >
-            жодного
-          </button>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-x-2 gap-y-1 p-2 bg-white/70 border border-slate-200 rounded-md max-h-40 overflow-y-auto">
-        {fields.map((f) => (
-          <label key={f.key} className="flex items-center gap-1.5 text-[10px] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selected[f.key] ?? false}
-              onChange={(e) => setSelected((prev) => ({ ...prev, [f.key]: e.target.checked }))}
-              className="shrink-0"
-            />
-            <span className="truncate" title={f.label}>{f.label}</span>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-
   // Додає похідне поле row_label до рядків куба (group_key + period_label,
   // об'єднані), щоб "Список" (при кількох рядках) мав змістовний підпис
   // рядка навіть коли обидва поля заповнені одночасно (напр. відділення×місяць).
@@ -3770,6 +3881,178 @@ export default function AppBoundedCanvas() {
       return { ...r, row_label };
     });
 
+  // Прив'язує ОБРАНЕ на полотні число+підпис "📊 Картки КПІ" до живого
+  // показника — не тягне жодних даних сама (лишає число "—"): фіксує лише
+  // params (усе, КРІМ періоду — рівень/напрямок/відділення/МКХ-10, залежно
+  // від джерела) і яке поле відповіді показувати, підпис заповнює одразу
+  // (той не залежить від дати). Число з'явиться, коли підключиш до цієї ж
+  // картки часове джерело через "🔗 Зв'язки" (runConnectionActions робить
+  // fetch за цим liveBinding). Працює незалежно від того, що саме виділено
+  // — число, підпис чи саму рамку картки — знаходить пару серед дітей.
+  const handleBindLiveIndicator = (
+    source: NonNullable<CanvasElement["liveBinding"]>["source"],
+    field: CubeFieldDef,
+    params: Record<string, string>
+  ) => {
+    if (selectedIds.length !== 1) {
+      alert("Спершу виділіть на полотні порожню «📊 Картку КПІ» (клікніть на число чи підпис)");
+      return;
+    }
+    const el = elements.find((item) => item.id === selectedIds[0]);
+    if (!el) return;
+
+    const numberEl = el.isKpiNumberSlot
+      ? el
+      : el.isKpiLabelSlot
+        ? elements.find((item) => item.parentId === el.parentId && item.isKpiNumberSlot)
+        : elements.find((item) => item.parentId === el.id && item.isKpiNumberSlot);
+    const labelEl = el.isKpiLabelSlot
+      ? el
+      : el.isKpiNumberSlot
+        ? elements.find((item) => item.parentId === el.parentId && item.isKpiLabelSlot)
+        : elements.find((item) => item.parentId === el.id && item.isKpiLabelSlot);
+
+    if (!numberEl || !labelEl) {
+      alert("Це не «📊 Картка КПІ» — додайте її зі списку об'єктів (вкладка «Об'єкти») і виділіть перед прив'язкою");
+      return;
+    }
+
+    const next = elements.map((item) => {
+      if (item.id === numberEl.id) {
+        return { ...item, liveBinding: { source, field: field.key, suffix: field.suffix, params }, content: "—", timeContext: undefined };
+      }
+      if (item.id === labelEl.id) {
+        return { ...item, content: field.label };
+      }
+      return item;
+    });
+    updateElementsAndHistory(next);
+  };
+
+  // Додає "📈 Графік" (Recharts) на полотно — знімок отриманих rows, без
+  // жодного подальшого підключення до дати (на відміну від "📊 Картки
+  // КПІ" вище): якщо треба інший період — перебудовуєш графік наново з
+  // відповідної форми куба. labelField для "Точкова" — це числове поле X
+  // (переданий як звичайна метрика), для решти 4 типів — текстова мітка.
+  const addRowsAsChart = (
+    rows: Record<string, unknown>[],
+    labelField: string,
+    valueFields: string[],
+    chartKind: ChartKind,
+    title: string
+  ) => {
+    if (!rows || rows.length === 0) {
+      alert("Немає даних за цим запитом");
+      return;
+    }
+    const width = 420;
+    const height = 280;
+    const freePos = findFreePosition(forcedParentId, width, height);
+    const newElement: CanvasElement = {
+      ...buildComplexObjectBase(Date.now(), title),
+      type: "chart",
+      width,
+      height,
+      x: freePos.x,
+      y: freePos.y,
+      // buildComplexObjectBase не задає customBgColor (пресети-кнопки
+      // самі обирають колір) — без цього картка графіка успадкувала б
+      // дефолтний "кольору за глибиною" (LEVEL_COLORS) фон, як звичайна
+      // кнопка. Тут — чиста біла картка, той самий стиль, що й "Картка КПІ".
+      customBgColor: "#ffffff",
+      textColor: "#1a1a1a",
+      padding: 0,
+      chartKind,
+      chartData: rows,
+      chartLabelField: labelField,
+      chartValueFields: valueFields,
+    };
+    updateElementsAndHistory([...elements, newElement]);
+    handleSelectElement(newElement.id);
+  };
+
+  // Спільна форма "📈 Додати як графік" для всіх 6 панелей кубів нижче:
+  // тип графіка + один показник (для "Точкова" — окремо X і Y, бо це не
+  // мітка+значення, а дві метрики). fields — той самий список полів, що
+  // й для "Завантажити на полотно" в тій самій панелі.
+  const renderChartAdderSection = (
+    accent: "cyan" | "orange",
+    fields: CubeFieldDef[],
+    kind: ChartKind,
+    setKind: (k: ChartKind) => void,
+    fieldKey: string,
+    setFieldKey: (k: string) => void,
+    fieldKeyY: string,
+    setFieldKeyY: (k: string) => void,
+    onAdd: () => void
+  ) => {
+    const s = CHART_ADDER_STYLES[accent];
+    return (
+      <div className={s.section}>
+        <div className={s.label}>📈 Додати як графік</div>
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as ChartKind)}
+          className="w-full p-1.5 border rounded-md text-xs bg-white"
+        >
+          <option value="bar">Стовпчикова</option>
+          <option value="line">Лінійна</option>
+          <option value="area">Площинна</option>
+          <option value="pie">Секторна</option>
+          <option value="scatter">Точкова</option>
+        </select>
+        {kind === "scatter" ? (
+          <>
+            <select
+              value={fieldKey}
+              onChange={(e) => setFieldKey(e.target.value)}
+              className="w-full p-1.5 border rounded-md text-xs bg-white"
+            >
+              <option value="">X-показник…</option>
+              {fields.map((f) => (
+                <option key={f.key} value={f.key}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={fieldKeyY}
+              onChange={(e) => setFieldKeyY(e.target.value)}
+              className="w-full p-1.5 border rounded-md text-xs bg-white"
+            >
+              <option value="">Y-показник…</option>
+              {fields.map((f) => (
+                <option key={f.key} value={f.key}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : (
+          <select
+            value={fieldKey}
+            onChange={(e) => setFieldKey(e.target.value)}
+            className="w-full p-1.5 border rounded-md text-xs bg-white"
+          >
+            <option value="">Оберіть показник…</option>
+            {fields.map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          onClick={onAdd}
+          disabled={kind === "scatter" ? !fieldKey || !fieldKeyY : !fieldKey}
+          className={s.button}
+        >
+          📈 Додати графік на полотно
+        </button>
+      </div>
+    );
+  };
+
   // "📊 Показники (лікарня/напрямок/відділення)" — рівень + часова
   // гранулярність + опційний фільтр напрямку/відділення, RPC
   // public.lpz_indicator_cube (/api/indicators/hierarchy).
@@ -3778,6 +4061,10 @@ export default function AppBoundedCanvas() {
   const [hierarchyDirection, setHierarchyDirection] = useState("");
   const [hierarchyDepartment, setHierarchyDepartment] = useState("");
   const [hierarchyLoading, setHierarchyLoading] = useState(false);
+  const [hierarchyBindField, setHierarchyBindField] = useState("");
+  const [hierarchyChartKind, setHierarchyChartKind] = useState<ChartKind>("bar");
+  const [hierarchyChartField, setHierarchyChartField] = useState("");
+  const [hierarchyChartFieldY, setHierarchyChartFieldY] = useState("");
 
   const HIERARCHY_FIELDS: CubeFieldDef[] = [
     { key: "total_cases", label: "ВИПАДКІВ" },
@@ -3797,14 +4084,8 @@ export default function AppBoundedCanvas() {
     { key: "children", label: "ДІТЕЙ" },
     { key: "elderly", label: "ПОХИЛОГО ВІКУ" },
   ];
-  const [hierarchySelectedFields, setHierarchySelectedFields] = useState<FieldSelection>({});
 
   const handleLoadHierarchy = async () => {
-    const fields = HIERARCHY_FIELDS.filter((f) => hierarchySelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setHierarchyLoading(true);
     try {
       const params = new URLSearchParams({ level: hierarchyLevel });
@@ -3818,11 +4099,35 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(withRowLabel(data.rows || []), fields, "row_label", "Показники (ієрархія)", Boolean(hierarchyGrain));
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), HIERARCHY_FIELDS, "row_label", "Показники (ієрархія)");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
       setHierarchyLoading(false);
+    }
+  };
+
+  const handleAddHierarchyChart = async () => {
+    try {
+      const params = new URLSearchParams({ level: hierarchyLevel });
+      if (hierarchyGrain) params.set("grain", hierarchyGrain);
+      if (hierarchyDirection.trim()) params.set("direction", hierarchyDirection.trim());
+      if (hierarchyDepartment.trim()) params.set("department", hierarchyDepartment.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
+      const res = await fetch(`/api/indicators/hierarchy?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = withRowLabel(data.rows || []);
+      if (hierarchyChartKind === "scatter") {
+        addRowsAsChart(rows, hierarchyChartField, [hierarchyChartFieldY], "scatter", "Показники (ієрархія)");
+      } else {
+        addRowsAsChart(rows, "row_label", [hierarchyChartField], hierarchyChartKind, "Показники (ієрархія)");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
     }
   };
 
@@ -3833,20 +4138,17 @@ export default function AppBoundedCanvas() {
   const [doctorHierDirection, setDoctorHierDirection] = useState("");
   const [doctorHierDepartment, setDoctorHierDepartment] = useState("");
   const [doctorHierLoading, setDoctorHierLoading] = useState(false);
+  const [doctorHierChartKind, setDoctorHierChartKind] = useState<ChartKind>("bar");
+  const [doctorHierChartField, setDoctorHierChartField] = useState("");
+  const [doctorHierChartFieldY, setDoctorHierChartFieldY] = useState("");
 
   const DOCTOR_HIER_FIELDS: CubeFieldDef[] = [
     { key: "total_cases", label: "ВИПАДКІВ" },
     { key: "unique_patients", label: "ПАЦІЄНТІВ" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
-  const [doctorHierSelectedFields, setDoctorHierSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadDoctorHierarchy = async () => {
-    const fields = DOCTOR_HIER_FIELDS.filter((f) => doctorHierSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setDoctorHierLoading(true);
     try {
       const params = new URLSearchParams();
@@ -3866,11 +4168,40 @@ export default function AppBoundedCanvas() {
           .filter(Boolean)
           .join(" · "),
       }));
-      addCubeRowsToCanvas(rows, fields, "row_label", "Лікарі (обсяг)", Boolean(doctorHierGrain));
+      addCubeRowsToCanvas(rows, DOCTOR_HIER_FIELDS, "row_label", "Лікарі (обсяг)");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
       setDoctorHierLoading(false);
+    }
+  };
+
+  const handleAddDoctorHierarchyChart = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (doctorHierGrain) params.set("grain", doctorHierGrain);
+      if (doctorHierDirection.trim()) params.set("direction", doctorHierDirection.trim());
+      if (doctorHierDepartment.trim()) params.set("department", doctorHierDepartment.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
+      const res = await fetch(`/api/indicators/doctor-hierarchy?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = (data.rows || []).map((r: Record<string, unknown>) => ({
+        ...r,
+        row_label: [r.doctor_name, r.period_label && r.period_label !== "Весь час" ? r.period_label : null]
+          .filter(Boolean)
+          .join(" · "),
+      }));
+      if (doctorHierChartKind === "scatter") {
+        addRowsAsChart(rows, doctorHierChartField, [doctorHierChartFieldY], "scatter", "Лікарі (обсяг)");
+      } else {
+        addRowsAsChart(rows, "row_label", [doctorHierChartField], doctorHierChartKind, "Лікарі (обсяг)");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
     }
   };
 
@@ -3879,6 +4210,10 @@ export default function AppBoundedCanvas() {
   const [readmitLevel, setReadmitLevel] = useState<"hospital" | "direction" | "department">("hospital");
   const [readmitGrain, setReadmitGrain] = useState<string>("");
   const [readmitLoading, setReadmitLoading] = useState(false);
+  const [readmitBindField, setReadmitBindField] = useState("");
+  const [readmitChartKind, setReadmitChartKind] = useState<ChartKind>("bar");
+  const [readmitChartField, setReadmitChartField] = useState("");
+  const [readmitChartFieldY, setReadmitChartFieldY] = useState("");
 
   const READMIT_FIELDS: CubeFieldDef[] = [
     { key: "total_with_followup", label: "З ПОДАЛЬШИМ СПОСТЕРЕЖЕННЯМ" },
@@ -3888,14 +4223,8 @@ export default function AppBoundedCanvas() {
     { key: "readmit_90d_pct", label: "% ЗА 90д", suffix: "%" },
     { key: "same_dx_30d", label: "ТОЙ САМИЙ ДІАГНОЗ (30д)" },
   ];
-  const [readmitSelectedFields, setReadmitSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadReadmissions = async () => {
-    const fields = READMIT_FIELDS.filter((f) => readmitSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setReadmitLoading(true);
     try {
       const params = new URLSearchParams({ level: readmitLevel });
@@ -3907,7 +4236,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(withRowLabel(data.rows || []), fields, "row_label", "Повторні госпіталізації", Boolean(readmitGrain));
+      addCubeRowsToCanvas(withRowLabel(data.rows || []), READMIT_FIELDS, "row_label", "Повторні госпіталізації");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3915,10 +4244,36 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  const handleAddReadmissionsChart = async () => {
+    try {
+      const params = new URLSearchParams({ level: readmitLevel });
+      if (readmitGrain) params.set("grain", readmitGrain);
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
+      const res = await fetch(`/api/indicators/readmissions?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = withRowLabel(data.rows || []);
+      if (readmitChartKind === "scatter") {
+        addRowsAsChart(rows, readmitChartField, [readmitChartFieldY], "scatter", "Повторні госпіталізації");
+      } else {
+        addRowsAsChart(rows, "row_label", [readmitChartField], readmitChartKind, "Повторні госпіталізації");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    }
+  };
+
   // "🩻 Показники по діагнозу" — RPC public.lpz_diagnosis_cube
   // (/api/indicators/diagnoses). Пошук за початком коду МКХ (ilike 'код%').
   const [diagnosisIcd, setDiagnosisIcd] = useState("");
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [diagnosisBindField, setDiagnosisBindField] = useState("");
+  const [diagnosisChartKind, setDiagnosisChartKind] = useState<ChartKind>("bar");
+  const [diagnosisChartField, setDiagnosisChartField] = useState("");
+  const [diagnosisChartFieldY, setDiagnosisChartFieldY] = useState("");
 
   const DIAGNOSIS_FIELDS: CubeFieldDef[] = [
     { key: "cases", label: "ВИПАДКІВ" },
@@ -3930,14 +4285,8 @@ export default function AppBoundedCanvas() {
     { key: "women", label: "ЖІНОК" },
     { key: "men", label: "ЧОЛОВІКІВ" },
   ];
-  const [diagnosisSelectedFields, setDiagnosisSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadDiagnoses = async () => {
-    const fields = DIAGNOSIS_FIELDS.filter((f) => diagnosisSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setDiagnosisLoading(true);
     try {
       const params = new URLSearchParams({ limit: "30" });
@@ -3949,7 +4298,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(data.rows || [], fields, "icd_primary", "Показники по діагнозу");
+      addCubeRowsToCanvas(data.rows || [], DIAGNOSIS_FIELDS, "icd_primary", "Показники по діагнозу");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -3957,10 +4306,35 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  const handleAddDiagnosisChart = async () => {
+    try {
+      const params = new URLSearchParams({ limit: "30" });
+      if (diagnosisIcd.trim()) params.set("icd", diagnosisIcd.trim());
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
+      const res = await fetch(`/api/indicators/diagnoses?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = data.rows || [];
+      if (diagnosisChartKind === "scatter") {
+        addRowsAsChart(rows, diagnosisChartField, [diagnosisChartFieldY], "scatter", "Показники по діагнозу");
+      } else {
+        addRowsAsChart(rows, "icd_primary", [diagnosisChartField], diagnosisChartKind, "Показники по діагнозу");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    }
+  };
+
   // "🧑‍🤝‍🧑 Демографія пацієнтів" — RPC public.lpz_patient_demo_cube
   // (/api/indicators/patient-demo), group by стать × вікова група.
   const [patientDemoGrain, setPatientDemoGrain] = useState<string>("");
   const [patientDemoLoading, setPatientDemoLoading] = useState(false);
+  const [patientDemoChartKind, setPatientDemoChartKind] = useState<ChartKind>("bar");
+  const [patientDemoChartField, setPatientDemoChartField] = useState("");
+  const [patientDemoChartFieldY, setPatientDemoChartFieldY] = useState("");
 
   const PATIENT_DEMO_FIELDS: CubeFieldDef[] = [
     { key: "cases", label: "ВИПАДКІВ" },
@@ -3969,14 +4343,8 @@ export default function AppBoundedCanvas() {
     { key: "death_rate_pct", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
-  const [patientDemoSelectedFields, setPatientDemoSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadPatientDemo = async () => {
-    const fields = PATIENT_DEMO_FIELDS.filter((f) => patientDemoSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setPatientDemoLoading(true);
     try {
       const params = new URLSearchParams();
@@ -3998,7 +4366,7 @@ export default function AppBoundedCanvas() {
           .filter(Boolean)
           .join(" · "),
       }));
-      addCubeRowsToCanvas(rows, fields, "row_label", "Демографія пацієнтів", Boolean(patientDemoGrain));
+      addCubeRowsToCanvas(rows, PATIENT_DEMO_FIELDS, "row_label", "Демографія пацієнтів");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -4006,24 +4374,52 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  const handleAddPatientDemoChart = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (patientDemoGrain) params.set("grain", patientDemoGrain);
+      if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
+      const res = await fetch(`/api/indicators/patient-demo?${params}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = (data.rows || []).map((r: Record<string, unknown>) => ({
+        ...r,
+        row_label: [
+          r.gender === "Ж" ? "Жінки" : "Чоловіки",
+          r.age_group,
+          r.period_label && r.period_label !== "Весь час" ? r.period_label : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      }));
+      if (patientDemoChartKind === "scatter") {
+        addRowsAsChart(rows, patientDemoChartField, [patientDemoChartFieldY], "scatter", "Демографія пацієнтів");
+      } else {
+        addRowsAsChart(rows, "row_label", [patientDemoChartField], patientDemoChartKind, "Демографія пацієнтів");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
+    }
+  };
+
   // "🕐 Часові патерни" — RPC public.lpz_time_pattern_cube
   // (/api/indicators/time-patterns), group by година/день тижня/місяць.
   const [timePatternBucket, setTimePatternBucket] = useState<"hour" | "weekday" | "month">("weekday");
   const [timePatternLoading, setTimePatternLoading] = useState(false);
+  const [timePatternChartKind, setTimePatternChartKind] = useState<ChartKind>("bar");
+  const [timePatternChartField, setTimePatternChartField] = useState("");
+  const [timePatternChartFieldY, setTimePatternChartFieldY] = useState("");
 
   const TIME_PATTERN_FIELDS: CubeFieldDef[] = [
     { key: "admissions", label: "ГОСПІТАЛІЗАЦІЙ" },
     { key: "deaths", label: "СМЕРТЕЙ" },
     { key: "night_admissions", label: "НІЧНИХ" },
   ];
-  const [timePatternSelectedFields, setTimePatternSelectedFields] = useState<FieldSelection>({});
 
   const handleLoadTimePatterns = async () => {
-    const fields = TIME_PATTERN_FIELDS.filter((f) => timePatternSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
     setTimePatternLoading(true);
     try {
       const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
@@ -4032,11 +4428,30 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(data.rows || [], fields, "bucket_label", "Часові патерни");
+      addCubeRowsToCanvas(data.rows || [], TIME_PATTERN_FIELDS, "bucket_label", "Часові патерни");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
       setTimePatternLoading(false);
+    }
+  };
+
+  const handleAddTimePatternChart = async () => {
+    try {
+      const res = await fetch(`/api/indicators/time-patterns?bucket=${timePatternBucket}&org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Помилка: ${data.error || res.statusText}`);
+        return;
+      }
+      const rows = data.rows || [];
+      if (timePatternChartKind === "scatter") {
+        addRowsAsChart(rows, timePatternChartField, [timePatternChartFieldY], "scatter", "Часові патерни");
+      } else {
+        addRowsAsChart(rows, "bucket_label", [timePatternChartField], timePatternChartKind, "Часові патерни");
+      }
+    } catch {
+      alert("Не вдалося звернутись до сервера");
     }
   };
 
@@ -4061,52 +4476,6 @@ export default function AppBoundedCanvas() {
     { key: "letality_percent", label: "ЛЕТАЛЬНІСТЬ", suffix: "%" },
     { key: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
   ];
-  // Спільний вибір полів для нічних і вихідних чергувань — той самий
-  // SHIFT_FIELDS, немає сенсу тримати два незалежні набори чекбоксів (сам
-  // чекбокс-піпер показується ДО вибору періоду, тому підписи в ньому
-  // лишаються нейтральними — "ГОСПІТАЛІЗАЦІЇ", а не "нічних госпіталізацій").
-  const [shiftSelectedFields, setShiftSelectedFields] = useState<FieldSelection>({});
-
-  // Підписи плиток — окремі на кожен період, а не спільні SHIFT_FIELDS.label:
-  // без цього плитки "День" і "Ніч" (або "Вихідний"/"Робочий день") виглядали
-  // б однаково підписаними ("ГОСПІТАЛІЗАЦІЇ", "ЛЕТАЛЬНІСТЬ" для обох) і не
-  // розрізнялись би між собою, якщо стоять поруч на полотні.
-  const SHIFT_FIELD_LABELS: Record<string, Record<string, string>> = {
-    Ніч: {
-      cases: "НІЧНИХ ГОСПІТАЛІЗАЦІЙ",
-      unique_patients: "НІЧНИХ ПАЦІЄНТІВ",
-      urgent_cases: "НІЧНИХ ЕКСТРЕНИХ",
-      deaths: "НІЧНИХ СМЕРТЕЙ",
-      letality_percent: "НІЧНА ЛЕТАЛЬНІСТЬ",
-      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (НІЧ)",
-    },
-    День: {
-      cases: "ДЕННИХ ГОСПІТАЛІЗАЦІЙ",
-      unique_patients: "ДЕННИХ ПАЦІЄНТІВ",
-      urgent_cases: "ДЕННИХ ЕКСТРЕНИХ",
-      deaths: "ДЕННИХ СМЕРТЕЙ",
-      letality_percent: "ДЕННА ЛЕТАЛЬНІСТЬ",
-      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (ДЕНЬ)",
-    },
-    Вихідний: {
-      cases: "ГОСПІТАЛІЗАЦІЙ У ВИХІДНІ",
-      unique_patients: "ПАЦІЄНТІВ У ВИХІДНІ",
-      urgent_cases: "ЕКСТРЕНИХ У ВИХІДНІ",
-      deaths: "СМЕРТЕЙ У ВИХІДНІ",
-      letality_percent: "ЛЕТАЛЬНІСТЬ У ВИХІДНІ",
-      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (ВИХІДНІ)",
-    },
-    "Робочий день": {
-      cases: "ГОСПІТАЛІЗАЦІЙ У БУДНІ",
-      unique_patients: "ПАЦІЄНТІВ У БУДНІ",
-      urgent_cases: "ЕКСТРЕНИХ У БУДНІ",
-      deaths: "СМЕРТЕЙ У БУДНІ",
-      letality_percent: "ЛЕТАЛЬНІСТЬ У БУДНІ",
-      avg_bed_days: "СЕР. ЛІЖКО-ДНІВ (БУДНІ)",
-    },
-  };
-  const shiftFieldsForPeriod = (period: string): CubeFieldDef[] =>
-    SHIFT_FIELDS.map((f) => ({ ...f, label: SHIFT_FIELD_LABELS[period]?.[f.key] ?? f.label }));
 
   const [nightShiftRows, setNightShiftRows] = useState<(ShiftRow & { time_period: string })[] | null>(null);
   const [nightShiftLoading, setNightShiftLoading] = useState(false);
@@ -4131,12 +4500,7 @@ export default function AppBoundedCanvas() {
   };
 
   const handleAddNightShiftCard = (row: ShiftRow & { time_period: string }) => {
-    const fields = shiftFieldsForPeriod(row.time_period).filter((f) => shiftSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
-    addCubeRowsToCanvas([row], fields, "time_period", `Нічні чергування — ${row.time_period}`);
+    addCubeRowsToCanvas([row], SHIFT_FIELDS, "time_period", `Нічні чергування — ${row.time_period}`);
   };
 
   const [weekendShiftRows, setWeekendShiftRows] = useState<(ShiftRow & { day_type: string })[] | null>(null);
@@ -4162,12 +4526,7 @@ export default function AppBoundedCanvas() {
   };
 
   const handleAddWeekendShiftCard = (row: ShiftRow & { day_type: string }) => {
-    const fields = shiftFieldsForPeriod(row.day_type).filter((f) => shiftSelectedFields[f.key]);
-    if (fields.length === 0) {
-      alert("Оберіть хоча б один показник");
-      return;
-    }
-    addCubeRowsToCanvas([row], fields, "day_type", `Вихідні чергування — ${row.day_type}`);
+    addCubeRowsToCanvas([row], SHIFT_FIELDS, "day_type", `Вихідні чергування — ${row.day_type}`);
   };
 
   // "Показник (за списком)" — форма-конструктор картки КПІ на основі
@@ -4944,6 +5303,17 @@ export default function AppBoundedCanvas() {
           {el.type === "block" && el.content && (
             <div className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden w-full h-full">
               {el.content}
+            </div>
+          )}
+
+          {el.type === "chart" && (
+            <div className="w-full h-full p-1">
+              {el.content && (
+                <div className="text-[10px] font-semibold text-slate-600 truncate px-1 pointer-events-none">{el.content}</div>
+              )}
+              <div style={{ width: "100%", height: el.content ? "calc(100% - 16px)" : "100%" }}>
+                <ChartBody el={el} />
+              </div>
             </div>
           )}
 
@@ -6904,7 +7274,7 @@ export default function AppBoundedCanvas() {
                     selectedComplexObjectId === "hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
                   }`}
                 >
-                  Обери рівень, період і потрібні показники (з 16 доступних) — живі плитки (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
+                  Обери рівень і період — 16 живих показників плитками (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
                 </div>
               </button>
               <button
@@ -7478,16 +7848,61 @@ export default function AppBoundedCanvas() {
                   </select>
                 </div>
                 <div className="text-[10px] text-slate-400">
-                  Один рядок (лікарня/весь час) → плитка на кожен обраний нижче показник. З обраним періодом і кількома рядками → ті самі плитки + пігулки-періоди над ними (клік перемикає миттєво). Кілька рядків без періоду (розбивка по відділенню) → список.
+                  Один рядок (лікарня/весь час) → 16 плиток. Кілька рядків (декілька відділень чи розбивка по періоду) → список.
                 </div>
-                {renderCubeFieldPicker(HIERARCHY_FIELDS, hierarchySelectedFields, setHierarchySelectedFields)}
                 <button
                   onClick={handleLoadHierarchy}
-                  disabled={hierarchyLoading || Object.values(hierarchySelectedFields).every((v) => !v)}
+                  disabled={hierarchyLoading}
                   className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {hierarchyLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                <div className="pt-2 border-t border-cyan-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-cyan-900">🔗 Показник → картка</div>
+                  <div className="text-[10px] text-slate-400">
+                    Виділи на полотні порожню «📊 Картку КПІ» (число чи підпис), обери показник і прив&apos;яжи — рівень/напрямок/відділення вище фіксуються одразу, період підключиш окремо через «🔗 Зв&apos;язки».
+                  </div>
+                  <select
+                    value={hierarchyBindField}
+                    onChange={(e) => setHierarchyBindField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Оберіть показник…</option>
+                    {HIERARCHY_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const field = HIERARCHY_FIELDS.find((f) => f.key === hierarchyBindField);
+                      if (!field) return;
+                      handleBindLiveIndicator("hierarchy", field, {
+                        level: hierarchyLevel,
+                        direction: hierarchyDirection.trim(),
+                        department: hierarchyDepartment.trim(),
+                      });
+                    }}
+                    disabled={!hierarchyBindField}
+                    className="w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300"
+                  >
+                    🔗 Прив&apos;язати до вибраної картки
+                  </button>
+                </div>
+
+                {renderChartAdderSection(
+                  "cyan",
+                  HIERARCHY_FIELDS,
+                  hierarchyChartKind,
+                  setHierarchyChartKind,
+                  hierarchyChartField,
+                  setHierarchyChartField,
+                  hierarchyChartFieldY,
+                  setHierarchyChartFieldY,
+                  handleAddHierarchyChart
+                )}
               </div>
             )}
 
@@ -7522,16 +7937,27 @@ export default function AppBoundedCanvas() {
                   </select>
                 </div>
                 <div className="text-[10px] text-slate-400">
-                  Без фільтрів — усі лікарі одразу (список). З фільтром на одного лікаря й обраним періодом — плитки + пігулки-періоди (клік перемикає миттєво) замість списку.
+                  Без фільтрів — усі лікарі одразу (список). Без деталізації по періоду — можна багато рядків.
                 </div>
-                {renderCubeFieldPicker(DOCTOR_HIER_FIELDS, doctorHierSelectedFields, setDoctorHierSelectedFields)}
                 <button
                   onClick={handleLoadDoctorHierarchy}
-                  disabled={doctorHierLoading || Object.values(doctorHierSelectedFields).every((v) => !v)}
+                  disabled={doctorHierLoading}
                   className="w-full bg-cyan-700 hover:bg-cyan-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {doctorHierLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                {renderChartAdderSection(
+                  "cyan",
+                  DOCTOR_HIER_FIELDS,
+                  doctorHierChartKind,
+                  setDoctorHierChartKind,
+                  doctorHierChartField,
+                  setDoctorHierChartField,
+                  doctorHierChartFieldY,
+                  setDoctorHierChartFieldY,
+                  handleAddDoctorHierarchyChart
+                )}
               </div>
             )}
 
@@ -7559,18 +7985,62 @@ export default function AppBoundedCanvas() {
                     <option value="">Весь час</option>
                     <option value="year">По роках</option>
                     <option value="month">По місяцях</option>
-                    <option value="week">По тижнях</option>
-                    <option value="day">По днях</option>
                   </select>
                 </div>
-                {renderCubeFieldPicker(READMIT_FIELDS, readmitSelectedFields, setReadmitSelectedFields)}
                 <button
                   onClick={handleLoadReadmissions}
-                  disabled={readmitLoading || Object.values(readmitSelectedFields).every((v) => !v)}
+                  disabled={readmitLoading}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {readmitLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                <div className="pt-2 border-t border-orange-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-orange-900">🔗 Показник → картка</div>
+                  {readmitLevel !== "hospital" ? (
+                    <div className="text-[10px] text-amber-700">
+                      Прив&apos;язка поки доступна лише для рівня «Лікарня» — на «Напрямок»/«Відділення» тут немає поля під конкретну назву, тож рядків для одного періоду вийде декілька.
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        value={readmitBindField}
+                        onChange={(e) => setReadmitBindField(e.target.value)}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white"
+                      >
+                        <option value="">Оберіть показник…</option>
+                        {READMIT_FIELDS.map((f) => (
+                          <option key={f.key} value={f.key}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          const field = READMIT_FIELDS.find((f) => f.key === readmitBindField);
+                          if (!field) return;
+                          handleBindLiveIndicator("readmissions", field, { level: "hospital" });
+                        }}
+                        disabled={!readmitBindField}
+                        className="w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300"
+                      >
+                        🔗 Прив&apos;язати до вибраної картки
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {renderChartAdderSection(
+                  "orange",
+                  READMIT_FIELDS,
+                  readmitChartKind,
+                  setReadmitChartKind,
+                  readmitChartField,
+                  setReadmitChartField,
+                  readmitChartFieldY,
+                  setReadmitChartFieldY,
+                  handleAddReadmissionsChart
+                )}
               </div>
             )}
 
@@ -7583,14 +8053,58 @@ export default function AppBoundedCanvas() {
                   placeholder="Код МКХ-10 (напр. I63) — або пусто для топ-30"
                   className="w-full p-1.5 border rounded-md text-xs"
                 />
-                {renderCubeFieldPicker(DIAGNOSIS_FIELDS, diagnosisSelectedFields, setDiagnosisSelectedFields)}
                 <button
                   onClick={handleLoadDiagnoses}
-                  disabled={diagnosisLoading || Object.values(diagnosisSelectedFields).every((v) => !v)}
+                  disabled={diagnosisLoading}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {diagnosisLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                <div className="pt-2 border-t border-orange-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-orange-900">🔗 Показник → картка</div>
+                  {!diagnosisIcd.trim() ? (
+                    <div className="text-[10px] text-amber-700">Вкажи точний код МКХ-10 вище — без нього на один період вийде декілька діагнозів одразу.</div>
+                  ) : (
+                    <>
+                      <select
+                        value={diagnosisBindField}
+                        onChange={(e) => setDiagnosisBindField(e.target.value)}
+                        className="w-full p-1.5 border rounded-md text-xs bg-white"
+                      >
+                        <option value="">Оберіть показник…</option>
+                        {DIAGNOSIS_FIELDS.map((f) => (
+                          <option key={f.key} value={f.key}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          const field = DIAGNOSIS_FIELDS.find((f) => f.key === diagnosisBindField);
+                          if (!field) return;
+                          handleBindLiveIndicator("diagnoses", field, { icd: diagnosisIcd.trim() });
+                        }}
+                        disabled={!diagnosisBindField}
+                        className="w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300"
+                      >
+                        🔗 Прив&apos;язати до вибраної картки
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {renderChartAdderSection(
+                  "orange",
+                  DIAGNOSIS_FIELDS,
+                  diagnosisChartKind,
+                  setDiagnosisChartKind,
+                  diagnosisChartField,
+                  setDiagnosisChartField,
+                  diagnosisChartFieldY,
+                  setDiagnosisChartFieldY,
+                  handleAddDiagnosisChart
+                )}
               </div>
             )}
 
@@ -7605,19 +8119,27 @@ export default function AppBoundedCanvas() {
                   >
                     <option value="">Весь час</option>
                     <option value="year">По роках</option>
-                    <option value="month">По місяцях</option>
-                    <option value="week">По тижнях</option>
-                    <option value="day">По днях</option>
                   </select>
                 </div>
-                {renderCubeFieldPicker(PATIENT_DEMO_FIELDS, patientDemoSelectedFields, setPatientDemoSelectedFields)}
                 <button
                   onClick={handleLoadPatientDemo}
-                  disabled={patientDemoLoading || Object.values(patientDemoSelectedFields).every((v) => !v)}
+                  disabled={patientDemoLoading}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {patientDemoLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                {renderChartAdderSection(
+                  "orange",
+                  PATIENT_DEMO_FIELDS,
+                  patientDemoChartKind,
+                  setPatientDemoChartKind,
+                  patientDemoChartField,
+                  setPatientDemoChartField,
+                  patientDemoChartFieldY,
+                  setPatientDemoChartFieldY,
+                  handleAddPatientDemoChart
+                )}
               </div>
             )}
 
@@ -7635,23 +8157,33 @@ export default function AppBoundedCanvas() {
                     <option value="month">Місяцю</option>
                   </select>
                 </div>
-                {renderCubeFieldPicker(TIME_PATTERN_FIELDS, timePatternSelectedFields, setTimePatternSelectedFields)}
                 <button
                   onClick={handleLoadTimePatterns}
-                  disabled={timePatternLoading || Object.values(timePatternSelectedFields).every((v) => !v)}
+                  disabled={timePatternLoading}
                   className="w-full bg-orange-700 hover:bg-orange-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                 >
                   {timePatternLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
+
+                {renderChartAdderSection(
+                  "orange",
+                  TIME_PATTERN_FIELDS,
+                  timePatternChartKind,
+                  setTimePatternChartKind,
+                  timePatternChartField,
+                  setTimePatternChartField,
+                  timePatternChartFieldY,
+                  setTimePatternChartFieldY,
+                  handleAddTimePatternChart
+                )}
               </div>
             )}
 
             {selectedComplexObjectId === "night-shift" && (
               <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
                 <div className="text-[10px] text-slate-500">
-                  Обери показники нижче, а тоді День чи Ніч — додасть плитку в стилі &quot;Картки КПІ&quot; на кожен обраний показник з живими даними саме для цього періоду доби.
+                  Обери День чи Ніч — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього періоду доби.
                 </div>
-                {renderCubeFieldPicker(SHIFT_FIELDS, shiftSelectedFields, setShiftSelectedFields)}
                 {nightShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
                 {nightShiftError && <div className="text-xs text-red-500 text-center py-1">{nightShiftError}</div>}
                 {!nightShiftLoading && nightShiftRows && nightShiftRows.length > 0 && (
@@ -7676,9 +8208,8 @@ export default function AppBoundedCanvas() {
             {selectedComplexObjectId === "weekend-shift" && (
               <div className="p-3 bg-slate-100 border border-slate-300 rounded-lg space-y-2.5">
                 <div className="text-[10px] text-slate-500">
-                  Обери показники нижче, а тоді Вихідний чи Робочий день — додасть плитку в стилі &quot;Картки КПІ&quot; на кожен обраний показник з живими даними саме для цього типу дня.
+                  Обери Вихідний чи Робочий день — додасть 6 плиток у стилі &quot;Картки КПІ&quot; з живими даними саме для цього типу дня.
                 </div>
-                {renderCubeFieldPicker(SHIFT_FIELDS, shiftSelectedFields, setShiftSelectedFields)}
                 {weekendShiftLoading && <div className="text-xs text-slate-400 text-center py-1">Завантаження…</div>}
                 {weekendShiftError && <div className="text-xs text-red-500 text-center py-1">{weekendShiftError}</div>}
                 {!weekendShiftLoading && weekendShiftRows && weekendShiftRows.length > 0 && (
