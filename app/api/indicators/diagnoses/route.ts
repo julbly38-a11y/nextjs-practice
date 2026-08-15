@@ -10,12 +10,14 @@ export async function GET(request: Request) {
   const icd = searchParams.get("icd");
   const limit = Number(searchParams.get("limit")) || 20;
   const org = searchParams.get("org");
+  const shift = searchParams.get("shift");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_diagnosis_cube", {
     p_time_grain: grain || null,
     p_icd: icd || null,
     p_limit: limit,
     p_org_edrpou: org || null,
+    p_shift: shift || null,
   });
 
   if (error) {

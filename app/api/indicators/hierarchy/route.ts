@@ -11,6 +11,7 @@ export async function GET(request: Request) {
   const direction = searchParams.get("direction");
   const department = searchParams.get("department");
   const org = searchParams.get("org");
+  const shift = searchParams.get("shift");
 
   const { data, error } = await getSupabaseAdmin().rpc("lpz_indicator_cube", {
     p_level: level,
@@ -18,6 +19,7 @@ export async function GET(request: Request) {
     p_direction: direction || null,
     p_department: department || null,
     p_org_edrpou: org || null,
+    p_shift: shift || null,
   });
 
   if (error) {

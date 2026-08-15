@@ -4060,6 +4060,7 @@ export default function AppBoundedCanvas() {
   const [hierarchyGrain, setHierarchyGrain] = useState<string>("");
   const [hierarchyDirection, setHierarchyDirection] = useState("");
   const [hierarchyDepartment, setHierarchyDepartment] = useState("");
+  const [hierarchyShift, setHierarchyShift] = useState<string>("");
   const [hierarchyLoading, setHierarchyLoading] = useState(false);
   const [hierarchyBindField, setHierarchyBindField] = useState("");
   const [hierarchyChartKind, setHierarchyChartKind] = useState<ChartKind>("bar");
@@ -4092,6 +4093,7 @@ export default function AppBoundedCanvas() {
       if (hierarchyGrain) params.set("grain", hierarchyGrain);
       if (hierarchyDirection.trim()) params.set("direction", hierarchyDirection.trim());
       if (hierarchyDepartment.trim()) params.set("department", hierarchyDepartment.trim());
+      if (hierarchyShift) params.set("shift", hierarchyShift);
       if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/hierarchy?${params}`);
       const data = await res.json();
@@ -4113,6 +4115,7 @@ export default function AppBoundedCanvas() {
       if (hierarchyGrain) params.set("grain", hierarchyGrain);
       if (hierarchyDirection.trim()) params.set("direction", hierarchyDirection.trim());
       if (hierarchyDepartment.trim()) params.set("department", hierarchyDepartment.trim());
+      if (hierarchyShift) params.set("shift", hierarchyShift);
       if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/hierarchy?${params}`);
       const data = await res.json();
@@ -4269,6 +4272,7 @@ export default function AppBoundedCanvas() {
   // "🩻 Показники по діагнозу" — RPC public.lpz_diagnosis_cube
   // (/api/indicators/diagnoses). Пошук за початком коду МКХ (ilike 'код%').
   const [diagnosisIcd, setDiagnosisIcd] = useState("");
+  const [diagnosisShift, setDiagnosisShift] = useState<string>("");
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
   const [diagnosisBindField, setDiagnosisBindField] = useState("");
   const [diagnosisChartKind, setDiagnosisChartKind] = useState<ChartKind>("bar");
@@ -4291,6 +4295,7 @@ export default function AppBoundedCanvas() {
     try {
       const params = new URLSearchParams({ limit: "30" });
       if (diagnosisIcd.trim()) params.set("icd", diagnosisIcd.trim());
+      if (diagnosisShift) params.set("shift", diagnosisShift);
       if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/diagnoses?${params}`);
       const data = await res.json();
@@ -4310,6 +4315,7 @@ export default function AppBoundedCanvas() {
     try {
       const params = new URLSearchParams({ limit: "30" });
       if (diagnosisIcd.trim()) params.set("icd", diagnosisIcd.trim());
+      if (diagnosisShift) params.set("shift", diagnosisShift);
       if (selectedHospital?.edrpou) params.set("org", selectedHospital.edrpou);
       const res = await fetch(`/api/indicators/diagnoses?${params}`);
       const data = await res.json();
@@ -7847,6 +7853,18 @@ export default function AppBoundedCanvas() {
                     <option value="day">По днях</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-[10px] text-cyan-900 mb-1">Зміна доби:</label>
+                  <select
+                    value={hierarchyShift}
+                    onChange={(e) => setHierarchyShift(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Уся доба</option>
+                    <option value="ніч">Лише нічні (22:00–07:00)</option>
+                    <option value="день">Лише денні (07:00–22:00)</option>
+                  </select>
+                </div>
                 <div className="text-[10px] text-slate-400">
                   Один рядок (лікарня/весь час) → 16 плиток. Кілька рядків (декілька відділень чи розбивка по періоду) → список.
                 </div>
@@ -7883,6 +7901,7 @@ export default function AppBoundedCanvas() {
                         level: hierarchyLevel,
                         direction: hierarchyDirection.trim(),
                         department: hierarchyDepartment.trim(),
+                        shift: hierarchyShift,
                       });
                     }}
                     disabled={!hierarchyBindField}
@@ -8053,6 +8072,18 @@ export default function AppBoundedCanvas() {
                   placeholder="Код МКХ-10 (напр. I63) — або пусто для топ-30"
                   className="w-full p-1.5 border rounded-md text-xs"
                 />
+                <div>
+                  <label className="block text-[10px] text-orange-900 mb-1">Зміна доби:</label>
+                  <select
+                    value={diagnosisShift}
+                    onChange={(e) => setDiagnosisShift(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Уся доба</option>
+                    <option value="ніч">Лише нічні (22:00–07:00)</option>
+                    <option value="день">Лише денні (07:00–22:00)</option>
+                  </select>
+                </div>
                 <button
                   onClick={handleLoadDiagnoses}
                   disabled={diagnosisLoading}
@@ -8083,7 +8114,7 @@ export default function AppBoundedCanvas() {
                         onClick={() => {
                           const field = DIAGNOSIS_FIELDS.find((f) => f.key === diagnosisBindField);
                           if (!field) return;
-                          handleBindLiveIndicator("diagnoses", field, { icd: diagnosisIcd.trim() });
+                          handleBindLiveIndicator("diagnoses", field, { icd: diagnosisIcd.trim(), shift: diagnosisShift });
                         }}
                         disabled={!diagnosisBindField}
                         className="w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300"
