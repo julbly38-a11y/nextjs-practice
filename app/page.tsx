@@ -79,11 +79,23 @@ const CHART_ADDER_STYLES = {
 // розумний розмір вікна ігнорується — позиція повертається як є, без
 // зіпсованого клампу, а автозбереження (нижче) не встигає затерти добре
 // значення в localStorage браузерним "0×0".
-function clampPanelPos(pos: { x: number; y: number }): { x: number; y: number } {
+//
+// `size` (ширина/висота ПАНЕЛІ, не лише хендла) — коли відомий, притискаємо
+// так, щоб уся панель лишалась у вікні, а не лише її лівий хендл: без цього
+// широку панель, збережену на великому моніторі (напр. x=1024 при ширині
+// 340px), на вужчому вікні клампало б лише по x<maxX з дефолтним запасом
+// 60px — сам хендл лишався б клікабельним, а от права частина заголовка
+// (повзунок прозорості, кнопка згортання ▶/▼) вилітала б за межі вікна,
+// фізично недосяжна для кліку. Якщо розмір ще невідомий (викликається до
+// того, як mis_canvas_panel_size прочитано) — лишається старий запас 60/40.
+function clampPanelPos(
+  pos: { x: number; y: number },
+  size?: { width: number; height: number }
+): { x: number; y: number } {
   if (typeof window === "undefined") return pos;
   if (window.innerWidth < 100 || window.innerHeight < 100) return pos;
-  const maxX = Math.max(window.innerWidth - 60, 0);
-  const maxY = Math.max(window.innerHeight - 40, 0);
+  const maxX = Math.max(window.innerWidth - (size?.width ?? 60), 0);
+  const maxY = Math.max(window.innerHeight - (size?.height ?? 40), 0);
   return {
     x: Math.min(Math.max(pos.x, 0), maxX),
     y: Math.min(Math.max(pos.y, 0), maxY),
@@ -2437,11 +2449,15 @@ export default function AppBoundedCanvas() {
     const savedPanelSize = localStorage.getItem("mis_canvas_panel_size");
     const savedPanelOpacity = localStorage.getItem("mis_canvas_panel_opacity");
     const savedToolsPanelCollapsed = localStorage.getItem("mis_canvas_tools_panel_collapsed");
-    if (savedPanelPos) {
-      try { setPanelPos(clampPanelPos(JSON.parse(savedPanelPos))); } catch (e) {}
-    }
+    let parsedPanelSize: { width: number; height: number } | undefined;
     if (savedPanelSize) {
-      try { setPanelSize(JSON.parse(savedPanelSize)); } catch (e) {}
+      try {
+        parsedPanelSize = JSON.parse(savedPanelSize);
+        setPanelSize(parsedPanelSize!);
+      } catch (e) {}
+    }
+    if (savedPanelPos) {
+      try { setPanelPos(clampPanelPos(JSON.parse(savedPanelPos), parsedPanelSize)); } catch (e) {}
     }
     if (savedPanelOpacity) {
       try { setPanelOpacity(JSON.parse(savedPanelOpacity)); } catch (e) {}
@@ -2459,11 +2475,15 @@ export default function AppBoundedCanvas() {
     const savedRefsPanelSize = localStorage.getItem("mis_canvas_refs_panel_size");
     const savedRefsPanelOpacity = localStorage.getItem("mis_canvas_refs_panel_opacity");
     const savedRefsPanelCollapsed = localStorage.getItem("mis_canvas_refs_panel_collapsed");
-    if (savedRefsPanelPos) {
-      try { setRefsPanelPos(clampPanelPos(JSON.parse(savedRefsPanelPos))); } catch (e) {}
-    }
+    let parsedRefsPanelSize: { width: number; height: number } | undefined;
     if (savedRefsPanelSize) {
-      try { setRefsPanelSize(JSON.parse(savedRefsPanelSize)); } catch (e) {}
+      try {
+        parsedRefsPanelSize = JSON.parse(savedRefsPanelSize);
+        setRefsPanelSize(parsedRefsPanelSize!);
+      } catch (e) {}
+    }
+    if (savedRefsPanelPos) {
+      try { setRefsPanelPos(clampPanelPos(JSON.parse(savedRefsPanelPos), parsedRefsPanelSize)); } catch (e) {}
     }
     if (savedRefsPanelOpacity) {
       try { setRefsPanelOpacity(JSON.parse(savedRefsPanelOpacity)); } catch (e) {}
@@ -2562,12 +2582,12 @@ export default function AppBoundedCanvas() {
   // обидві панелі назад одразу, без релоаду.
   useEffect(() => {
     const handleWindowResize = () => {
-      setPanelPos((prev) => clampPanelPos(prev));
-      setRefsPanelPos((prev) => clampPanelPos(prev));
+      setPanelPos((prev) => clampPanelPos(prev, panelSize));
+      setRefsPanelPos((prev) => clampPanelPos(prev, refsPanelSize));
     };
     window.addEventListener("resize", handleWindowResize);
     return () => window.removeEventListener("resize", handleWindowResize);
-  }, []);
+  }, [panelSize, refsPanelSize]);
 
   const handleUndo = () => {
     if (historyIndex > 0) {
@@ -3130,11 +3150,11 @@ export default function AppBoundedCanvas() {
           saveToHistory(parsed.pages, parsed.elements, importedConnections);
           setCurrentPageId(parsed.pages[0]?.id || "home");
           setSelectedIds([]);
-          if (parsed.panelPos) setPanelPos(clampPanelPos(parsed.panelPos));
+          if (parsed.panelPos) setPanelPos(clampPanelPos(parsed.panelPos, parsed.panelSize));
           if (parsed.panelSize) setPanelSize(parsed.panelSize);
           if (typeof parsed.panelOpacity === "number") setPanelOpacity(parsed.panelOpacity);
           if (typeof parsed.toolsPanelCollapsed === "boolean") setToolsPanelCollapsed(parsed.toolsPanelCollapsed);
-          if (parsed.refsPanelPos) setRefsPanelPos(clampPanelPos(parsed.refsPanelPos));
+          if (parsed.refsPanelPos) setRefsPanelPos(clampPanelPos(parsed.refsPanelPos, parsed.refsPanelSize));
           if (parsed.refsPanelSize) setRefsPanelSize(parsed.refsPanelSize);
           if (typeof parsed.refsPanelOpacity === "number") setRefsPanelOpacity(parsed.refsPanelOpacity);
           if (typeof parsed.refsPanelCollapsed === "boolean") setRefsPanelCollapsed(parsed.refsPanelCollapsed);
@@ -5644,7 +5664,11 @@ export default function AppBoundedCanvas() {
               <option value="">(Рівень 1)</option>
               {possibleParents.map((p) => (
                 <option key={p.id} value={p.id}>
-                  → {p.content}
+                  {/* Багато контейнерів (карток КПІ, обгорток лого тощо)
+                      навмисно мають порожній content — без фолбека всі такі
+                      пункти в цьому select виглядали б однаково як голе "→",
+                      і обрати правильний батька наосліп неможливо. */}
+                  → {p.content || `[${TYPE_LABELS[p.type]}] без назви`}
                 </option>
               ))}
             </select>
@@ -6271,7 +6295,7 @@ export default function AppBoundedCanvas() {
                           .filter((el) => el.id !== singleSelected.id && isVisibleOnPage(el, currentPageId))
                           .map((el) => (
                             <option key={el.id} value={el.id}>
-                              [{TYPE_LABELS[el.type]}] {el.content}
+                              [{TYPE_LABELS[el.type]}] {el.content || "без назви"}
                             </option>
                           ))}
                       </select>
@@ -6293,7 +6317,7 @@ export default function AppBoundedCanvas() {
                           .filter((el) => el.id !== singleSelected.id && isVisibleOnPage(el, currentPageId))
                           .map((el) => (
                             <option key={el.id} value={el.id}>
-                              [{TYPE_LABELS[el.type]}] {el.content}
+                              [{TYPE_LABELS[el.type]}] {el.content || "без назви"}
                             </option>
                           ))}
                       </select>
