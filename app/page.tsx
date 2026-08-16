@@ -47,7 +47,7 @@ type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | 
 // що й "Список"/"Картка КПІ" (rows), просто замість плиток/таблиці
 // малюється справжня діаграма.
 //
-// 5 базових (bar/line/area/pie/scatter) + 4 додаткові, усі сумісні з тією
+// 5 базових (bar/line/area/pie/scatter) + 6 додаткові, усі сумісні з тією
 // самою пласкою формою даних (rows: labelField + valueFields), без нової
 // структури: composed (стовпці+лінія разом), funnel (воронка — ті самі
 // рядки, просто відсортовані спаданням), treemap (розмір = valueFields[0],
@@ -55,8 +55,24 @@ type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | 
 // потоки джерело→ціль, лише групування за одним виміром, тож справжніх
 // вузлів/зв'язків для Sankey просто нема звідки взяти), radialBar (кругові
 // смуги на кожен рядок — наближення до "Лічильника", без істинної шкали
-// min/max/ціль, якої в цих даних теж нема).
-type ChartKind = "bar" | "line" | "area" | "pie" | "scatter" | "composed" | "funnel" | "treemap" | "radialBar";
+// min/max/ціль, якої в цих даних теж нема), waterfall (каскад — кумулятивна
+// сума valueFields[0] по рядках, приріст/спад пофарбовані окремо), bullet
+// (valueFields[0] — вимір горизонтальним стовпцем на світлому "треку",
+// valueFields[1] — опційна ціль вертикальною рискою; без якісних зон
+// поганий/норма/добре — для них потрібні порогові значення, яких у кубах
+// нема).
+type ChartKind =
+  | "bar"
+  | "line"
+  | "area"
+  | "pie"
+  | "scatter"
+  | "composed"
+  | "funnel"
+  | "treemap"
+  | "radialBar"
+  | "waterfall"
+  | "bullet";
 // Палітра — ті самі акцентні кольори, що вже вживані в панелях кубів
 // (cyan-700/orange-700 тощо), щоб графік не випадав зі стилю конструктора.
 const CHART_PALETTE = ["#0e7490", "#c2410c", "#7c3aed", "#059669", "#db2777", "#ca8a04", "#334155"];
@@ -522,6 +538,102 @@ function ChartBody({ el }: { el: CanvasElement }) {
           <Bar yAxisId="left" dataKey={barField} fill={CHART_PALETTE[0]} />
           {lineField && (
             <Line yAxisId="right" type="monotone" dataKey={lineField} stroke={CHART_PALETTE[1]} strokeWidth={2} dot={false} />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Каскад — кумулятивна сума valueFields[0] по рядках у порядку, в якому
+  // прийшли (для показників куба це вже осмислений порядок — рік/місяць
+  // тощо, на відміну від воронки вище не сортуємо). "base" — прозорий
+  // стовпець-підставка до попередньої суми, "delta" — видима частина
+  // (сам приріст/спад), зелений/червоний за знаком — стандартна пара
+  // кольорів waterfall-графіків, не з CHART_PALETTE (там немає протилежних
+  // за змістом кольорів "плюс"/"мінус").
+  if (el.chartKind === "waterfall") {
+    const field = valueFields[0];
+    let cumulative = 0;
+    const wfData = data.map((row) => {
+      const val = Number(row[field]) || 0;
+      const start = cumulative;
+      cumulative += val;
+      return {
+        name: String(row[labelField] ?? ""),
+        base: Math.min(start, cumulative),
+        delta: Math.abs(val),
+        positive: val >= 0,
+        end: cumulative,
+      };
+    });
+    // Recharts типізує <Tooltip content> проти власного generic
+    // TooltipContentProps (dataKey там union з number/функцією) — вужчий
+    // самописний тип не проходить контрваріантну перевірку параметра.
+    // Замість боротьби з чужими generic-ами — приймаємо props як unknown і
+    // самі кастимо до форми, яку реально повертає wfData нижче.
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={wfData} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip
+            content={(props: unknown) => {
+              const { active, label, payload } = props as {
+                active?: boolean;
+                label?: string | number;
+                payload?: { dataKey?: unknown; payload?: (typeof wfData)[number] }[];
+              };
+              const entry = payload?.find((p) => p.dataKey === "delta")?.payload;
+              if (!active || !entry) return null;
+              return (
+                <div className="bg-white border border-slate-200 rounded-md shadow-sm px-2 py-1.5 text-[11px]">
+                  <div className="font-bold">{label}</div>
+                  <div className={entry.positive ? "text-emerald-600" : "text-red-600"}>
+                    {entry.positive ? "+" : "−"}
+                    {entry.delta}
+                  </div>
+                  <div className="text-slate-400">Разом: {entry.end}</div>
+                </div>
+              );
+            }}
+          />
+          <Bar dataKey="base" stackId="wf" fill="transparent" />
+          <Bar dataKey="delta" stackId="wf">
+            {wfData.map((d, i) => (
+              <Cell key={i} fill={d.positive ? "#059669" : "#dc2626"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Bullet-шкала — valueFields[0] як горизонтальний стовпець на світлому
+  // "треку" (рідний background у Recharts <Bar>, без другого шару барів),
+  // valueFields[1] (опційно) як вертикальна риска-ціль поверх нього через
+  // <Scatter> з кастомною формою (звичайний Scatter малює точку, а не
+  // риску — тому власний shape). Якісних зон "погано/норма/добре" немає:
+  // для них потрібні порогові значення, яких жоден куб не повертає.
+  if (el.chartKind === "bullet") {
+    const measureField = valueFields[0];
+    const targetField = valueFields[1];
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} layout="vertical" margin={{ top: 8, right: 16, left: 8, bottom: 8 }}>
+          <XAxis type="number" tick={{ fontSize: 10 }} />
+          <YAxis type="category" dataKey={labelField} tick={{ fontSize: 10 }} width={90} />
+          <Tooltip />
+          <Bar dataKey={measureField} fill={CHART_PALETTE[0]} background={{ fill: "#e5e7eb" }} barSize={14} />
+          {targetField && (
+            <Scatter
+              dataKey={targetField}
+              shape={(props: { cx?: number; cy?: number }) => {
+                const cx = props.cx ?? 0;
+                const cy = props.cy ?? 0;
+                return <line x1={cx} y1={cy - 9} x2={cx} y2={cy + 9} stroke="#1a1a1a" strokeWidth={2} />;
+              }}
+            />
           )}
         </ComposedChart>
       </ResponsiveContainer>
@@ -4162,15 +4274,19 @@ export default function AppBoundedCanvas() {
           <option value="funnel">Воронка</option>
           <option value="treemap">Деревоподібна карта</option>
           <option value="radialBar">Кругова стовпчикова</option>
+          <option value="waterfall">Каскад</option>
+          <option value="bullet">Bullet-шкала</option>
         </select>
-        {kind === "scatter" || kind === "composed" ? (
+        {kind === "scatter" || kind === "composed" || kind === "bullet" ? (
           <>
             <select
               value={fieldKey}
               onChange={(e) => setFieldKey(e.target.value)}
               className="w-full p-1.5 border rounded-md text-xs bg-white"
             >
-              <option value="">{kind === "scatter" ? "X-показник…" : "Показник для стовпців…"}</option>
+              <option value="">
+                {kind === "scatter" ? "X-показник…" : kind === "composed" ? "Показник для стовпців…" : "Вимір…"}
+              </option>
               {fields.map((f) => (
                 <option key={f.key} value={f.key}>
                   {f.label}
@@ -4182,7 +4298,9 @@ export default function AppBoundedCanvas() {
               onChange={(e) => setFieldKeyY(e.target.value)}
               className="w-full p-1.5 border rounded-md text-xs bg-white"
             >
-              <option value="">{kind === "scatter" ? "Y-показник…" : "Показник для лінії…"}</option>
+              <option value="">
+                {kind === "scatter" ? "Y-показник…" : kind === "composed" ? "Показник для лінії…" : "Ціль (опційно)…"}
+              </option>
               {fields.map((f) => (
                 <option key={f.key} value={f.key}>
                   {f.label}
@@ -4206,7 +4324,7 @@ export default function AppBoundedCanvas() {
         )}
         <button
           onClick={onAdd}
-          disabled={kind === "scatter" || kind === "composed" ? !fieldKey || !fieldKeyY : !fieldKey}
+          disabled={!fieldKey || ((kind === "scatter" || kind === "composed") && !fieldKeyY)}
           className={s.button}
         >
           📈 Додати графік на полотно
@@ -4290,6 +4408,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, hierarchyChartField, [hierarchyChartFieldY], "scatter", "Показники (ієрархія)");
       } else if (hierarchyChartKind === "composed") {
         addRowsAsChart(rows, "row_label", [hierarchyChartField, hierarchyChartFieldY], "composed", "Показники (ієрархія)");
+      } else if (hierarchyChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "row_label",
+          hierarchyChartFieldY ? [hierarchyChartField, hierarchyChartFieldY] : [hierarchyChartField],
+          "bullet",
+          "Показники (ієрархія)"
+        );
       } else {
         addRowsAsChart(rows, "row_label", [hierarchyChartField], hierarchyChartKind, "Показники (ієрархія)");
       }
@@ -4367,6 +4493,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, doctorHierChartField, [doctorHierChartFieldY], "scatter", "Лікарі (обсяг)");
       } else if (doctorHierChartKind === "composed") {
         addRowsAsChart(rows, "row_label", [doctorHierChartField, doctorHierChartFieldY], "composed", "Лікарі (обсяг)");
+      } else if (doctorHierChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "row_label",
+          doctorHierChartFieldY ? [doctorHierChartField, doctorHierChartFieldY] : [doctorHierChartField],
+          "bullet",
+          "Лікарі (обсяг)"
+        );
       } else {
         addRowsAsChart(rows, "row_label", [doctorHierChartField], doctorHierChartKind, "Лікарі (обсяг)");
       }
@@ -4430,6 +4564,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, readmitChartField, [readmitChartFieldY], "scatter", "Повторні госпіталізації");
       } else if (readmitChartKind === "composed") {
         addRowsAsChart(rows, "row_label", [readmitChartField, readmitChartFieldY], "composed", "Повторні госпіталізації");
+      } else if (readmitChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "row_label",
+          readmitChartFieldY ? [readmitChartField, readmitChartFieldY] : [readmitChartField],
+          "bullet",
+          "Повторні госпіталізації"
+        );
       } else {
         addRowsAsChart(rows, "row_label", [readmitChartField], readmitChartKind, "Повторні госпіталізації");
       }
@@ -4497,6 +4639,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, diagnosisChartField, [diagnosisChartFieldY], "scatter", "Показники по діагнозу");
       } else if (diagnosisChartKind === "composed") {
         addRowsAsChart(rows, "icd_primary", [diagnosisChartField, diagnosisChartFieldY], "composed", "Показники по діагнозу");
+      } else if (diagnosisChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "icd_primary",
+          diagnosisChartFieldY ? [diagnosisChartField, diagnosisChartFieldY] : [diagnosisChartField],
+          "bullet",
+          "Показники по діагнозу"
+        );
       } else {
         addRowsAsChart(rows, "icd_primary", [diagnosisChartField], diagnosisChartKind, "Показники по діагнозу");
       }
@@ -4576,6 +4726,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, patientDemoChartField, [patientDemoChartFieldY], "scatter", "Демографія пацієнтів");
       } else if (patientDemoChartKind === "composed") {
         addRowsAsChart(rows, "row_label", [patientDemoChartField, patientDemoChartFieldY], "composed", "Демографія пацієнтів");
+      } else if (patientDemoChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "row_label",
+          patientDemoChartFieldY ? [patientDemoChartField, patientDemoChartFieldY] : [patientDemoChartField],
+          "bullet",
+          "Демографія пацієнтів"
+        );
       } else {
         addRowsAsChart(rows, "row_label", [patientDemoChartField], patientDemoChartKind, "Демографія пацієнтів");
       }
@@ -4628,6 +4786,14 @@ export default function AppBoundedCanvas() {
         addRowsAsChart(rows, timePatternChartField, [timePatternChartFieldY], "scatter", "Часові патерни");
       } else if (timePatternChartKind === "composed") {
         addRowsAsChart(rows, "bucket_label", [timePatternChartField, timePatternChartFieldY], "composed", "Часові патерни");
+      } else if (timePatternChartKind === "bullet") {
+        addRowsAsChart(
+          rows,
+          "bucket_label",
+          timePatternChartFieldY ? [timePatternChartField, timePatternChartFieldY] : [timePatternChartField],
+          "bullet",
+          "Часові патерни"
+        );
       } else {
         addRowsAsChart(rows, "bucket_label", [timePatternChartField], timePatternChartKind, "Часові патерни");
       }
