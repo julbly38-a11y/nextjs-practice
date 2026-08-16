@@ -637,6 +637,24 @@ const HOSPITAL_KPI_FIELDS: { field: NonNullable<CanvasElement["kpiField"]>; labe
   { field: "avg_bed_days", label: "СЕР. ЛІЖКО-ДНІВ" },
 ];
 
+// Палітра кнопок вкладки "🧩 Об'єкти" — рядки-константи (не інтерполяція),
+// щоб Tailwind JIT побачив повні назви класів у вихідному тексті файлу.
+// Ті самі відтінки, що були захардкоджені в кожній кнопці окремо (напр.
+// hospital-kpi мав emerald-600), лише винесені в один спільний список.
+const COMPLEX_LIST_COLORS = {
+  teal: { active: "bg-teal-600 border-teal-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-teal-50", descActive: "text-teal-100" },
+  rose600: { active: "bg-rose-600 border-rose-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-rose-50", descActive: "text-rose-100" },
+  rose700: { active: "bg-rose-700 border-rose-700 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-rose-50", descActive: "text-rose-100" },
+  sky: { active: "bg-sky-600 border-sky-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-sky-50", descActive: "text-sky-100" },
+  amber: { active: "bg-amber-600 border-amber-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-amber-50", descActive: "text-amber-100" },
+  indigo: { active: "bg-indigo-600 border-indigo-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-indigo-50", descActive: "text-indigo-100" },
+  emerald: { active: "bg-emerald-600 border-emerald-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-emerald-50", descActive: "text-emerald-100" },
+  fuchsia: { active: "bg-fuchsia-600 border-fuchsia-600 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-fuchsia-50", descActive: "text-fuchsia-100" },
+  cyan: { active: "bg-cyan-700 border-cyan-700 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-cyan-50", descActive: "text-cyan-100" },
+  orange: { active: "bg-orange-700 border-orange-700 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-orange-50", descActive: "text-orange-100" },
+  slate: { active: "bg-slate-700 border-slate-700 text-white", idle: "bg-white border-slate-200 text-slate-700 hover:bg-slate-50", descActive: "text-slate-200" },
+} as const;
+
 const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
   {
     id: "pill",
@@ -726,62 +744,6 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           bgOpacity: 0,
           padding: 0,
           isKpiLabelSlot: true,
-        },
-      },
-    ],
-  },
-  {
-    id: "yearBadge",
-    label: "🏷️ Бейдж року",
-    description:
-      "Наближення до .year-badge з hospital-analytics (public/shared/layout.css) — велике число року над назвою місяця, обидва по центру. Оригінал малює число градієнтом (accent-berry → sage) через background-clip:text — модель елементів цього не підтримує, тож узято суцільний accent-berry (#9c5468) як найближчий орієнтир.",
-    defaults: {
-      type: "block",
-      content: "",
-      width: 147,
-      height: 80,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    },
-    fields: [
-      { key: "width", label: "Ширина (px)", type: "number" },
-      { key: "height", label: "Висота (px)", type: "number" },
-    ],
-    children: [
-      {
-        content: "2026",
-        x: 0,
-        y: 0,
-        width: 147,
-        height: 54,
-        defaults: {
-          type: "text",
-          fontSize: 48,
-          fontWeight: "300",
-          textColor: "#9c5468",
-          textAlign: "center",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "СІЧЕНЬ",
-        x: 0,
-        y: 54,
-        width: 147,
-        height: 26,
-        defaults: {
-          type: "text",
-          fontSize: 15,
-          fontWeight: "300",
-          textColor: "#9c5468",
-          textAlign: "center",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
         },
       },
     ],
@@ -979,93 +941,6 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           padding: 0,
         },
       },
-    ],
-  },
-  {
-    id: "userProfile",
-    label: "👤 Профіль користувача",
-    description:
-      "1:1 з .me-bar/.me-surname/.me-firstname з hospital-analytics — прізвище (19px, ВЕЛИКИМИ) над ім'ям (11px, ВЕЛИКИМИ), обидва притиснуті вправо. У старому проекті заповнюється з /api/me (utils.js:applyMeProfile) — тут це текст-заглушка, готова для перев'язки на реальні дані.",
-    defaults: {
-      type: "block",
-      content: "",
-      width: 200,
-      height: 42,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    },
-    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
-    children: [
-      {
-        content: "ІВАНЕНКО",
-        x: 0,
-        y: 0,
-        width: 200,
-        height: 24,
-        defaults: {
-          type: "text",
-          fontSize: 19,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "ОЛЕНА ПЕТРІВНА",
-        x: 0,
-        y: 24,
-        width: 200,
-        height: 18,
-        defaults: {
-          type: "text",
-          fontSize: 11,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-    ],
-  },
-  {
-    id: "logoutButton",
-    label: "🚪 Кнопка-пігулка «Вийти»",
-    description:
-      "1:1 з .me-logout з hospital-analytics — кнопка без фону в спокої, з підсвіткою (заливка + світіння) при наведенні. За формою й поведінкою схожа на «Пігулку», але більший шрифт (20px) і без групової ексклюзивності — це звичайна кнопка дії, а не перемикач-фільтр.",
-    defaults: {
-      type: "button",
-      content: "Вийти",
-      width: 110,
-      height: 40,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      textColor: "#4a4a4a",
-      hoverBgColor: "#3a3a3a",
-      hoverTextColor: "#ffffff",
-      glowColor: "#3a3a3a",
-      glowBlur: 14,
-      borderRadius: 16,
-      fontSize: 20,
-      fontWeight: "300",
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-    },
-    fields: [
-      { key: "customBgColor", label: "Фон", type: "color" },
-      { key: "textColor", label: "Текст", type: "color" },
-      { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
-      { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
-      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
-      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
-      { key: "borderRadius", label: "Скруглення (px)", type: "number" },
-      { key: "width", label: "Ширина (px)", type: "number" },
-      { key: "height", label: "Висота (px)", type: "number" },
     ],
   },
   {
@@ -1565,6 +1440,22 @@ export default function AppBoundedCanvas() {
   // додати готовий елемент на полотно. Вкладка "🧩 Об'єкти" панелі "Інструменти".
   const [selectedComplexObjectId, setSelectedComplexObjectId] = useState<string | null>(null);
   const [complexObjectDraft, setComplexObjectDraft] = useState<Partial<CanvasElement>>({});
+
+  // Пошук/групування у вкладці "🧩 Об'єкти" — 25 пунктів (пресети + форми
+  // живих даних) одним списком важко проглянути, тому список ділиться на 3
+  // згортні групи (Дизайн-пресети / Живі дані: пошук / Живі дані: куби),
+  // кожну з яких можна згорнути (⌥ як ІЄРАРХІЯ в "Параметри"), і пошук
+  // фільтрує за назвою+описом одразу в усіх групах.
+  const [complexObjectSearch, setComplexObjectSearch] = useState("");
+  const [collapsedComplexGroups, setCollapsedComplexGroups] = useState<Set<string>>(new Set());
+  const toggleComplexGroup = (key: string) => {
+    setCollapsedComplexGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // Довідник обчислюваних полів ЛСМД (код + українська назва + SQL-формула),
   // щоб шукати код показника, коли картці (напр. КПІ) треба прив'язати
@@ -6203,6 +6094,16 @@ export default function AppBoundedCanvas() {
               {selectedElements.length > 0 && (
                 <div className="flex items-center gap-1.5">
                   <button
+                    onClick={() => {
+                      const name = window.prompt("Назва для бібліотеки:", singleSelected?.content?.trim() || "Об'єкт");
+                      if (name && name.trim()) handleSaveSelectionToLibrary(name);
+                    }}
+                    className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded text-[11px] hover:bg-emerald-100 font-medium"
+                    title="Зберегти виділене (з усім вкладеним) у бібліотеку — не переходячи на вкладку «📚 Бібліотека»"
+                  >
+                    💾 У бібліотеку
+                  </button>
+                  <button
                     onClick={handleDuplicateSelected}
                     className="bg-blue-50 text-blue-600 border border-blue-200 px-2 py-0.5 rounded text-[11px] hover:bg-blue-100 font-medium"
                     title="Дублювати (Ctrl+D)"
@@ -7237,298 +7138,228 @@ export default function AppBoundedCanvas() {
           )}
           {activePanelTab === "complex" && (
           <div className="flex-1 flex flex-col gap-3 overflow-y-auto p-4">
-            <div className="space-y-1.5">
-              {COMPLEX_OBJECTS.map((tpl) => (
-                <button
-                  key={tpl.id}
-                  onClick={() => {
+            <input
+              type="text"
+              value={complexObjectSearch}
+              onChange={(e) => setComplexObjectSearch(e.target.value)}
+              placeholder="🔍 Пошук об'єкта за назвою чи описом…"
+              className="w-full p-2 border rounded-lg text-xs shrink-0"
+            />
+
+            {(() => {
+              type ComplexListEntry = {
+                id: string;
+                label: string;
+                description: string;
+                color: keyof typeof COMPLEX_LIST_COLORS;
+                onSelect: () => void;
+              };
+
+              const search = complexObjectSearch.trim().toLowerCase();
+              const matchesSearch = (label: string, description: string) =>
+                search === "" || label.toLowerCase().includes(search) || description.toLowerCase().includes(search);
+
+              const designEntries: ComplexListEntry[] = COMPLEX_OBJECTS.map(
+                (tpl): ComplexListEntry => ({
+                  id: tpl.id,
+                  label: tpl.label,
+                  description: tpl.description,
+                  color: "teal",
+                  onSelect: () => {
                     setSelectedComplexObjectId(tpl.id);
                     setComplexObjectDraft({ ...tpl.defaults });
-                  }}
-                  className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                    selectedComplexObjectId === tpl.id
-                      ? "bg-teal-600 border-teal-600 text-white"
-                      : "bg-white border-slate-200 text-slate-700 hover:bg-teal-50"
-                  }`}
-                >
-                  <div className="font-bold">{tpl.label}</div>
-                  <div
-                    className={`text-[10px] mt-0.5 ${
-                      selectedComplexObjectId === tpl.id ? "text-teal-100" : "text-slate-500"
-                    }`}
-                  >
-                    {tpl.description}
+                  },
+                })
+              );
+
+              const searchEntries: ComplexListEntry[] = [
+                {
+                  id: "patient-search",
+                  label: "🏥 Пошук пацієнта",
+                  description: "Пошук за ПІБ/ІПН (service_role) — картка з усіма полями на полотні",
+                  color: "rose600",
+                  onSelect: () => setSelectedComplexObjectId("patient-search"),
+                },
+                {
+                  id: "doctor-search",
+                  label: "👨‍⚕️ Пошук лікаря",
+                  description: "Пошук за ПІБ (mv_doctor_full, service_role) — картка з профілем і статистикою випадків",
+                  color: "sky",
+                  onSelect: () => setSelectedComplexObjectId("doctor-search"),
+                },
+                {
+                  id: "dept-stats-search",
+                  label: "🏢 Пошук відділення (реальні дані)",
+                  description:
+                    "Пошук за назвою — картка з реальними випадками/летальністю/ліжко-днями, пораховано напряму з lpz.lpz_hospitalizations (v_department_stats порожній через баг)",
+                  color: "amber",
+                  onSelect: () => setSelectedComplexObjectId("dept-stats-search"),
+                },
+                {
+                  id: "hospital-org",
+                  label: "🏥 Лікарня (назва + емблема)",
+                  description: "Довідник lpz.lpz_organizations (edrpou) — обери лікарню, додасться назва й емблема окремими пов'язаними елементами",
+                  color: "indigo",
+                  onSelect: () => {
+                    setSelectedComplexObjectId("hospital-org");
+                    ensureOrgList();
+                  },
+                },
+                {
+                  id: "indicator-form",
+                  label: "🔢 Показник (за списком)",
+                  description:
+                    'Знайди показник з довідника ЛСМД (той самий, що й у "Показниках"), впиши значення — і додай готову плитку в стилі "Картки КПІ"',
+                  color: "fuchsia",
+                  onSelect: () => setSelectedComplexObjectId("indicator-form"),
+                },
+                {
+                  id: "staff-ordinatorska",
+                  label: "🩺 Ординаторська відділення",
+                  description:
+                    "Наближення до .docs-list сторінки завідувача (head-cabinet.css) — обери відділення, завантаж лікарів і/або пацієнтів, що зараз перебувають там; клік на рядку підсвітить і прокрутить до пов'язаного рядка в іншому списку (1:1 з census-row↔doc-item зі старого проекту)",
+                  color: "rose700",
+                  onSelect: () => {
+                    setSelectedComplexObjectId("staff-ordinatorska");
+                    ensureStaffDeptList();
+                  },
+                },
+              ];
+
+              const cubeEntries: ComplexListEntry[] = [
+                {
+                  id: "hospital-kpi",
+                  label: "📊 КПІ лікарні (реальні дані)",
+                  description:
+                    "Один клік ставить пігулки-роки й ряд з 5 плиток (випадки/пацієнти/летальність/сер. вік/сер. ліжко-дні) — рік обираєш пігулкою на полотні, дані живі з lpz.lpz_hospitalizations",
+                  color: "emerald",
+                  onSelect: () => setSelectedComplexObjectId("hospital-kpi"),
+                },
+                {
+                  id: "hierarchy-cube",
+                  label: "📊 Показники (лікарня/напрямок/відділення)",
+                  description: "Обери рівень і період — 16 живих показників плитками (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube",
+                  color: "cyan",
+                  onSelect: () => setSelectedComplexObjectId("hierarchy-cube"),
+                },
+                {
+                  id: "doctor-hierarchy-cube",
+                  label: "👨‍⚕️ Лікарі (обсяг, ієрархія)",
+                  description: "Випадки/пацієнти/сер. ліжко-дні по кожному лікарю, з фільтром напрямку/відділення й періодом. RPC lpz_doctor_indicator_cube",
+                  color: "cyan",
+                  onSelect: () => setSelectedComplexObjectId("doctor-hierarchy-cube"),
+                },
+                {
+                  id: "readmission-cube",
+                  label: "🔁 Повторні госпіталізації",
+                  description: "Повторні за 30/90 днів, % і той самий діагноз. RPC lpz_readmission_cube",
+                  color: "orange",
+                  onSelect: () => setSelectedComplexObjectId("readmission-cube"),
+                },
+                {
+                  id: "diagnosis-cube",
+                  label: "🩻 Показники по діагнозу",
+                  description: "Пошук за кодом МКХ-10 (icd_primary) — випадки/пацієнти/летальність/вік/стать по діагнозу. RPC lpz_diagnosis_cube",
+                  color: "orange",
+                  onSelect: () => setSelectedComplexObjectId("diagnosis-cube"),
+                },
+                {
+                  id: "patient-demo-cube",
+                  label: "🧑‍🤝‍🧑 Демографія пацієнтів",
+                  description: "Стать × вікова група — випадки/пацієнти/летальність/сер. ліжко-дні. RPC lpz_patient_demo_cube",
+                  color: "orange",
+                  onSelect: () => setSelectedComplexObjectId("patient-demo-cube"),
+                },
+                {
+                  id: "time-pattern-cube",
+                  label: "🕐 Часові патерни",
+                  description: "Госпіталізації/смерті/нічні по годині доби, дню тижня або місяцю. RPC lpz_time_pattern_cube",
+                  color: "orange",
+                  onSelect: () => setSelectedComplexObjectId("time-pattern-cube"),
+                },
+                {
+                  id: "night-shift",
+                  label: "🌙 Нічні чергування",
+                  description: "День / Ніч — госпіталізації/пацієнти/екстрені/смерті/летальність/сер. ліжко-дні. lpz_night_vs_day_admissions",
+                  color: "slate",
+                  onSelect: () => {
+                    setSelectedComplexObjectId("night-shift");
+                    ensureNightShiftRows();
+                  },
+                },
+                {
+                  id: "weekend-shift",
+                  label: "🗓️ Вихідні чергування",
+                  description: "Вихідний / Робочий день — ті самі показники. lpz_weekend_vs_weekday",
+                  color: "slate",
+                  onSelect: () => {
+                    setSelectedComplexObjectId("weekend-shift");
+                    ensureWeekendShiftRows();
+                  },
+                },
+              ];
+
+              const groups: { key: string; title: string; entries: ComplexListEntry[] }[] = [
+                { key: "design", title: "🎨 Дизайн-пресети", entries: designEntries },
+                { key: "search", title: "🔍 Живі дані: пошук", entries: searchEntries },
+                { key: "cubes", title: "📊 Живі дані: куби показників", entries: cubeEntries },
+              ];
+
+              const rendered = groups.map((group) => {
+                const filtered = group.entries.filter((e) => matchesSearch(e.label, e.description));
+                if (filtered.length === 0) return null;
+                // Пошук ігнорує згорнутість — інакше знайдений об'єкт міг би
+                // лишитись прихованим у групі, яку користувач згорнув раніше.
+                const isCollapsed = search === "" && collapsedComplexGroups.has(group.key);
+                return (
+                  <div key={group.key}>
+                    <button
+                      type="button"
+                      onClick={() => toggleComplexGroup(group.key)}
+                      className="w-full flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wide px-0.5 py-1"
+                    >
+                      <span>{group.title} ({filtered.length})</span>
+                      <span>{isCollapsed ? "▶" : "▼"}</span>
+                    </button>
+                    {!isCollapsed && (
+                      <div className="space-y-1.5 mt-1">
+                        {filtered.map((entry) => {
+                          const colors = COMPLEX_LIST_COLORS[entry.color];
+                          const isActive = selectedComplexObjectId === entry.id;
+                          return (
+                            <button
+                              key={entry.id}
+                              onClick={entry.onSelect}
+                              className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
+                                isActive ? colors.active : colors.idle
+                              }`}
+                            >
+                              <div className="font-bold">{entry.label}</div>
+                              <div className={`text-[10px] mt-0.5 ${isActive ? colors.descActive : "text-slate-500"}`}>
+                                {entry.description}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                </button>
-              ))}
-              <button
-                onClick={() => setSelectedComplexObjectId("patient-search")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "patient-search"
-                    ? "bg-rose-600 border-rose-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-rose-50"
-                }`}
-              >
-                <div className="font-bold">🏥 Пошук пацієнта</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "patient-search" ? "text-rose-100" : "text-slate-500"
-                  }`}
-                >
-                  Пошук за ПІБ/ІПН (service_role) — картка з усіма полями на полотні
+                );
+              });
+
+              const hasAnyMatch = rendered.some((g) => g !== null);
+              return (
+                <div className="space-y-3">
+                  {hasAnyMatch ? (
+                    rendered
+                  ) : (
+                    <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                      Нічого не знайдено за запитом «{complexObjectSearch}».
+                    </div>
+                  )}
                 </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("doctor-search")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "doctor-search"
-                    ? "bg-sky-600 border-sky-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-sky-50"
-                }`}
-              >
-                <div className="font-bold">👨‍⚕️ Пошук лікаря</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "doctor-search" ? "text-sky-100" : "text-slate-500"
-                  }`}
-                >
-                  Пошук за ПІБ (mv_doctor_full, service_role) — картка з профілем і статистикою випадків
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("dept-stats-search")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "dept-stats-search"
-                    ? "bg-amber-600 border-amber-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-amber-50"
-                }`}
-              >
-                <div className="font-bold">🏢 Пошук відділення (реальні дані)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "dept-stats-search" ? "text-amber-100" : "text-slate-500"
-                  }`}
-                >
-                  Пошук за назвою — картка з реальними випадками/летальністю/ліжко-днями, пораховано напряму з lpz.lpz_hospitalizations (v_department_stats порожній через баг)
-                </div>
-              </button>
-              <button
-                onClick={() => {
-                  setSelectedComplexObjectId("hospital-org");
-                  ensureOrgList();
-                }}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "hospital-org"
-                    ? "bg-indigo-600 border-indigo-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-indigo-50"
-                }`}
-              >
-                <div className="font-bold">🏥 Лікарня (назва + емблема)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "hospital-org" ? "text-indigo-100" : "text-slate-500"
-                  }`}
-                >
-                  Довідник lpz.lpz_organizations (edrpou) — обери лікарню, додасться назва й емблема окремими пов&apos;язаними елементами
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("hospital-kpi")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "hospital-kpi"
-                    ? "bg-emerald-600 border-emerald-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-emerald-50"
-                }`}
-              >
-                <div className="font-bold">📊 КПІ лікарні (реальні дані)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "hospital-kpi" ? "text-emerald-100" : "text-slate-500"
-                  }`}
-                >
-                  Один клік ставить пігулки-роки й ряд з 5 плиток (випадки/пацієнти/летальність/сер. вік/сер. ліжко-дні) — рік обираєш пігулкою на полотні, дані живі з lpz.lpz_hospitalizations
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("indicator-form")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "indicator-form"
-                    ? "bg-fuchsia-600 border-fuchsia-600 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-fuchsia-50"
-                }`}
-              >
-                <div className="font-bold">🔢 Показник (за списком)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "indicator-form" ? "text-fuchsia-100" : "text-slate-500"
-                  }`}
-                >
-                  Знайди показник з довідника ЛСМД (той самий, що й у &quot;Показниках&quot;), впиши значення — і додай готову плитку в стилі &quot;Картки КПІ&quot;
-                </div>
-              </button>
-              <button
-                onClick={() => {
-                  setSelectedComplexObjectId("staff-ordinatorska");
-                  ensureStaffDeptList();
-                }}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "staff-ordinatorska"
-                    ? "bg-rose-700 border-rose-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-rose-50"
-                }`}
-              >
-                <div className="font-bold">🩺 Ординаторська відділення</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "staff-ordinatorska" ? "text-rose-100" : "text-slate-500"
-                  }`}
-                >
-                  Наближення до .docs-list сторінки завідувача (head-cabinet.css) — обери відділення, завантаж лікарів і/або пацієнтів, що зараз перебувають там; клік на рядку підсвітить і прокрутить до пов&apos;язаного рядка в іншому списку (1:1 з census-row↔doc-item зі старого проекту)
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("hierarchy-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "hierarchy-cube"
-                    ? "bg-cyan-700 border-cyan-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-cyan-50"
-                }`}
-              >
-                <div className="font-bold">📊 Показники (лікарня/напрямок/відділення)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
-                  }`}
-                >
-                  Обери рівень і період — 16 живих показників плитками (1 рядок) або список (кілька груп/періодів). RPC lpz_indicator_cube
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("doctor-hierarchy-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "doctor-hierarchy-cube"
-                    ? "bg-cyan-700 border-cyan-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-cyan-50"
-                }`}
-              >
-                <div className="font-bold">👨‍⚕️ Лікарі (обсяг, ієрархія)</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "doctor-hierarchy-cube" ? "text-cyan-100" : "text-slate-500"
-                  }`}
-                >
-                  Випадки/пацієнти/сер. ліжко-дні по кожному лікарю, з фільтром напрямку/відділення й періодом. RPC lpz_doctor_indicator_cube
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("readmission-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "readmission-cube"
-                    ? "bg-orange-700 border-orange-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
-                }`}
-              >
-                <div className="font-bold">🔁 Повторні госпіталізації</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "readmission-cube" ? "text-orange-100" : "text-slate-500"
-                  }`}
-                >
-                  Повторні за 30/90 днів, % і той самий діагноз. RPC lpz_readmission_cube
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("diagnosis-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "diagnosis-cube"
-                    ? "bg-orange-700 border-orange-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
-                }`}
-              >
-                <div className="font-bold">🩻 Показники по діагнозу</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "diagnosis-cube" ? "text-orange-100" : "text-slate-500"
-                  }`}
-                >
-                  Пошук за кодом МКХ-10 (icd_primary) — випадки/пацієнти/летальність/вік/стать по діагнозу. RPC lpz_diagnosis_cube
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("patient-demo-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "patient-demo-cube"
-                    ? "bg-orange-700 border-orange-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
-                }`}
-              >
-                <div className="font-bold">🧑‍🤝‍🧑 Демографія пацієнтів</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "patient-demo-cube" ? "text-orange-100" : "text-slate-500"
-                  }`}
-                >
-                  Стать × вікова група — випадки/пацієнти/летальність/сер. ліжко-дні. RPC lpz_patient_demo_cube
-                </div>
-              </button>
-              <button
-                onClick={() => setSelectedComplexObjectId("time-pattern-cube")}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "time-pattern-cube"
-                    ? "bg-orange-700 border-orange-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-orange-50"
-                }`}
-              >
-                <div className="font-bold">🕐 Часові патерни</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "time-pattern-cube" ? "text-orange-100" : "text-slate-500"
-                  }`}
-                >
-                  Госпіталізації/смерті/нічні по годині доби, дню тижня або місяцю. RPC lpz_time_pattern_cube
-                </div>
-              </button>
-              <button
-                onClick={() => {
-                  setSelectedComplexObjectId("night-shift");
-                  ensureNightShiftRows();
-                }}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "night-shift"
-                    ? "bg-slate-700 border-slate-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                <div className="font-bold">🌙 Нічні чергування</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "night-shift" ? "text-slate-200" : "text-slate-500"
-                  }`}
-                >
-                  День / Ніч — госпіталізації/пацієнти/екстрені/смерті/летальність/сер. ліжко-дні. lpz_night_vs_day_admissions
-                </div>
-              </button>
-              <button
-                onClick={() => {
-                  setSelectedComplexObjectId("weekend-shift");
-                  ensureWeekendShiftRows();
-                }}
-                className={`w-full text-left p-2.5 rounded-lg border text-xs transition-colors ${
-                  selectedComplexObjectId === "weekend-shift"
-                    ? "bg-slate-700 border-slate-700 text-white"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                <div className="font-bold">🗓️ Вихідні чергування</div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    selectedComplexObjectId === "weekend-shift" ? "text-slate-200" : "text-slate-500"
-                  }`}
-                >
-                  Вихідний / Робочий день — ті самі показники. lpz_weekend_vs_weekday
-                </div>
-              </button>
-            </div>
+              );
+            })()}
 
             {selectedComplexObjectId === "patient-search" && (
               <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg space-y-2.5">
@@ -8718,6 +8549,18 @@ export default function AppBoundedCanvas() {
           <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
             Інтерактивні зв'язки між елементами полотна — джерело → ціль. Що саме зв'язок робить, приписується окремим кроком пізніше.
           </div>
+          {singleSelected?.isKpiNumberSlot && singleSelected.liveBinding && singleSelected.content === "—" && (
+            <div className="mx-2 mt-2 p-2.5 rounded-lg bg-fuchsia-50 border border-fuchsia-200 text-[11px] text-fuchsia-900 leading-snug shrink-0">
+              <div className="font-bold mb-1">📍 Крок 2 з 2 — підключіть дату</div>
+              Показник прив&apos;язано, підпис уже на місці — число лишається «—», доки до ЦІЄЇ картки (вона й зараз виділена на полотні) не підключено часове джерело:
+              <ol className="list-decimal ml-4 mt-1 space-y-0.5">
+                <li>Увімкніть «🔗 Режим з&apos;єднання» нижче.</li>
+                <li>Клікніть на елементі з роком/місяцем/днем («🕐 Часове джерело» у Параметрах).</li>
+                <li>Потім клікніть на цій картці — і познач дію «задає РІК/МІСЯЦЬ/…».</li>
+              </ol>
+              Для «Лікарів» і «Показників по діагнозу» без вписаного МКХ-10 — так само підключіть ще й 👨‍⚕️/🩻 вузол.
+            </div>
+          )}
           <div className="p-2 border-b border-slate-200 shrink-0">
             <button
               type="button"
