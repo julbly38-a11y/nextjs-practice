@@ -69,8 +69,19 @@ const CHART_ADDER_STYLES = {
 // зберігали на великому екрані, а відкрили на меншому — хендл (верхній край)
 // стає недосяжним і перетягнути панель неможливо. Тому притискаємо позицію
 // так, щоб хендл завжди лишався в межах видимої області.
+//
+// На МОМЕНТ монтування (перший useEffect) window.innerWidth/innerHeight у
+// частини браузерів ще не встигають виставитись (фонова вкладка, дуже
+// раннє виконання ефекту до першого layout) і читаються як 0 — тоді
+// maxX/maxY теж стають 0, і обидві панелі силоміць притискаються до (0,0),
+// зливаючись в одному кутку. Це саме "зліт" панелі, від якого захищається
+// ця функція, а не рідкісний винятковий випадок: тому нульовий/несповна
+// розумний розмір вікна ігнорується — позиція повертається як є, без
+// зіпсованого клампу, а автозбереження (нижче) не встигає затерти добре
+// значення в localStorage браузерним "0×0".
 function clampPanelPos(pos: { x: number; y: number }): { x: number; y: number } {
   if (typeof window === "undefined") return pos;
+  if (window.innerWidth < 100 || window.innerHeight < 100) return pos;
   const maxX = Math.max(window.innerWidth - 60, 0);
   const maxY = Math.max(window.innerHeight - 40, 0);
   return {
@@ -257,13 +268,18 @@ interface CanvasElement {
 
   // Пряме підключення числового посадочного місця картки до "живого"
   // показника (з довідника "📡 Живі показники" — лише 4 куби, що дають РІВНО
-  // один рядок на період за обраним контекстом: рівень/напрямок/відділення/
-  // лікаря/діагноз фіксує params одразу при підключенні; ПЕРІОД — єдине, що
-  // навмисно НЕ тут: він приходить окремим "часовим джерелом" через "🔗
-  // Зв'язки" (set-year/set-month/set-day), той самий механізм, що й нижче
-  // для timeContext. Доки жодного часового джерела не підключено — content
-  // лишається "—", саме так, як хотів користувач: картка порожня, поки не
-  // "вказано дату".
+  // один рядок на період за обраним контекстом). "Універсальний вузол": усе,
+  // КРІМ значень, зафіксованих одразу у формі кубу (рівень/напрямок/
+  // відділення/зміна доби), може прийти пізніше з ПІДКЛЮЧЕНОГО вузла через
+  // "🔗 Зв'язки", а не бути вбитим у params назавжди:
+  // - ПЕРІОД — часовий вузол (set-year/set-month/set-day → timeContext,
+  //   окремий механізм нижче, накопичується по одиницях).
+  // - МКХ-10 (лише source: "diagnoses") — діагностичний вузол (set-icd,
+  //   PARAM_ACTION_KEY, перезаписує params.icd).
+  // - Лікар (лише source: "doctor-hierarchy") — лікарський вузол (set-doctor,
+  //   PARAM_ACTION_KEY, перезаписує params.doctorId).
+  // Доки всього необхідного не підключено (період завжди, + МКХ-10/лікар для
+  // відповідних джерел) — content лишається "—" (resolveLiveIndicatorValue).
   liveBinding?: {
     source: "hierarchy" | "doctor-hierarchy" | "readmissions" | "diagnoses";
     field: string;
@@ -513,10 +529,9 @@ const WEEKDAY_LABELS = ["Неділя", "Понеділок", "Вівторок"
 
 // Ендпоінти "живих" показників, доступних для прив'язки до "📊 Картки КПІ"
 // (панель "🔗 Показник → картка" у відповідних формах кубів). Свідомо лише
-// ці 3: усі інші куби або мають додаткову розбивку, яку зараз нічим
-// зафіксувати (демографія — стать×вік; лікар без вибору конкретного лікаря
-// в UI), або період у них категорія доби/дня тижня, а не дата (часові
-// патерни, нічні/вихідні чергування) — не сумісно з моделлю
+// ці 4: демографія має додаткову розбивку (стать×вік), яку зараз нічим
+// зафіксувати, а часові патерни/нічні/вихідні чергування — період у них
+// категорія доби/дня тижня, а не дата, не сумісно з моделлю
 // "показник + дата-об'єкт".
 const LIVE_INDICATOR_ENDPOINTS: Record<NonNullable<CanvasElement["liveBinding"]>["source"], string> = {
   hierarchy: "/api/indicators/hierarchy",
@@ -555,7 +570,27 @@ const CONNECTION_ACTION_OPTIONS: { value: string; label: string }[] = [
   { value: "set-month", label: "📅 Клік на джерелі задає МІСЯЦЬ цілі" },
   { value: "set-week", label: "📅 Клік на джерелі задає ДЕНЬ ТИЖНЯ цілі" },
   { value: "set-day", label: "📅 Клік на джерелі задає ДЕНЬ цілі" },
+  { value: "set-icd", label: "🩻 Клік на джерелі задає МКХ-10 цілі (діагностичний вузол)" },
+  { value: "set-doctor", label: "👨‍⚕️ Клік на джерелі задає ЛІКАРЯ цілі (лікарський вузол)" },
 ];
+
+// "Універсальний вузол" картки КПІ (liveBinding) приймає не лише часові
+// джерела (set-year/month/week/day → timeContext), а й параметричні —
+// set-icd/set-doctor записують РІВНО один параметр у liveBinding.params
+// (новий клік ПЕРЕЗАПИСУЄ попередній, без накопичення, на відміну від
+// часових одиниць). Готові джерела для них уже існують на полотні як
+// побічний продукт звичайних кубів — не треба нічого окремо позначати:
+// - "Лікарський вузол" — БУДЬ-ЯКИЙ рядок списку "🩺 Ординаторська"
+//   (linkKey = lpz_empl.resource_id — той самий id, що приймає
+//   lpz_doctor_indicator_cube.p_doctor_id як lpz_hospitalization_doctors.doctor_id).
+// - "Діагностичний вузол" — БУДЬ-ЯКИЙ рядок списку "🩻 Показники по
+//   діагнозу", завантаженого БЕЗ фільтра МКХ-10 (тоді кожен рядок — окремий
+//   діагноз, а його content — сам код, "icd_primary" переданий як labelField
+//   в addCubeRowsToCanvas).
+const PARAM_ACTION_KEY: Record<string, string> = {
+  "set-icd": "icd",
+  "set-doctor": "doctorId",
+};
 
 // Стиль спільний для одиночної пігулки й блоку пігулок-місяців — той самий
 // .ypill з hospital-analytics (форма/кольори/стани), щоб обидва пресети
@@ -1680,6 +1715,13 @@ export default function AppBoundedCanvas() {
   ): Promise<string> => {
     const period = buildPeriodKey(ctx);
     if (!period) return "—";
+    // Без цих параметрів RPC поверне СЕРІЮ з кількох рядків на один і той
+    // самий period_label (кілька діагнозів/лікарів за той самий рік) —
+    // .find нижче мовчки взяв би перший-ліпший, довільний. Доки відповідний
+    // вузол (🩻 діагностичний / 👨‍⚕️ лікарський) не підключено — лишаємо "—",
+    // той самий принцип, що й для періоду вище.
+    if (binding.source === "diagnoses" && !binding.params.icd) return "—";
+    if (binding.source === "doctor-hierarchy" && !binding.params.doctorId) return "—";
     try {
       const params = new URLSearchParams({
         ...binding.params,
@@ -1867,6 +1909,59 @@ export default function AppBoundedCanvas() {
 
       liveFetches.forEach(({ targetId, binding, nextContext }) => {
         void resolveLiveIndicatorValue(binding, nextContext).then((value) => {
+          setElements((prev) => {
+            const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
+            saveToHistory(pages, next);
+            return next;
+          });
+        });
+      });
+    }
+
+    // Параметричні джерела (set-icd/set-doctor) — на відміну від часових,
+    // тут РІВНО один параметр на дію, без накопичення: новий клік просто
+    // перезаписує попереднє значення в liveBinding.params. "Лікарський
+    // вузол" бере id з linkKey джерела (справжній resource_id рядка
+    // Ординаторської), а не з content (там ім'я лікаря, не id) — з
+    // фолбеком на content для довільного вручну зробленого джерела без
+    // linkKey. Список fetch-ів так само рахуємо ЗАЗДАЛЕГІДЬ зі стану
+    // `elements` — та сама причина, що й у liveFetches вище.
+    const paramActions = sourceEl ? flatActions.filter(({ action }) => action in PARAM_ACTION_KEY) : [];
+    if (sourceEl && paramActions.length > 0) {
+      const nextParamValue = (action: string) => (action === "set-doctor" ? sourceEl.linkKey ?? sourceEl.content : sourceEl.content);
+
+      const paramFetches: {
+        targetId: number;
+        binding: NonNullable<CanvasElement["liveBinding"]>;
+        ctx: NonNullable<CanvasElement["timeContext"]>;
+      }[] = [];
+      paramActions.forEach(({ toId, action }) => {
+        const target = elements.find((item) => item.id === toId);
+        if (!target?.liveBinding) return;
+        const key = PARAM_ACTION_KEY[action];
+        const nextBinding = { ...target.liveBinding, params: { ...target.liveBinding.params, [key]: nextParamValue(action) } };
+        paramFetches.push({ targetId: target.id, binding: nextBinding, ctx: target.timeContext ?? {} });
+      });
+
+      setElements((prev) => {
+        const next = [...prev];
+        paramActions.forEach(({ toId, action }) => {
+          const targetIdx = next.findIndex((item) => item.id === toId);
+          if (targetIdx === -1) return;
+          const target = next[targetIdx];
+          if (!target.liveBinding) return;
+          const key = PARAM_ACTION_KEY[action];
+          next[targetIdx] = {
+            ...target,
+            liveBinding: { ...target.liveBinding, params: { ...target.liveBinding.params, [key]: nextParamValue(action) } },
+          };
+        });
+        saveToHistory(pages, next);
+        return next;
+      });
+
+      paramFetches.forEach(({ targetId, binding, ctx }) => {
+        void resolveLiveIndicatorValue(binding, ctx).then((value) => {
           setElements((prev) => {
             const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
             saveToHistory(pages, next);
@@ -2568,6 +2663,20 @@ export default function AppBoundedCanvas() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [history, historyIndex, selectedIds, elements]);
+
+  // clampPanelPos (вище) захищає лише завантаження/імпорт — якщо вікно
+  // зменшили ВЖЕ під час роботи (напр. звузили браузер чи повернули
+  // ноутбук в інший монітор), збережена позиція так і лишалась би поза
+  // екраном аж до наступного перезавантаження сторінки. 'resize' підтягує
+  // обидві панелі назад одразу, без релоаду.
+  useEffect(() => {
+    const handleWindowResize = () => {
+      setPanelPos((prev) => clampPanelPos(prev));
+      setRefsPanelPos((prev) => clampPanelPos(prev));
+    };
+    window.addEventListener("resize", handleWindowResize);
+    return () => window.removeEventListener("resize", handleWindowResize);
+  }, []);
 
   const handleUndo = () => {
     if (historyIndex > 0) {
@@ -3927,6 +4036,16 @@ export default function AppBoundedCanvas() {
       return item;
     });
     updateElementsAndHistory(next);
+
+    // Прив'язка сама по собі не тягне жодних даних (num лишається "—") —
+    // наступний обов'язковий крок ЗАВЖДИ "🔗 Зв'язки" (часове джерело, і
+    // для деяких кубів ще діагностичний/лікарський вузол). Перемикаємо
+    // вкладку одразу, замість лишати користувача шукати її самому після
+    // підказки в тексті вище. НЕ чіпаємо selectedIds — окремий useEffect
+    // (нижче за кодом, стежить за selectedIds) одразу повертав би назад
+    // на "Параметри" при будь-якій, навіть однаковій за вмістом, зміні
+    // виділення (нова посилання на масив — вже інша залежність).
+    setActivePanelTab("links");
   };
 
   // Додає "📈 Графік" (Recharts) на полотно — знімок отриманих rows, без
@@ -4144,6 +4263,7 @@ export default function AppBoundedCanvas() {
   const [doctorHierChartKind, setDoctorHierChartKind] = useState<ChartKind>("bar");
   const [doctorHierChartField, setDoctorHierChartField] = useState("");
   const [doctorHierChartFieldY, setDoctorHierChartFieldY] = useState("");
+  const [doctorHierBindField, setDoctorHierBindField] = useState("");
 
   const DOCTOR_HIER_FIELDS: CubeFieldDef[] = [
     { key: "total_cases", label: "ВИПАДКІВ" },
@@ -7966,6 +8086,39 @@ export default function AppBoundedCanvas() {
                   {doctorHierLoading ? "Завантаження…" : "➕ Завантажити на полотно"}
                 </button>
 
+                <div className="pt-2 border-t border-cyan-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-cyan-900">🔗 Показник → картка</div>
+                  <div className="text-[10px] text-slate-400">
+                    Напрямок/відділення вище фіксуються одразу. Конкретного лікаря тут НЕМА вибору — підключи до картки 👨‍⚕️ лікарський вузол (рядок «🩺 Ординаторська») через «🔗 Зв&apos;язки», дія «задає ЛІКАРЯ цілі», і окремо часове джерело — без обох число лишиться «—».
+                  </div>
+                  <select
+                    value={doctorHierBindField}
+                    onChange={(e) => setDoctorHierBindField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Оберіть показник…</option>
+                    {DOCTOR_HIER_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const field = DOCTOR_HIER_FIELDS.find((f) => f.key === doctorHierBindField);
+                      if (!field) return;
+                      handleBindLiveIndicator("doctor-hierarchy", field, {
+                        direction: doctorHierDirection.trim(),
+                        department: doctorHierDepartment.trim(),
+                      });
+                    }}
+                    disabled={!doctorHierBindField}
+                    className="w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300"
+                  >
+                    🔗 Прив&apos;язати до вибраної картки
+                  </button>
+                </div>
+
                 {renderChartAdderSection(
                   "cyan",
                   DOCTOR_HIER_FIELDS,
@@ -8094,35 +8247,34 @@ export default function AppBoundedCanvas() {
 
                 <div className="pt-2 border-t border-orange-200 space-y-1.5">
                   <div className="text-[10px] font-bold text-orange-900">🔗 Показник → картка</div>
-                  {!diagnosisIcd.trim() ? (
-                    <div className="text-[10px] text-amber-700">Вкажи точний код МКХ-10 вище — без нього на один період вийде декілька діагнозів одразу.</div>
-                  ) : (
-                    <>
-                      <select
-                        value={diagnosisBindField}
-                        onChange={(e) => setDiagnosisBindField(e.target.value)}
-                        className="w-full p-1.5 border rounded-md text-xs bg-white"
-                      >
-                        <option value="">Оберіть показник…</option>
-                        {DIAGNOSIS_FIELDS.map((f) => (
-                          <option key={f.key} value={f.key}>
-                            {f.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => {
-                          const field = DIAGNOSIS_FIELDS.find((f) => f.key === diagnosisBindField);
-                          if (!field) return;
-                          handleBindLiveIndicator("diagnoses", field, { icd: diagnosisIcd.trim(), shift: diagnosisShift });
-                        }}
-                        disabled={!diagnosisBindField}
-                        className="w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300"
-                      >
-                        🔗 Прив&apos;язати до вибраної картки
-                      </button>
-                    </>
-                  )}
+                  <div className="text-[10px] text-slate-400">
+                    {diagnosisIcd.trim()
+                      ? "Код МКХ-10 вище фіксується одразу."
+                      : "Код МКХ-10 не вказано — підключи до картки 🩻 діагностичний вузол (рядок «Показники по діагнозу», завантажений без фільтра) через «🔗 Зв'язки», дія «задає МКХ-10 цілі», інакше число лишиться «—»."}
+                  </div>
+                  <select
+                    value={diagnosisBindField}
+                    onChange={(e) => setDiagnosisBindField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Оберіть показник…</option>
+                    {DIAGNOSIS_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const field = DIAGNOSIS_FIELDS.find((f) => f.key === diagnosisBindField);
+                      if (!field) return;
+                      handleBindLiveIndicator("diagnoses", field, { icd: diagnosisIcd.trim(), shift: diagnosisShift });
+                    }}
+                    disabled={!diagnosisBindField}
+                    className="w-full bg-white hover:bg-orange-100 disabled:opacity-50 text-orange-800 font-medium py-1.5 rounded-md text-xs border border-orange-300"
+                  >
+                    🔗 Прив&apos;язати до вибраної картки
+                  </button>
                 </div>
 
                 {renderChartAdderSection(
