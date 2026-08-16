@@ -24,6 +24,13 @@ import {
   Cell,
   ScatterChart,
   Scatter,
+  ComposedChart,
+  FunnelChart,
+  Funnel,
+  Treemap,
+  RadialBarChart,
+  RadialBar,
+  LabelList,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -34,12 +41,22 @@ import {
 
 type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | "image" | "chart";
 
-// "📈 Графік" — 5 базових типів (Recharts), дані знімок на момент додавання
-// (як "Список" — не живі, повторне підключення часового джерела для
-// графіків поки не зроблено, лише для "Картки КПІ" вище). Джерело —
-// той самий /api/indicators/* куб, що й "Список"/"Картка КПІ" (rows),
-// просто замість плиток/таблиці малюється справжня діаграма.
-type ChartKind = "bar" | "line" | "area" | "pie" | "scatter";
+// "📈 Графік" — дані знімок на момент додавання (як "Список" — не живі,
+// повторне підключення часового джерела для графіків поки не зроблено,
+// лише для "Картки КПІ" вище). Джерело — той самий /api/indicators/* куб,
+// що й "Список"/"Картка КПІ" (rows), просто замість плиток/таблиці
+// малюється справжня діаграма.
+//
+// 5 базових (bar/line/area/pie/scatter) + 4 додаткові, усі сумісні з тією
+// самою пласкою формою даних (rows: labelField + valueFields), без нової
+// структури: composed (стовпці+лінія разом), funnel (воронка — ті самі
+// рядки, просто відсортовані спаданням), treemap (розмір = valueFields[0],
+// без вкладеності — Sankey навмисно НЕ додано: жоден з кубів не повертає
+// потоки джерело→ціль, лише групування за одним виміром, тож справжніх
+// вузлів/зв'язків для Sankey просто нема звідки взяти), radialBar (кругові
+// смуги на кожен рядок — наближення до "Лічильника", без істинної шкали
+// min/max/ціль, якої в цих даних теж нема).
+type ChartKind = "bar" | "line" | "area" | "pie" | "scatter" | "composed" | "funnel" | "treemap" | "radialBar";
 // Палітра — ті самі акцентні кольори, що вже вживані в панелях кубів
 // (cyan-700/orange-700 тощо), щоб графік не випадав зі стилю конструктора.
 const CHART_PALETTE = ["#0e7490", "#c2410c", "#7c3aed", "#059669", "#db2777", "#ca8a04", "#334155"];
@@ -402,6 +419,111 @@ function ChartBody({ el }: { el: CanvasElement }) {
           <Tooltip cursor={{ strokeDasharray: "3 3" }} />
           <Scatter data={data} fill={CHART_PALETTE[0]} />
         </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Воронка — ті самі рядки куба, просто показуються звужуваними
+  // сегментами зверху вниз (Recharts сам не сортує — відсортовано ще на
+  // addRowsAsChart, за спаданням valueFields[0], щоб форма справді
+  // звужувалась, а не була випадковою "драбинкою").
+  if (el.chartKind === "funnel") {
+    const field = valueFields[0];
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <FunnelChart>
+          <Tooltip />
+          <Funnel data={data} dataKey={field} nameKey={labelField} isAnimationActive={false}>
+            <LabelList dataKey={labelField} position="right" fill="#1a1a1a" fontSize={10} />
+            {data.map((_, i) => (
+              <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+            ))}
+          </Funnel>
+        </FunnelChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Деревоподібна карта — БЕЗ вкладеності (жоден куб не повертає ієрархію
+  // "група → підгрупа"): один шар прямокутників, площа = valueFields[0].
+  // Чесний однорівневий treemap, а не імітація вкладеної структури.
+  if (el.chartKind === "treemap") {
+    const field = valueFields[0];
+    const treeData = data.map((row) => ({ name: String(row[labelField] ?? ""), size: Number(row[field]) || 0 }));
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <Treemap data={treeData} dataKey="size" nameKey="name" stroke="#fff" isAnimationActive={false}>
+          {treeData.map((_, i) => (
+            <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+          ))}
+        </Treemap>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Кругова стовпчикова — наближення до "Лічильника": на відміну від
+  // справжнього gauge (стрілка на шкалі min/max/ціль), тут просто кожен
+  // рядок — окрема кругова смуга, бо жоден куб не дає ні межі шкали, ні
+  // окремого значення "ціль" для порівняння.
+  if (el.chartKind === "radialBar") {
+    const field = valueFields[0];
+    // Recharts <Legend payload={...}> тут типізовано без payload узагалі
+    // (конфлікт generic-типів у контексті RadialBarChart) — простіше й
+    // надійніше звести легенду до звичайних <div>, ніж боротись з тим
+    // типом. Той самий колір, що й у Cell нижче, по кольоровій крапці на
+    // рядок.
+    return (
+      <div className="w-full h-full flex items-center gap-2">
+        <div className="flex-1 h-full min-w-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <RadialBarChart data={data} innerRadius="20%" outerRadius="90%" startAngle={90} endAngle={-270}>
+              <RadialBar dataKey={field} isAnimationActive={false}>
+                {data.map((_, i) => (
+                  <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+                ))}
+              </RadialBar>
+              <Tooltip />
+            </RadialBarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="shrink-0 max-w-[35%] max-h-full overflow-y-auto text-[10px] space-y-0.5 pr-1">
+          {data.map((row, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <span
+                className="w-2 h-2 rounded-sm shrink-0"
+                style={{ backgroundColor: CHART_PALETTE[i % CHART_PALETTE.length] }}
+              />
+              <span className="truncate">{String(row[labelField] ?? "")}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Комбінована — перший показник стовпцями, другий лінією поверх (той
+  // самий підхід, що й "Часові патерни" на старій панелі, лише як окремий
+  // тип графіка): valueFields[0] = стовпці, valueFields[1] = лінія.
+  // ДРУГА вісь Y для лінії — без неї показник з іншим масштабом (напр.
+  // ЛЕТАЛЬНІСТЬ % поруч з ВИПАДКІВ у сотнях) притискався б до нуля й
+  // здавався б плоскою рискою внизу графіка, хоча дані реально змінюються.
+  if (el.chartKind === "composed") {
+    const barField = valueFields[0];
+    const lineField = valueFields[1];
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={labelField} tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={40} />
+          <YAxis yAxisId="left" tick={{ fontSize: 10 }} />
+          {lineField && <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} />}
+          <Tooltip />
+          <Legend wrapperStyle={{ fontSize: 10 }} />
+          <Bar yAxisId="left" dataKey={barField} fill={CHART_PALETTE[0]} />
+          {lineField && (
+            <Line yAxisId="right" type="monotone" dataKey={lineField} stroke={CHART_PALETTE[1]} strokeWidth={2} dot={false} />
+          )}
+        </ComposedChart>
       </ResponsiveContainer>
     );
   }
@@ -3975,6 +4097,12 @@ export default function AppBoundedCanvas() {
       alert("Немає даних за цим запитом");
       return;
     }
+    // Воронка звужується зверху вниз лише якщо рядки самі відсортовані —
+    // Recharts <Funnel> малює їх у порядку масиву як є, без сортування.
+    const sortedRows =
+      chartKind === "funnel"
+        ? [...rows].sort((a, b) => (Number(b[valueFields[0]]) || 0) - (Number(a[valueFields[0]]) || 0))
+        : rows;
     const width = 420;
     const height = 280;
     const freePos = findFreePosition(forcedParentId, width, height);
@@ -3993,7 +4121,7 @@ export default function AppBoundedCanvas() {
       textColor: "#1a1a1a",
       padding: 0,
       chartKind,
-      chartData: rows,
+      chartData: sortedRows,
       chartLabelField: labelField,
       chartValueFields: valueFields,
     };
@@ -4030,15 +4158,19 @@ export default function AppBoundedCanvas() {
           <option value="area">Площинна</option>
           <option value="pie">Секторна</option>
           <option value="scatter">Точкова</option>
+          <option value="composed">Комбінована (стовпці + лінія)</option>
+          <option value="funnel">Воронка</option>
+          <option value="treemap">Деревоподібна карта</option>
+          <option value="radialBar">Кругова стовпчикова</option>
         </select>
-        {kind === "scatter" ? (
+        {kind === "scatter" || kind === "composed" ? (
           <>
             <select
               value={fieldKey}
               onChange={(e) => setFieldKey(e.target.value)}
               className="w-full p-1.5 border rounded-md text-xs bg-white"
             >
-              <option value="">X-показник…</option>
+              <option value="">{kind === "scatter" ? "X-показник…" : "Показник для стовпців…"}</option>
               {fields.map((f) => (
                 <option key={f.key} value={f.key}>
                   {f.label}
@@ -4050,7 +4182,7 @@ export default function AppBoundedCanvas() {
               onChange={(e) => setFieldKeyY(e.target.value)}
               className="w-full p-1.5 border rounded-md text-xs bg-white"
             >
-              <option value="">Y-показник…</option>
+              <option value="">{kind === "scatter" ? "Y-показник…" : "Показник для лінії…"}</option>
               {fields.map((f) => (
                 <option key={f.key} value={f.key}>
                   {f.label}
@@ -4074,7 +4206,7 @@ export default function AppBoundedCanvas() {
         )}
         <button
           onClick={onAdd}
-          disabled={kind === "scatter" ? !fieldKey || !fieldKeyY : !fieldKey}
+          disabled={kind === "scatter" || kind === "composed" ? !fieldKey || !fieldKeyY : !fieldKey}
           className={s.button}
         >
           📈 Додати графік на полотно
@@ -4156,6 +4288,8 @@ export default function AppBoundedCanvas() {
       const rows = withRowLabel(data.rows || []);
       if (hierarchyChartKind === "scatter") {
         addRowsAsChart(rows, hierarchyChartField, [hierarchyChartFieldY], "scatter", "Показники (ієрархія)");
+      } else if (hierarchyChartKind === "composed") {
+        addRowsAsChart(rows, "row_label", [hierarchyChartField, hierarchyChartFieldY], "composed", "Показники (ієрархія)");
       } else {
         addRowsAsChart(rows, "row_label", [hierarchyChartField], hierarchyChartKind, "Показники (ієрархія)");
       }
@@ -4231,6 +4365,8 @@ export default function AppBoundedCanvas() {
       }));
       if (doctorHierChartKind === "scatter") {
         addRowsAsChart(rows, doctorHierChartField, [doctorHierChartFieldY], "scatter", "Лікарі (обсяг)");
+      } else if (doctorHierChartKind === "composed") {
+        addRowsAsChart(rows, "row_label", [doctorHierChartField, doctorHierChartFieldY], "composed", "Лікарі (обсяг)");
       } else {
         addRowsAsChart(rows, "row_label", [doctorHierChartField], doctorHierChartKind, "Лікарі (обсяг)");
       }
@@ -4292,6 +4428,8 @@ export default function AppBoundedCanvas() {
       const rows = withRowLabel(data.rows || []);
       if (readmitChartKind === "scatter") {
         addRowsAsChart(rows, readmitChartField, [readmitChartFieldY], "scatter", "Повторні госпіталізації");
+      } else if (readmitChartKind === "composed") {
+        addRowsAsChart(rows, "row_label", [readmitChartField, readmitChartFieldY], "composed", "Повторні госпіталізації");
       } else {
         addRowsAsChart(rows, "row_label", [readmitChartField], readmitChartKind, "Повторні госпіталізації");
       }
@@ -4357,6 +4495,8 @@ export default function AppBoundedCanvas() {
       const rows = data.rows || [];
       if (diagnosisChartKind === "scatter") {
         addRowsAsChart(rows, diagnosisChartField, [diagnosisChartFieldY], "scatter", "Показники по діагнозу");
+      } else if (diagnosisChartKind === "composed") {
+        addRowsAsChart(rows, "icd_primary", [diagnosisChartField, diagnosisChartFieldY], "composed", "Показники по діагнозу");
       } else {
         addRowsAsChart(rows, "icd_primary", [diagnosisChartField], diagnosisChartKind, "Показники по діагнозу");
       }
@@ -4434,6 +4574,8 @@ export default function AppBoundedCanvas() {
       }));
       if (patientDemoChartKind === "scatter") {
         addRowsAsChart(rows, patientDemoChartField, [patientDemoChartFieldY], "scatter", "Демографія пацієнтів");
+      } else if (patientDemoChartKind === "composed") {
+        addRowsAsChart(rows, "row_label", [patientDemoChartField, patientDemoChartFieldY], "composed", "Демографія пацієнтів");
       } else {
         addRowsAsChart(rows, "row_label", [patientDemoChartField], patientDemoChartKind, "Демографія пацієнтів");
       }
@@ -4484,6 +4626,8 @@ export default function AppBoundedCanvas() {
       const rows = data.rows || [];
       if (timePatternChartKind === "scatter") {
         addRowsAsChart(rows, timePatternChartField, [timePatternChartFieldY], "scatter", "Часові патерни");
+      } else if (timePatternChartKind === "composed") {
+        addRowsAsChart(rows, "bucket_label", [timePatternChartField, timePatternChartFieldY], "composed", "Часові патерни");
       } else {
         addRowsAsChart(rows, "bucket_label", [timePatternChartField], timePatternChartKind, "Часові патерни");
       }
