@@ -39,7 +39,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-type ElementType = "block" | "heading" | "text" | "button" | "list" | "clock" | "image" | "chart";
+type ElementType = "block" | "text" | "button" | "list" | "clock" | "image" | "chart";
 
 // "📈 Графік" — дані знімок на момент додавання (як "Список" — не живі,
 // повторне підключення часового джерела для графіків поки не зроблено,
@@ -184,7 +184,6 @@ const LEVEL_COLORS = [
 
 const TYPE_LABELS: Record<ElementType, string> = {
   block: "Блок",
-  heading: "Заголовок",
   text: "Текст",
   button: "Кнопка",
   list: "Список",
@@ -858,18 +857,6 @@ const PILL_STYLE_DEFAULTS: Partial<CanvasElement> = {
   fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
 };
 
-const PILL_STYLE_FIELDS: ComplexObjectField[] = [
-  { key: "customBgColor", label: "Фон", type: "color" },
-  { key: "textColor", label: "Текст", type: "color" },
-  { key: "hoverBgColor", label: "Фон (наведення)", type: "color" },
-  { key: "hoverTextColor", label: "Текст (наведення)", type: "color" },
-  { key: "activeBgColor", label: "Фон (активна)", type: "color" },
-  { key: "activeTextColor", label: "Текст (активна)", type: "color" },
-  { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
-  { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
-  { key: "borderRadius", label: "Скруглення (px)", type: "number" },
-];
-
 // Поля відповіді public.lpz_hospital_summary → плитки "КПІ лікарні" (див.
 // handleLoadHospitalKpi/handleKpiPillClick): кожному текстовому полю значення
 // плитки присвоюється kpiField з цього списку, щоб пігулка-рік знала, яке
@@ -902,35 +889,6 @@ const COMPLEX_LIST_COLORS = {
 } as const;
 
 const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
-  {
-    id: "pill",
-    label: "🔘 Пігулка (Pill)",
-    description:
-      "Кругла кнопка-перемикач як фільтр років у старому проекті — заокруглена форма, підсвітка при наведенні, заливка при активності, групова ексклюзивність (лише одна активна серед сестер у блоці).",
-    defaults: {
-      ...PILL_STYLE_DEFAULTS,
-      content: "Пігулка",
-      width: 60,
-      height: 30,
-    },
-    fields: [
-      ...PILL_STYLE_FIELDS,
-      { key: "width", label: "Ширина (px)", type: "number" },
-      { key: "height", label: "Висота (px)", type: "number" },
-    ],
-  },
-  {
-    id: "pillMonths",
-    label: "🔘 Блок пігулок (місяці)",
-    description:
-      "Одразу 12 пігулок з назвами місяців (СІЧЕНЬ…ГРУДЕНЬ) у ТОЧНО тому ж стилі, що й пігулка вище — форма, кольори, підсвітка й групова ексклюзивність (активний лише один місяць одночасно). Ширина кожної пігулки підлаштовується під довжину назви, як пігулки місяців у старому проекті.",
-    defaults: {
-      ...PILL_STYLE_DEFAULTS,
-      height: 30,
-    },
-    fields: [...PILL_STYLE_FIELDS, { key: "height", label: "Висота (px)", type: "number" }],
-    groupItems: MONTH_PILL_LABELS,
-  },
   {
     id: "kpiCard",
     label: "📊 Картка КПІ",
@@ -1030,327 +988,6 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
           bgOpacity: 0,
           padding: 0,
           isBadgeYearField: true,
-        },
-      },
-    ],
-  },
-  {
-    id: "deptCard",
-    label: "🏢 Картка відділення",
-    description:
-      "Наближення до .dept-expand/.de-* з hospital-analytics — назва відділення й завідувач над рядком статистики (3 колонки: значення + підпис), усе притиснуте вправо. Роздільні лінії між колонками (border-left в оригіналі) модель елементів не підтримує — колонки розділені лише відступом.",
-    defaults: {
-      type: "block",
-      content: "",
-      width: 260,
-      height: 80,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    },
-    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
-    children: [
-      {
-        content: "Терапевтичне відділення",
-        x: 0,
-        y: 0,
-        width: 260,
-        height: 22,
-        defaults: {
-          type: "text",
-          fontSize: 15,
-          fontWeight: "300",
-          textColor: "#4a4a4a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "Зав.: Іваненко О. П.",
-        x: 0,
-        y: 22,
-        width: 260,
-        height: 18,
-        defaults: {
-          type: "text",
-          fontSize: 13,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "42",
-        x: 0,
-        y: 46,
-        width: 80,
-        height: 20,
-        defaults: {
-          type: "text",
-          fontSize: 17,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "ШТАТ",
-        x: 0,
-        y: 66,
-        width: 80,
-        height: 14,
-        defaults: {
-          type: "text",
-          fontSize: 9,
-          fontWeight: "400",
-          textColor: "#8a857f",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "12",
-        x: 90,
-        y: 46,
-        width: 80,
-        height: 20,
-        defaults: {
-          type: "text",
-          fontSize: 17,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "ЛІКАРІ",
-        x: 90,
-        y: 66,
-        width: 80,
-        height: 14,
-        defaults: {
-          type: "text",
-          fontSize: 9,
-          fontWeight: "400",
-          textColor: "#8a857f",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "1 240",
-        x: 180,
-        y: 46,
-        width: 80,
-        height: 20,
-        defaults: {
-          type: "text",
-          fontSize: 17,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "ГОСПІТАЛІЗАЦІЙ",
-        x: 180,
-        y: 66,
-        width: 80,
-        height: 14,
-        defaults: {
-          type: "text",
-          fontSize: 9,
-          fontWeight: "400",
-          textColor: "#8a857f",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-    ],
-  },
-  {
-    id: "docItem",
-    label: "🩺 Рядок лікаря (ординаторська)",
-    description:
-      "Наближення до .doc-item з hospital-analytics (public/shared/head-cabinet.css, ординаторська на сторінці завідувача) — ім'я над посадою (ВЕЛИКИМИ, дрібніше), обидва праворуч, підсвітка при наведенні. Оригінал світить текст через text-shadow і трохи інакше фарбує обране ім'я при кліку (.doc-active) — модель елементів підтримує лише підсвітку box-shadow навколо всього рядка (як у решти кнопок) і не вміє перефарбувати саме вкладений напис при кліку, тому активний стан не відтворено.",
-    defaults: {
-      type: "button",
-      content: "",
-      width: 220,
-      height: 46,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      textColor: "#3a3a3a",
-      hoverBgColor: "#ffffff",
-      hoverTextColor: "#3a3a3a",
-      glowColor: "#b27c8b",
-      glowBlur: 16,
-      borderRadius: 0,
-      fontSize: 20,
-      fontWeight: "300",
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-    },
-    fields: [
-      { key: "glowColor", label: "Підсвітка (колір)", type: "color" },
-      { key: "glowBlur", label: "Підсвітка (розмиття px)", type: "number" },
-      { key: "width", label: "Ширина (px)", type: "number" },
-    ],
-    children: [
-      {
-        content: "Прізвище Ім'я",
-        x: 0,
-        y: 0,
-        width: 220,
-        height: 28,
-        defaults: {
-          type: "text",
-          fontSize: 20,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "ПОСАДА",
-        x: 0,
-        y: 28,
-        width: 220,
-        height: 18,
-        defaults: {
-          type: "text",
-          fontSize: 12,
-          fontWeight: "400",
-          textColor: "#9a958f",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-    ],
-  },
-  {
-    id: "censusRow",
-    label: "🏥 Пацієнт у відділенні",
-    description:
-      "Наближення до .census-row/.census-name/.census-meta/.census-bar/.census-days з hospital-analytics (public/shared/layout.css, розділ «Перебуває у відділенні» на entry.html/doctor-cabinet.html/head-cabinet.html) — ім'я й дані пацієнта зліва, міні-смужка перебування (сегмент = доба) і кількість днів справа. Оригінал підсвічує ім'я синім при наведенні (.census-row:hover) — модель елементів не вміє перефарбувати вкладений текст за наведенням на батька, тому це не відтворено; смужка тут — фіксовані 4 сегменти для вигляду, а не реальна кількість діб.",
-    defaults: {
-      type: "block",
-      content: "",
-      width: 340,
-      height: 30,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    },
-    fields: [{ key: "width", label: "Ширина (px)", type: "number" }],
-    children: [
-      {
-        content: "Прізвище Ім'я",
-        x: 0,
-        y: 2,
-        width: 130,
-        height: 20,
-        defaults: {
-          type: "text",
-          fontSize: 17,
-          fontWeight: "300",
-          textColor: "#3a3a3a",
-          textAlign: "left",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "42р · Пневмонія",
-        x: 135,
-        y: 2,
-        width: 120,
-        height: 20,
-        defaults: {
-          type: "text",
-          fontSize: 14,
-          fontWeight: "300",
-          textColor: "#9a958f",
-          textAlign: "left",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
-        },
-      },
-      {
-        content: "",
-        x: 258,
-        y: 9,
-        width: 6,
-        height: 14,
-        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
-      },
-      {
-        content: "",
-        x: 266,
-        y: 9,
-        width: 6,
-        height: 14,
-        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
-      },
-      {
-        content: "",
-        x: 274,
-        y: 9,
-        width: 6,
-        height: 14,
-        defaults: { type: "block", customBgColor: "#b27c8b", bgOpacity: 1, borderRadius: 1, padding: 0 },
-      },
-      {
-        content: "",
-        x: 282,
-        y: 9,
-        width: 6,
-        height: 14,
-        defaults: { type: "block", customBgColor: "#000000", bgOpacity: 1, borderRadius: 1, padding: 0 },
-      },
-      {
-        content: "4 дні",
-        x: 294,
-        y: 4,
-        width: 46,
-        height: 18,
-        defaults: {
-          type: "text",
-          fontSize: 14,
-          fontWeight: "300",
-          textColor: "#b27c8b",
-          textAlign: "right",
-          fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-          bgOpacity: 0,
-          padding: 0,
         },
       },
     ],
@@ -2176,51 +1813,27 @@ export default function AppBoundedCanvas() {
     const cardHeight = 520;
     const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
     const listElement: CanvasElement = {
-      id: listId,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId, `Пацієнт: ${formatPatientFieldValue(selectedPatient.full_name)}`),
       type: "list",
-      content: `Пацієнт: ${formatPatientFieldValue(selectedPatient.full_name)}`,
       width: cardWidth,
       height: cardHeight,
       x: freePos.x,
       y: freePos.y,
-      textColor: "#ffffff",
       padding: 8,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: forcedParentId,
-      targetPageId: null,
       columns,
     };
     const rowElements: CanvasElement[] = PATIENT_FIELD_LABELS.map((f, i) => ({
-      id: listId + 1 + i,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId + 1 + i, f.label),
       type: "text",
-      content: f.label,
       width: 120,
       height: 26,
       x: 1,
       y: 1,
       textColor: "#000000",
-      padding: 4,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: listId,
-      targetPageId: null,
       columnValues: {
         field: f.label,
         value: formatPatientFieldValue(selectedPatient[f.key]),
@@ -2277,51 +1890,27 @@ export default function AppBoundedCanvas() {
     const cardHeight = 420;
     const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
     const listElement: CanvasElement = {
-      id: listId,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId, `Лікар: ${formatLpzFieldValue(selectedDoctor.full_name)}`),
       type: "list",
-      content: `Лікар: ${formatLpzFieldValue(selectedDoctor.full_name)}`,
       width: cardWidth,
       height: cardHeight,
       x: freePos.x,
       y: freePos.y,
-      textColor: "#ffffff",
       padding: 8,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: forcedParentId,
-      targetPageId: null,
       columns,
     };
     const rowElements: CanvasElement[] = DOCTOR_FIELD_LABELS.map((f, i) => ({
-      id: listId + 1 + i,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId + 1 + i, f.label),
       type: "text",
-      content: f.label,
       width: 120,
       height: 26,
       x: 1,
       y: 1,
       textColor: "#000000",
-      padding: 4,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: listId,
-      targetPageId: null,
       columnValues: {
         field: f.label,
         value: formatLpzFieldValue(selectedDoctor[f.key]),
@@ -2381,51 +1970,27 @@ export default function AppBoundedCanvas() {
     const cardHeight = 260;
     const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
     const listElement: CanvasElement = {
-      id: listId,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId, `Відділення: ${formatLpzFieldValue(selectedDeptStat.department_name)}`),
       type: "list",
-      content: `Відділення: ${formatLpzFieldValue(selectedDeptStat.department_name)}`,
       width: cardWidth,
       height: cardHeight,
       x: freePos.x,
       y: freePos.y,
-      textColor: "#ffffff",
       padding: 8,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: forcedParentId,
-      targetPageId: null,
       columns,
     };
     const rowElements: CanvasElement[] = DEPARTMENT_STAT_FIELD_LABELS.map((f, i) => ({
-      id: listId + 1 + i,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(listId + 1 + i, f.label),
       type: "text",
-      content: f.label,
       width: 120,
       height: 26,
       x: 1,
       y: 1,
       textColor: "#000000",
-      padding: 4,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId: listId,
-      targetPageId: null,
       columnValues: {
         field: f.label,
         value: formatLpzFieldValue(selectedDeptStat[f.key]),
@@ -2502,14 +2067,8 @@ export default function AppBoundedCanvas() {
     const parentId = Date.now();
 
     const parentElement: CanvasElement = {
-      id: parentId,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(parentId, ""),
       type: "block",
-      content: "",
       width: cardWidth,
       height: cardHeight,
       x: freePos.x,
@@ -2517,55 +2076,29 @@ export default function AppBoundedCanvas() {
       textColor: "#1a1a1a",
       padding: 0,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
-      parentId: forcedParentId,
-      targetPageId: null,
       customBgColor: "#ffffff",
       bgOpacity: 0,
     };
 
     const emblemElement: CanvasElement = {
-      id: parentId + 1,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(parentId + 1, selectedOrg.display_name),
       type: "image",
-      content: selectedOrg.display_name,
       width: logoSize,
       height: logoSize,
-      x: 0,
-      y: 0,
       textColor: "#1a1a1a",
       padding: 0,
       borderRadius: 0,
-      fontSize: 12,
-      fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-      fontWeight: "500",
-      textAlign: "left",
       parentId,
-      targetPageId: null,
       bgOpacity: 0,
       imageUrl: selectedOrg.logo_url || "",
     };
 
     const nameElement: CanvasElement = {
-      id: parentId + 2,
-      pageId: currentPageId,
-      isGlobal: false,
-      isTriggerTarget: false,
-      showOnHoverId: null,
-      showOnClickId: null,
+      ...buildComplexObjectBase(parentId + 2, (selectedOrg.display_name || "").toUpperCase().split(" ").join("\n")),
       type: "text",
-      content: (selectedOrg.display_name || "").toUpperCase().split(" ").join("\n"),
       width: nameWidth,
       height: logoSize,
       x: logoSize + gap,
-      y: 0,
       textColor: theme.ink3, // --c-ink-3, per-лікарня (lib/hospital-themes.ts)
       padding: 0,
       borderRadius: 0,
@@ -2580,9 +2113,7 @@ export default function AppBoundedCanvas() {
       // реальній сторінці, лише жирнішим накресленням.
       fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
       fontWeight: "700", // жирне накреслення (layout.tsx вантажить Cormorant Garamond у 300 і 700)
-      textAlign: "left",
       parentId,
-      targetPageId: null,
       bgOpacity: 0,
     };
 
@@ -3193,9 +2724,6 @@ export default function AppBoundedCanvas() {
           el.targetPageId ? `onclick="switchPage('${el.targetPageId}')"` : ""
         }>${el.content}</button>`;
         innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
-      } else if (el.type === "heading") {
-        contentHTML = `<h2 style="margin:0;font-size:inherit;">${el.content}</h2>`;
-        innerChildrenHTML = children.map((c) => renderElementHTML(c)).join("");
       } else if (el.type === "list") {
         // "Список" сам шикує дітей вертикально зі скролом — на відміну від
         // інших типів, тут діти НЕ рендеряться через звичайний
@@ -3450,52 +2978,29 @@ export default function AppBoundedCanvas() {
       const cardHeight = 420;
       const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
       const listElement: CanvasElement = {
-        id: listId,
-        pageId: currentPageId,
-        isGlobal: false,
-        isTriggerTarget: false,
-        showOnHoverId: null,
-        showOnClickId: null,
+        ...buildComplexObjectBase(listId, "Відділення (Supabase, схема lpz)"),
         type: "list",
-        content: "Відділення (Supabase, схема lpz)",
         width: cardWidth,
         height: cardHeight,
         x: freePos.x,
         y: freePos.y,
-        textColor: "#ffffff",
         padding: 8,
         borderRadius: 0,
-        fontSize: 12,
-        fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-        fontWeight: "500",
-        textAlign: "left",
         parentId: forcedParentId,
-        targetPageId: null,
         columns,
       };
 
       const rowElements: CanvasElement[] = departments.map((dept, i) => ({
-        id: listId + 1 + i,
-        pageId: currentPageId,
-        isGlobal: false,
-        isTriggerTarget: false,
-        showOnHoverId: null,
-        showOnClickId: null,
+        ...buildComplexObjectBase(listId + 1 + i, dept.name),
         type: "text",
-        content: dept.name,
         width: 120,
         height: 30,
         x: 1,
         y: 1,
         textColor: "#000000",
-        padding: 4,
         borderRadius: 0,
         fontSize: 13,
-        fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
-        fontWeight: "500",
-        textAlign: "left",
         parentId: listId,
-        targetPageId: null,
         columnValues: {
           org: dept.org_edrpou,
           name: dept.name,
@@ -3714,7 +3219,7 @@ export default function AppBoundedCanvas() {
       textColor: "#ffffff",
       padding: isButton ? 4 : 8,
       borderRadius: isButton ? 8 : 0,
-      fontSize: newType === "heading" ? 16 : 12,
+      fontSize: 12,
       fontFamily: "var(--font-itf-light), 'Palatino', 'Palatino Linotype', serif",
       fontWeight: "500",
       textAlign: "left",
@@ -5633,11 +5138,6 @@ export default function AppBoundedCanvas() {
                 )}
             </div>
           )}
-          {el.type === "heading" && (
-            <div className="leading-tight pointer-events-none truncate w-full">
-              {el.content}
-            </div>
-          )}
           {el.type === "text" && (
             <div
               className="pointer-events-none whitespace-pre-wrap leading-normal overflow-hidden h-full w-full"
@@ -6367,7 +5867,6 @@ export default function AppBoundedCanvas() {
                   className="w-full p-1.5 border rounded-md text-xs bg-white"
                 >
                   <option value="block">Блок</option>
-                  <option value="heading">Заголовок</option>
                   <option value="text">Текст</option>
                   <option value="button">Кнопка</option>
                   <option value="list">Список</option>
