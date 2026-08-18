@@ -837,6 +837,39 @@ const PARAM_ACTION_KEY: Record<string, string> = {
   "set-doctor": "doctorId",
 };
 
+// Чому числовий слот "📊 Картки КПІ" показує "—" — раніше всі 5 випадків
+// виглядали однаково (мовчазний прочерк), і людина не мала способу
+// дізнатись, чого саме бракує. "http-error"/"no-match" визначаються лише
+// ПІСЛЯ реальної спроби запиту (звідси окремий стан liveIndicatorReasons,
+// а не чиста функція від самого el) — решта виводяться статично з полів
+// елемента, той самий порядок перевірок, що й у resolveLiveIndicatorValue.
+type LiveIndicatorReason = "ok" | "no-period" | "no-icd" | "no-doctor" | "http-error" | "no-match" | "not-connected";
+
+const LIVE_INDICATOR_REASON_LABELS: Record<Exclude<LiveIndicatorReason, "ok">, string> = {
+  "no-period": "не підключено дату (рік/місяць/день) через «🔗 Зв'язки»",
+  "no-icd": "не підключено МКХ-10 (🩻 діагностичний вузол) через «🔗 Зв'язки»",
+  "no-doctor": "не підключено лікаря (👨‍⚕️ лікарський вузол) через «🔗 Зв'язки»",
+  "http-error": "помилка запиту до сервера — спробуйте оновити",
+  "no-match": "у базі немає рядка за цей період — можливо, даних за нього ще нема",
+  "not-connected": "ще не було спроби завантажити — клацніть по підключеному джерелу дати",
+};
+
+// Той самий порядок перевірок, що й у resolveLiveIndicatorValue, але без
+// запиту в мережу — для миттєвого діагнозу на полотні (бейдж) і в панелі
+// "📡 Стан даних". lastKnown — результат ОСТАННЬОЇ реальної спроби fetch
+// (http-error/no-match), яку статично вивести неможливо.
+const diagnoseLiveBinding = (
+  el: CanvasElement,
+  lastKnown: LiveIndicatorReason | undefined
+): LiveIndicatorReason | null => {
+  if (!el.liveBinding) return null;
+  if (el.content !== "—") return "ok";
+  if (!el.timeContext?.year) return "no-period";
+  if (el.liveBinding.source === "diagnoses" && !el.liveBinding.params.icd) return "no-icd";
+  if (el.liveBinding.source === "doctor-hierarchy" && !el.liveBinding.params.doctorId) return "no-doctor";
+  return lastKnown ?? "not-connected";
+};
+
 // Стиль спільний для одиночної пігулки й блоку пігулок-місяців — той самий
 // .ypill з hospital-analytics (форма/кольори/стани), щоб обидва пресети
 // лишались візуально ідентичними, навіть якщо один з них зміниться.
@@ -1316,7 +1349,7 @@ export default function AppBoundedCanvas() {
   const [refsPanelSize, setRefsPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 560 });
   const [refsPanelOpacity, setRefsPanelOpacity] = useState<number>(0.92);
   const [refsPanelCollapsed, setRefsPanelCollapsed] = useState<boolean>(false);
-  const [refsActiveTab, setRefsActiveTab] = useState<"indicators" | "connections">("indicators");
+  const [refsActiveTab, setRefsActiveTab] = useState<"indicators" | "connections" | "status">("indicators");
 
   // Список пресетів "Складних об'єктів" (пігулка тощо) — при виборі
   // відкриває поля налаштувань (підсвітка/кольори/розміри), перед тим як
@@ -1460,6 +1493,12 @@ export default function AppBoundedCanvas() {
   // взаємодії, не даних проєкту).
   const [connectionHiddenIds, setConnectionHiddenIds] = useState<Set<number>>(new Set());
 
+  // Результат ОСТАННЬОЇ реальної спроби завантажити liveBinding-показник —
+  // лише для елементів, де все підключено (дата, і МКХ-10/лікар де треба),
+  // але запит або впав, або не знайшов рядка за цей період. Проміжний стан
+  // взаємодії (як connectionHiddenIds вище), не властивість проєкту.
+  const [liveIndicatorReasons, setLiveIndicatorReasons] = useState<Record<number, LiveIndicatorReason>>({});
+
   // Часові зв'язки (set-year/set-month/set-week/set-day) — довільна кількість
   // елементів-джерел (рік, місяць, тиждень, день — користувач сам створює
   // стільки, скільки треба конкретному показнику: комусь досить року,
@@ -1505,16 +1544,16 @@ export default function AppBoundedCanvas() {
   const resolveLiveIndicatorValue = async (
     binding: NonNullable<CanvasElement["liveBinding"]>,
     ctx: NonNullable<CanvasElement["timeContext"]>
-  ): Promise<string> => {
+  ): Promise<{ value: string; reason: LiveIndicatorReason }> => {
     const period = buildPeriodKey(ctx);
-    if (!period) return "—";
+    if (!period) return { value: "—", reason: "no-period" };
     // Без цих параметрів RPC поверне СЕРІЮ з кількох рядків на один і той
     // самий period_label (кілька діагнозів/лікарів за той самий рік) —
     // .find нижче мовчки взяв би перший-ліпший, довільний. Доки відповідний
     // вузол (🩻 діагностичний / 👨‍⚕️ лікарський) не підключено — лишаємо "—",
     // той самий принцип, що й для періоду вище.
-    if (binding.source === "diagnoses" && !binding.params.icd) return "—";
-    if (binding.source === "doctor-hierarchy" && !binding.params.doctorId) return "—";
+    if (binding.source === "diagnoses" && !binding.params.icd) return { value: "—", reason: "no-icd" };
+    if (binding.source === "doctor-hierarchy" && !binding.params.doctorId) return { value: "—", reason: "no-doctor" };
     try {
       const params = new URLSearchParams({
         ...binding.params,
@@ -1523,15 +1562,29 @@ export default function AppBoundedCanvas() {
       });
       const res = await fetch(`${LIVE_INDICATOR_ENDPOINTS[binding.source]}?${params.toString()}`);
       const data = await res.json();
-      if (!res.ok) return "—";
+      if (!res.ok) return { value: "—", reason: "http-error" };
       const rows = (data.rows ?? []) as Record<string, unknown>[];
       const row = rows.find((r) => r.period_label === period.label);
-      if (!row) return "—";
+      if (!row) return { value: "—", reason: "no-match" };
       const raw = row[binding.field];
-      return raw === null || raw === undefined ? "—" : `${raw}${binding.suffix || ""}`;
+      return raw === null || raw === undefined
+        ? { value: "—", reason: "no-match" }
+        : { value: `${raw}${binding.suffix || ""}`, reason: "ok" };
     } catch {
-      return "—";
+      return { value: "—", reason: "http-error" };
     }
+  };
+
+  // Спільний "записати результат fetch-у" для 3 місць нижче, що викликають
+  // resolveLiveIndicatorValue — і content, і причину (для бейджа/панелі
+  // "Стан даних") оновлюємо разом, одним викликом.
+  const applyLiveIndicatorResult = (targetId: number, value: string, reason: LiveIndicatorReason) => {
+    setLiveIndicatorReasons((prev) => ({ ...prev, [targetId]: reason }));
+    setElements((prev) => {
+      const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
+      saveToHistory(pages, next);
+      return next;
+    });
   };
 
   const runConnectionActions = (sourceId: number) => {
@@ -1701,12 +1754,8 @@ export default function AppBoundedCanvas() {
       });
 
       liveFetches.forEach(({ targetId, binding, nextContext }) => {
-        void resolveLiveIndicatorValue(binding, nextContext).then((value) => {
-          setElements((prev) => {
-            const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
-            saveToHistory(pages, next);
-            return next;
-          });
+        void resolveLiveIndicatorValue(binding, nextContext).then(({ value, reason }) => {
+          applyLiveIndicatorResult(targetId, value, reason);
         });
       });
     }
@@ -1754,12 +1803,8 @@ export default function AppBoundedCanvas() {
       });
 
       paramFetches.forEach(({ targetId, binding, ctx }) => {
-        void resolveLiveIndicatorValue(binding, ctx).then((value) => {
-          setElements((prev) => {
-            const next = prev.map((item) => (item.id === targetId ? { ...item, content: value } : item));
-            saveToHistory(pages, next);
-            return next;
-          });
+        void resolveLiveIndicatorValue(binding, ctx).then(({ value, reason }) => {
+          applyLiveIndicatorResult(targetId, value, reason);
         });
       });
     }
@@ -2171,6 +2216,19 @@ export default function AppBoundedCanvas() {
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Полотно (<main>, нижче) — саме воно скролиться (overflow-auto), коли
+  // елементів більше, ніж влазить у вікно; координати el.x/el.y живуть у
+  // ЙОГО системі координат, тож "де об'єкт зараз на екрані" — це завжди
+  // el.x/el.y МІНУС поточний scrollLeft/scrollTop цього <main>, а не самі
+  // el.x/el.y (без цього об'єкт, доданий чи клікнутий далеко внизу
+  // прокрученого полотна, вважався б "видимим" там, де насправді порожньо).
+  const canvasRef = useRef<HTMLElement>(null);
+  // Спільна обгортка навколо ВСІХ форм вкладки "🧩 Об'єкти" (пошук/DB-
+  // об'єкти/майстер/дизайн-пресети) — у кожен момент реально показана
+  // щонайбільше ОДНА з них (selectedComplexObjectId), тож простий useRef
+  // на всіх їхніх кореневих <div>-ах завжди вказує саме на ту, що зараз
+  // змонтована.
+  const activeComplexFormRef = useRef<HTMLDivElement>(null);
 
   // Захист від "паразитного" кліку по порожньому полотну одразу після
   // drag/resize. Вкладений елемент обмежений bounds="parent" — якщо курсор
@@ -3092,6 +3150,105 @@ export default function AppBoundedCanvas() {
     if (selectedIds.length > 0) setActivePanelTab("params");
   }, [selectedIds]);
 
+  // Панель "🧱 Інструменти" переїжджає прямо ПІД щойно виділений (одиночним
+  // кліком) елемент — раніше вона лишалась там, де її востаннє поставили
+  // (чи де вона збереглась у localStorage), і щоб побачити властивості
+  // клікнутого об'єкта, доводилось щоразу шукати панель очима чи гортати
+  // вікно до неї. Спрацьовує лише на ПЕРЕХІД до нового одиночного виділення
+  // (lastPanelAnchorIdRef) — щоб не смикати панель на кожен додатковий клік
+  // під час мультивибору (Shift/Ctrl) і не повертати її силоміць, якщо
+  // користувач сам відсунув панель, а тоді просто повторно клікнув той самий
+  // об'єкт.
+  const lastPanelAnchorIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (selectedIds.length !== 1) {
+      lastPanelAnchorIdRef.current = null;
+      return;
+    }
+    const id = selectedIds[0];
+    if (lastPanelAnchorIdRef.current === id) return;
+    lastPanelAnchorIdRef.current = id;
+
+    const abs = getAbsolutePosition(id);
+    const canvas = canvasRef.current;
+    if (!abs || !canvas) return;
+
+    // Крок 1 — підтягуємо ПОЛОТНО так, щоб об'єкт був повністю видимий:
+    // el.x/el.y живуть у системі координат <main>, а не вікна, тож об'єкт,
+    // доданий (майстром/пресетом) чи клікнутий (у дереві) далеко за межами
+    // прокрученої зараз області, інакше лишався б невидимим — а порахована
+    // нижче "позиція на екрані" стосувалась би точки, якої фізично нема.
+    const margin = 24;
+    let { scrollLeft, scrollTop } = canvas;
+    const { clientWidth, clientHeight } = canvas;
+    if (abs.y < scrollTop + margin) {
+      scrollTop = Math.max(0, abs.y - margin);
+    } else if (abs.y + abs.height > scrollTop + clientHeight - margin) {
+      scrollTop = abs.y + abs.height - clientHeight + margin;
+    }
+    if (abs.x < scrollLeft + margin) {
+      scrollLeft = Math.max(0, abs.x - margin);
+    } else if (abs.x + abs.width > scrollLeft + clientWidth - margin) {
+      scrollLeft = abs.x + abs.width - clientWidth + margin;
+    }
+    if (scrollLeft !== canvas.scrollLeft || scrollTop !== canvas.scrollTop) {
+      // "smooth" тут ненадійний (у частини браузерів/налаштувань "зменшити
+      // анімацію" просто мовчки нічого не прокручує) — миттєвий скрол менш
+      // ефектний, зате гарантовано спрацьовує щоразу.
+      canvas.scrollTo({ left: scrollLeft, top: scrollTop, behavior: "instant" as ScrollBehavior });
+    }
+
+    // Крок 2 — рахуємо позицію панелі вже в координатах ЕКРАНА (мінус
+    // скрол полотна, до якого щойно прокрутили вище). Пробуємо ПІД
+    // об'єктом, потім НАД ним, і лише якщо панель за висотою (типово
+    // 640px) не влазить у вікно ні знизу, ні згори (об'єкт десь посеред
+    // екрана) — ставимо її ЗБОКУ (праворуч/ліворуч): на відміну від
+    // "прилаштувати згори/знизу як вийде", бічне розміщення гарантовано
+    // не перекриває сам об'єкт, бо їхні діапазони по X більше не
+    // перетинаються (а над/під — по Y).
+    const screenX = abs.x - scrollLeft;
+    const screenY = abs.y - scrollTop;
+    const gap = 12;
+    const effectiveWidth = panelSize.width;
+    const effectiveHeight = toolsPanelCollapsed ? 44 : panelSize.height;
+
+    const fitsBelow = screenY + abs.height + gap + effectiveHeight <= window.innerHeight;
+    const fitsAbove = screenY - gap - effectiveHeight >= 0;
+    const fitsRight = screenX + abs.width + gap + effectiveWidth <= window.innerWidth;
+    const fitsLeft = screenX - gap - effectiveWidth >= 0;
+
+    let next: { x: number; y: number };
+    if (fitsBelow) {
+      next = { x: screenX, y: screenY + abs.height + gap };
+    } else if (fitsAbove) {
+      next = { x: screenX, y: screenY - effectiveHeight - gap };
+    } else if (fitsRight) {
+      next = { x: screenX + abs.width + gap, y: screenY };
+    } else if (fitsLeft) {
+      next = { x: screenX - effectiveWidth - gap, y: screenY };
+    } else {
+      // Вікно замале для панелі за будь-якою стороною — найкраще, що
+      // лишається, це притиснути її clampPanelPos нижче.
+      next = { x: screenX, y: screenY + abs.height + gap };
+    }
+
+    setPanelPos(clampPanelPos(next, { width: effectiveWidth, height: effectiveHeight }));
+  }, [selectedIds, panelSize.width, panelSize.height, toolsPanelCollapsed]);
+
+  // Клік на пункт у вкладці "🧩 Об'єкти" (напр. "📡 Живий показник") лише
+  // підсвічує сам пункт — форма з полями для налаштування з'являється
+  // нижче, під усім списком (щоб новий пункт списку не зсував форми
+  // попередніх пунктів, див. коментар біля activeComplexFormRef). Список
+  // із ~18 пунктів довший за висоту панелі, тож без цього ефекту форму
+  // після кліку доводилось шукати, гортаючи панель вручну.
+  useEffect(() => {
+    if (!selectedComplexObjectId) return;
+    activeComplexFormRef.current?.scrollIntoView({
+      behavior: "instant" as ScrollBehavior,
+      block: "nearest",
+    });
+  }, [selectedComplexObjectId]);
+
   const handleSelectElement = (id: number | null, isMultiKey = false) => {
     if (id === null) {
       setSelectedIds([]);
@@ -3675,6 +3832,17 @@ export default function AppBoundedCanvas() {
   // картки часове джерело через "🔗 Зв'язки" (runConnectionActions робить
   // fetch за цим liveBinding). Працює незалежно від того, що саме виділено
   // — число, підпис чи саму рамку картки — знаходить пару серед дітей.
+  // Ручне "спробувати ще раз" для панелі "📡 Стан даних" — той самий
+  // resolveLiveIndicatorValue, що й автоматичні тригери, але за кліком:
+  // корисно, коли причина була "помилка запиту" (мережа/сервер) чи "нема
+  // рядка" (дані могли з'явитись у базі відтоді).
+  const handleRefreshLiveIndicator = (el: CanvasElement) => {
+    if (!el.liveBinding) return;
+    void resolveLiveIndicatorValue(el.liveBinding, el.timeContext ?? {}).then(({ value, reason }) => {
+      applyLiveIndicatorResult(el.id, value, reason);
+    });
+  };
+
   const handleBindLiveIndicator = (
     source: NonNullable<CanvasElement["liveBinding"]>["source"],
     field: CubeFieldDef,
@@ -3942,7 +4110,7 @@ export default function AppBoundedCanvas() {
     // не з "—" (яке довелось би "розбудити" ручним кліком, і людина не знала
     // б, що саме треба клікнути).
     const currentYear = new Date().getFullYear();
-    const value = await resolveLiveIndicatorValue(binding, { year: String(currentYear) });
+    const { value } = await resolveLiveIndicatorValue(binding, { year: String(currentYear) });
     if (value === "—") {
       setWizardError(
         wizardLevel === "department"
@@ -5609,13 +5777,10 @@ export default function AppBoundedCanvas() {
           });
         }
         if (el.liveBinding) {
+          const reason = diagnoseLiveBinding(el, liveIndicatorReasons[el.id]);
           badges.push(
-            el.content === "—"
-              ? {
-                  icon: "⚠️",
-                  title:
-                    "Показник прив'язано, але число не приходить: до цієї картки ще не підключено дату (а для «Лікарів»/«Діагнозів» — ще й лікаря/МКХ-10) через «🔗 Зв'язки»",
-                }
+            reason && reason !== "ok"
+              ? { icon: "⚠️", title: `Число не приходить: ${LIVE_INDICATOR_REASON_LABELS[reason]}` }
               : { icon: "📡", title: "Живий показник — число приходить з бази" }
           );
         }
@@ -7556,6 +7721,14 @@ export default function AppBoundedCanvas() {
               );
             })()}
 
+            {/* Усі форми пресетів нижче (пошук/DB-об'єкти/майстер/дизайн-
+                пресети) обгорнуті СПІЛЬНИМ ref — щойно рендериться будь-яка
+                з них (клік по пункту списку вище), effect на
+                selectedComplexObjectId прокручує саме її у видиму область.
+                Раніше форма з'являлась одразу під усім (потенційно довгим)
+                списком пунктів, і щоб її побачити, доводилось гортати панель
+                вниз самому. */}
+            <div ref={activeComplexFormRef}>
             {selectedComplexObjectId === "patient-search" && (
               <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-lg space-y-2.5">
                 <div className="flex gap-1.5">
@@ -8501,107 +8674,6 @@ export default function AppBoundedCanvas() {
               </div>
             )}
 
-            {/* Власні складні об'єкти — зібрані з простих фігур на полотні
-                (прямокутник, текст тощо), той самий принцип збереження, що
-                й у "Бібліотеці": виділити → зберегти під назвою → додавати
-                повторно. handleAddLibraryItem/renderLibraryItemTree тут
-                свідомо переюзані — вони вже узагальнені (працюють з будь-
-                яким { id, name, elements, rootIds }), а не прив'язані до
-                самого списку libraryItems. Розташовано ПІСЛЯ всіх форм
-                пошуку/завантаження (а не одразу під списком кнопок) — інакше
-                кожна нова спеціальна форма (Пошук лікаря, Ординаторська…)
-                опинялася б усе нижче й нижче під цим (потенційно довгим)
-                списком, і її не було б видно без прокрутки. */}
-            <div className="pt-2 border-t border-slate-200 space-y-1.5">
-              <div className="text-[10px] text-slate-400">
-                Свій складний об&apos;єкт — зберіть його з простих фігур на полотні (прямокутник, текст тощо), виділіть і збережіть тут.
-              </div>
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={complexObjectNameDraft}
-                  onChange={(e) => setComplexObjectNameDraft(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && handleSaveSelectionAsComplexObject(complexObjectNameDraft)
-                  }
-                  placeholder={
-                    selectedIds.length === 0 ? "Виділіть елемент(и) на полотні…" : "Назва складного об'єкта…"
-                  }
-                  disabled={selectedIds.length === 0}
-                  className="flex-1 p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
-                />
-                <button
-                  onClick={() => handleSaveSelectionAsComplexObject(complexObjectNameDraft)}
-                  disabled={selectedIds.length === 0 || !complexObjectNameDraft.trim()}
-                  className="px-2.5 bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white text-xs rounded-md shrink-0"
-                  title="Зберегти виділене як складний об'єкт"
-                >
-                  💾
-                </button>
-              </div>
-              {customComplexObjects.length === 0 ? (
-                <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
-                  Поки немає власних складних об&apos;єктів.
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {customComplexObjects.map((item) => {
-                    const isOpen = openCustomComplexObjectIds.has(item.id);
-                    const hasStructure = item.elements.length > 1;
-                    return (
-                      <div key={item.id} className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-                        <div className="p-2 flex items-center gap-2">
-                          {hasStructure ? (
-                            <button
-                              type="button"
-                              onClick={() => toggleCustomComplexObjectOpen(item.id)}
-                              className="shrink-0 w-3.5 text-center text-[10px] text-slate-400"
-                              title={isOpen ? "Згорнути склад" : "Показати склад"}
-                            >
-                              {isOpen ? "▼" : "▶"}
-                            </button>
-                          ) : (
-                            <span className="shrink-0 w-3.5" />
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-slate-700 truncate">{item.name}</div>
-                            <div className="text-[10px] text-slate-400">
-                              {item.rootIds.length > 1 ? `${item.rootIds.length} елем.` : "1 елемент"}
-                              {item.elements.length > item.rootIds.length
-                                ? ` + ${item.elements.length - item.rootIds.length} вклад.`
-                                : ""}
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => handleAddLibraryItem(item)}
-                            className="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white text-[11px] rounded-md shrink-0"
-                            title="Додати на полотно"
-                          >
-                            ➕
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (confirm(`Видалити «${item.name}» зі складних об'єктів?`))
-                                handleDeleteCustomComplexObject(item.id);
-                            }}
-                            className="px-2 py-1 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-500 text-[11px] rounded-md shrink-0"
-                            title="Видалити"
-                          >
-                            🗑
-                          </button>
-                        </div>
-                        {isOpen && hasStructure && (
-                          <div className="px-2 pb-2 pt-1 border-t border-slate-100 bg-slate-50/60">
-                            {renderLibraryItemTree(item)}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
             {/* Форма налаштувань показується лише для ВБУДОВАНИХ пресетів
                 (COMPLEX_OBJECTS) — у DB-об'єктів і майстра свої власні форми
                 вище. Раніше тут стояв перелік усіх id, які треба пропустити:
@@ -8695,6 +8767,109 @@ export default function AppBoundedCanvas() {
                   </div>
                 );
               })()}
+            </div>
+
+            {/* Власні складні об'єкти — зібрані з простих фігур на полотні
+                (прямокутник, текст тощо), той самий принцип збереження, що
+                й у "Бібліотеці": виділити → зберегти під назвою → додавати
+                повторно. handleAddLibraryItem/renderLibraryItemTree тут
+                свідомо переюзані — вони вже узагальнені (працюють з будь-
+                яким { id, name, elements, rootIds }), а не прив'язані до
+                самого списку libraryItems. Розташовано ПІСЛЯ всіх форм
+                пошуку/завантаження і всіх форм пресетів вище (а не одразу
+                під списком кнопок) — інакше кожна нова спеціальна форма
+                (Пошук лікаря, Ординаторська…) опинялася б усе нижче й нижче
+                під цим (потенційно довгим) списком, і її не було б видно
+                без прокрутки. */}
+            <div className="pt-2 border-t border-slate-200 space-y-1.5">
+              <div className="text-[10px] text-slate-400">
+                Свій складний об&apos;єкт — зберіть його з простих фігур на полотні (прямокутник, текст тощо), виділіть і збережіть тут.
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={complexObjectNameDraft}
+                  onChange={(e) => setComplexObjectNameDraft(e.target.value)}
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && handleSaveSelectionAsComplexObject(complexObjectNameDraft)
+                  }
+                  placeholder={
+                    selectedIds.length === 0 ? "Виділіть елемент(и) на полотні…" : "Назва складного об'єкта…"
+                  }
+                  disabled={selectedIds.length === 0}
+                  className="flex-1 p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
+                />
+                <button
+                  onClick={() => handleSaveSelectionAsComplexObject(complexObjectNameDraft)}
+                  disabled={selectedIds.length === 0 || !complexObjectNameDraft.trim()}
+                  className="px-2.5 bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white text-xs rounded-md shrink-0"
+                  title="Зберегти виділене як складний об'єкт"
+                >
+                  💾
+                </button>
+              </div>
+              {customComplexObjects.length === 0 ? (
+                <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                  Поки немає власних складних об&apos;єктів.
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {customComplexObjects.map((item) => {
+                    const isOpen = openCustomComplexObjectIds.has(item.id);
+                    const hasStructure = item.elements.length > 1;
+                    return (
+                      <div key={item.id} className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                        <div className="p-2 flex items-center gap-2">
+                          {hasStructure ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleCustomComplexObjectOpen(item.id)}
+                              className="shrink-0 w-3.5 text-center text-[10px] text-slate-400"
+                              title={isOpen ? "Згорнути склад" : "Показати склад"}
+                            >
+                              {isOpen ? "▼" : "▶"}
+                            </button>
+                          ) : (
+                            <span className="shrink-0 w-3.5" />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-bold text-slate-700 truncate">{item.name}</div>
+                            <div className="text-[10px] text-slate-400">
+                              {item.rootIds.length > 1 ? `${item.rootIds.length} елем.` : "1 елемент"}
+                              {item.elements.length > item.rootIds.length
+                                ? ` + ${item.elements.length - item.rootIds.length} вклад.`
+                                : ""}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleAddLibraryItem(item)}
+                            className="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white text-[11px] rounded-md shrink-0"
+                            title="Додати на полотно"
+                          >
+                            ➕
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Видалити «${item.name}» зі складних об'єктів?`))
+                                handleDeleteCustomComplexObject(item.id);
+                            }}
+                            className="px-2 py-1 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-500 text-[11px] rounded-md shrink-0"
+                            title="Видалити"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                        {isOpen && hasStructure && (
+                          <div className="px-2 pb-2 pt-1 border-t border-slate-100 bg-slate-50/60">
+                            {renderLibraryItemTree(item)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
           )}
           {activePanelTab === "library" && (
@@ -8982,6 +9157,7 @@ export default function AppBoundedCanvas() {
             {(
               [
                 { key: "indicators" as const, label: "📖 Показники" },
+                { key: "status" as const, label: "📡 Стан даних" },
                 { key: "connections" as const, label: "🔌 Підключення" },
               ]
             ).map((tab) => (
@@ -9056,6 +9232,56 @@ export default function AppBoundedCanvas() {
                 </div>
               );
             })}
+          </div>
+          </>
+          )}
+          {refsActiveTab === "status" && (
+          <>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Усі "📊 Картки КПІ", підключені до живого показника, з усіх сторінок проєкту — і чому саме та чи інша не показує число, якщо не показує.
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {(() => {
+              const bound = elements.filter((el) => el.liveBinding);
+              if (bound.length === 0) {
+                return (
+                  <div className="p-3 text-center bg-slate-50/70 border border-dashed rounded-lg text-slate-400 text-[11px]">
+                    Живих показників ще нема. Додайте «📊 Картку КПІ» (вкладка «🧩 Об'єкти») і прив'яжіть до неї показник, або скористайтесь майстром «📡 Живий показник».
+                  </div>
+                );
+              }
+              return bound.map((el) => {
+                const reason = diagnoseLiveBinding(el, liveIndicatorReasons[el.id]);
+                const label = elements.find((item) => item.parentId === el.parentId && item.isKpiLabelSlot)?.content;
+                const pageName = pages.find((p) => p.id === el.pageId)?.name ?? el.pageId;
+                const isOk = reason === "ok";
+                return (
+                  <div
+                    key={el.id}
+                    className={`rounded-lg border p-2 space-y-1 ${isOk ? "border-emerald-200 bg-emerald-50/50" : "border-amber-200 bg-amber-50/50"}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-800 truncate">
+                          {isOk ? "📡" : "⚠️"} {label || "(без підпису)"}
+                        </div>
+                        <div className="text-[10px] text-slate-400">Сторінка «{pageName}» · {el.liveBinding!.source}</div>
+                      </div>
+                      <button
+                        onClick={() => handleRefreshLiveIndicator(el)}
+                        title="Спробувати завантажити ще раз"
+                        className="shrink-0 px-2 py-1 bg-white hover:bg-slate-100 border border-slate-300 rounded-md text-[11px]"
+                      >
+                        🔄
+                      </button>
+                    </div>
+                    <div className={`text-[10px] leading-snug ${isOk ? "text-emerald-700" : "text-amber-700"}`}>
+                      {isOk ? `Значення: ${el.content}` : LIVE_INDICATOR_REASON_LABELS[reason ?? "not-connected"]}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
           </>
           )}
@@ -9139,6 +9365,7 @@ export default function AppBoundedCanvas() {
 
                 {/* Полотно на всю сторінку */}
         <main
+          ref={canvasRef}
           onClick={() => {
             if (suppressNextCanvasClickRef.current) {
               suppressNextCanvasClickRef.current = false;
