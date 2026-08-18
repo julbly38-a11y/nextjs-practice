@@ -1419,6 +1419,25 @@ export default function AppBoundedCanvas() {
   const [connections, setConnections] = useState<ElementConnection[]>([]);
   const [linkMode, setLinkMode] = useState<boolean>(false);
   const [pendingLinkSourceId, setPendingLinkSourceId] = useState<number | null>(null);
+
+  // Наведення на зв'язок у списку вкладки "🔗 Зв'язки" — підсвічує САМУ
+  // лінію й ОБИДВА її кінці на полотні, щоб було видно, який рядок списку
+  // якій парі елементів відповідає (у списку видно лише текст елементів, а
+  // однакових написів на полотні може бути багато).
+  const [hoveredConnectionId, setHoveredConnectionId] = useState<string | null>(null);
+
+  // Режим взаємодії з полотном. РЕДАГУВАННЯ — клік лише виділяє елемент
+  // (нічого не запускається, нікуди не переходить, у базу не йде жоден
+  // запит), можна тягати й міняти розмір. РОБОТА — полотно поводиться так,
+  // як побачить кінцевий глядач: клік запускає зв'язки, тригери появи,
+  // перемикання сторінок, пігулки-toggle і живі запити, але НЕ виділяє й не
+  // дає нічого зрушити. Раніше один клік робив обидві речі одразу — не
+  // можна було вибрати кнопку, не перемкнувши при цьому сторінку й не
+  // відправивши запит. Стан навмисно НЕ зберігається в localStorage: це
+  // поточна дія, а не властивість проєкту (як linkMode вище) — після
+  // перезавантаження завжди безпечне "редагування".
+  const [interactionMode, setInteractionMode] = useState<"edit" | "work">("edit");
+  const isWorkMode = interactionMode === "work";
   // Перемикає ОДНУ функцію в масиві дій зв'язку (чекбокс) — не замінює
   // список цілком, тож на одному зв'язку можна тримати кілька функцій
   // одночасно (напр. "показати ціль" + "задає МІСЯЦЬ цілі").
@@ -3117,7 +3136,15 @@ export default function AppBoundedCanvas() {
       return;
     }
 
-    handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
+    // РЕДАГУВАННЯ — клік лише виділяє: жодних зв'язків, переходів між
+    // сторінками, toggle-станів і запитів у базу (див. interactionMode).
+    if (!isWorkMode) {
+      handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
+      return;
+    }
+
+    // РОБОТА — навпаки: усе спрацьовує, але виділення не чіпаємо (щоб
+    // панель "Параметри" не перебивала те, що людина зараз тестує).
     runConnectionActions(el.id);
 
     const clickTargetId = getClickTargetId(el, currentPageId);
@@ -3870,6 +3897,181 @@ export default function AppBoundedCanvas() {
     { key: "children", label: "ДІТЕЙ" },
     { key: "elderly", label: "ПОХИЛОГО ВІКУ" },
   ];
+
+  // ── Майстер "📡 Живий показник" ───────────────────────────────────────
+  // Збирає ГОТОВУ робочу зв'язку з бекендом однією дією, замість ручного
+  // ланцюга з ~16 кроків через 4 вкладки (додати порожню картку → знайти
+  // форму куба → прив'язати показник → окремо створити елемент-дату →
+  // позначити його часовим джерелом → увімкнути режим з'єднання → два
+  // кліки → чекбокс дії → і аж тоді клік по джерелу). Найбільший бар'єр був
+  // не в складності кожного кроку, а в тому, що про існування половини з них
+  // ніде не сказано — зокрема, що елемент-дату треба створити САМОМУ.
+  //
+  // Свідомо НЕ ховає механіку, а показує її: на полотні лишається той самий
+  // набір частин, що й при ручному складанні (ряд пігулок-років у блоці +
+  // картка КПІ + лінія зв'язку між ними), тож людина бачить, З ЧОГО це
+  // зроблено, і далі може повторити/змінити руками. Одна лінія на всі роки —
+  // завдяки каскаду (зв'язок веде від БЛОКА пігулок, а клік по кожній
+  // окремій пігулці підставляє її власний content, див. runConnectionActions).
+  const [wizardField, setWizardField] = useState<string>("total_cases");
+  const [wizardLevel, setWizardLevel] = useState<"hospital" | "department">("hospital");
+  const [wizardDepartment, setWizardDepartment] = useState<string>("");
+  const [wizardLoading, setWizardLoading] = useState(false);
+  const [wizardError, setWizardError] = useState<string | null>(null);
+
+  const handleRunLiveIndicatorWizard = async () => {
+    const field = HIERARCHY_FIELDS.find((f) => f.key === wizardField);
+    if (!field) return;
+    if (wizardLevel === "department" && !wizardDepartment.trim()) {
+      setWizardError("Впишіть назву відділення (або поверніться на рівень «Уся лікарня»)");
+      return;
+    }
+    setWizardLoading(true);
+    setWizardError(null);
+
+    const params: Record<string, string> = { level: wizardLevel };
+    if (wizardLevel === "department") params.department = wizardDepartment.trim();
+    const binding: NonNullable<CanvasElement["liveBinding"]> = {
+      source: "hierarchy",
+      field: field.key,
+      suffix: field.suffix,
+      params,
+    };
+
+    // Поточний рік — активний одразу, щоб картка з'явилась уже з числом, а
+    // не з "—" (яке довелось би "розбудити" ручним кліком, і людина не знала
+    // б, що саме треба клікнути).
+    const currentYear = new Date().getFullYear();
+    const value = await resolveLiveIndicatorValue(binding, { year: String(currentYear) });
+    if (value === "—") {
+      setWizardError(
+        wizardLevel === "department"
+          ? `За ${currentYear} рік для відділення «${wizardDepartment.trim()}» даних немає — перевірте назву відділення`
+          : `За ${currentYear} рік даних немає — можливо, у базі ще нема цьогорічних записів`
+      );
+      setWizardLoading(false);
+      return;
+    }
+
+    const years = hospitalKpiYearOptions;
+    const pillGap = 8;
+    const pillHeight = 30;
+    const pillWidths = years.map((y) => Math.max(60, Math.round(String(y).length * 9 + 32)));
+    const pillsWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+
+    const cardWidth = 200;
+    const cardHeight = 70;
+    const rowGap = 24;
+    const totalWidth = Math.max(pillsWidth, cardWidth);
+    const totalHeight = pillHeight + rowGap + cardHeight;
+    const freePos = findFreePosition(forcedParentId, totalWidth, totalHeight);
+
+    const baseId = Date.now();
+    const pillsBoxId = baseId;
+    const cardId = baseId + 100;
+    const numberId = baseId + 101;
+    const labelId = baseId + 102;
+
+    // Прозорий блок-обгортка для пігулок — саме він, а не кожна пігулка
+    // окремо, стає джерелом зв'язку (каскад).
+    const pillsBox: CanvasElement = {
+      ...buildComplexObjectBase(pillsBoxId, ""),
+      type: "block",
+      width: pillsWidth,
+      height: pillHeight,
+      x: freePos.x,
+      y: freePos.y,
+      parentId: forcedParentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+
+    let pillX = 0;
+    const pills: CanvasElement[] = years.map((year, i) => {
+      const el: CanvasElement = {
+        ...buildComplexObjectBase(pillsBoxId + 1 + i, String(year)),
+        ...PILL_STYLE_DEFAULTS,
+        width: pillWidths[i],
+        height: pillHeight,
+        x: pillX,
+        y: 0,
+        parentId: pillsBoxId,
+        content: String(year),
+        // Кожна пігулка — повноцінне часове джерело (той самий прапорець, що
+        // ставиться вручну в Параметрах), тож її видно як 🕐 і її можна
+        // перепідключити кудись іще без жодного доналаштування.
+        timeSourceUnit: "year",
+        isPressed: year === currentYear,
+      };
+      pillX += pillWidths[i] + pillGap;
+      return el;
+    });
+
+    const cardY = freePos.y + pillHeight + rowGap;
+    const card: CanvasElement = {
+      ...buildComplexObjectBase(cardId, ""),
+      type: "block",
+      width: cardWidth,
+      height: cardHeight,
+      x: freePos.x,
+      y: cardY,
+      parentId: forcedParentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+    const numberEl: CanvasElement = {
+      ...buildComplexObjectBase(numberId, value),
+      type: "text",
+      width: cardWidth,
+      height: 44,
+      x: 0,
+      y: 0,
+      parentId: cardId,
+      fontSize: 36,
+      fontWeight: "300",
+      textColor: "#1a1a1a",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiNumberSlot: true,
+      liveBinding: binding,
+      timeContext: { year: String(currentYear) },
+    };
+    const labelEl: CanvasElement = {
+      ...buildComplexObjectBase(labelId, field.label),
+      type: "text",
+      width: cardWidth,
+      height: 26,
+      x: 0,
+      y: 44,
+      parentId: cardId,
+      fontSize: 20,
+      fontWeight: "300",
+      textColor: "#9a958f",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiLabelSlot: true,
+    };
+
+    const connection: ElementConnection = {
+      id: `link-${baseId}`,
+      fromId: pillsBoxId,
+      toId: numberId,
+      actions: ["set-year"],
+    };
+
+    const nextElements = [...elements, pillsBox, ...pills, card, numberEl, labelEl];
+    setElements(nextElements);
+    setConnections([...connections, connection]);
+    saveToHistory(pages, nextElements, [...connections, connection]);
+    setSelectedIds([cardId]);
+    setWizardLoading(false);
+  };
 
   const handleLoadHierarchy = async () => {
     setHierarchyLoading(true);
@@ -5013,6 +5215,15 @@ export default function AppBoundedCanvas() {
     // підсвітка рамкою, щоб було видно, що чекає на клік по цілі.
     const isPendingLinkSource = pendingLinkSourceId === el.id;
 
+    // Наведення на рядок у списку зв'язків підсвічує обидва кінці саме
+    // цього зв'язку — інакше в списку видно лише текст ("2026 → —"), а
+    // знайти ту саму пару серед десятків однакових написів на полотні
+    // неможливо.
+    const hoveredConn = hoveredConnectionId
+      ? connections.find((c) => c.id === hoveredConnectionId)
+      : undefined;
+    const isConnectionHoverEnd = !!hoveredConn && (hoveredConn.fromId === el.id || hoveredConn.toId === el.id);
+
     return (
       <Rnd
         key={el.id}
@@ -5075,13 +5286,19 @@ export default function AppBoundedCanvas() {
           const nextElements = elements.map((item) => (item.id === el.id ? { ...item, ...resolved } : item));
           updateElementsAndHistory(nextElements);
         }}
-        enableResizing={!linkMode}
-        disableDragging={linkMode}
+        // У РОБОТІ полотно поводиться як готова сторінка — нічого не можна
+        // випадково зрушити чи розтягнути (те саме, що вже діяло в linkMode).
+        enableResizing={!linkMode && !isWorkMode}
+        disableDragging={linkMode || isWorkMode}
         style={{ zIndex: isSelected ? 40 : 10 }}
       >
         <div
-          onMouseEnter={() => setHoveredElementId(el.id)}
-          onMouseLeave={() => setHoveredElementId(null)}
+          // Тригер появи "при наведенні" — теж робоча поведінка готової
+          // сторінки, а не редагування: у РЕДАГУВАННІ наведення нічого не
+          // показує й не ховає (інакше елемент зникав би просто від того,
+          // що курсор пройшов повз сусіда).
+          onMouseEnter={() => isWorkMode && setHoveredElementId(el.id)}
+          onMouseLeave={() => isWorkMode && setHoveredElementId(null)}
           onClick={(e) => handleButtonClick(e, el)}
           style={
             {
@@ -5106,6 +5323,18 @@ export default function AppBoundedCanvas() {
                 : el.isPressed
                 ? activeShadow
                 : "none",
+              // Рамка виділення — саме outline, а не border/boxShadow:
+              // outline малюється ПОЗА коробкою й не входить у розміри, тож
+              // не зсуває вміст і не конфліктує з boxShadow вище (той уже
+              // зайнятий станом кнопки й режимом з'єднання). Раніше
+              // виділений елемент не мав НІЯКОЇ позначки на полотні —
+              // єдиною ознакою була цифра в заголовку вкладки "Параметри".
+              outline: isConnectionHoverEnd
+                ? "3px solid #a21caf"
+                : isSelected && !isWorkMode
+                ? "2px solid #f59e0b"
+                : "none",
+              outlineOffset: "1px",
 
               "--hover-bg": isButton ? (el.hoverBgColor || computedBgColor) : computedBgColor,
               "--hover-text": isButton ? (el.hoverTextColor || el.textColor || "#ffffff") : (el.textColor || "#ffffff"),
@@ -5266,7 +5495,14 @@ export default function AppBoundedCanvas() {
                           return;
                         }
 
-                        handleSelectElement(child.id, e.shiftKey || e.ctrlKey || e.metaKey);
+                        // Той самий поділ, що й у handleButtonClick: у
+                        // РЕДАГУВАННІ рядок лише виділяється, у РОБОТІ —
+                        // запускає зв'язки й підсвітку пов'язаних рядків.
+                        if (!isWorkMode) {
+                          handleSelectElement(child.id, e.shiftKey || e.ctrlKey || e.metaKey);
+                          return;
+                        }
+
                         runConnectionActions(child.id);
                         if (child.linkKey) {
                           const matches = elements.filter(
@@ -5345,6 +5581,75 @@ export default function AppBoundedCanvas() {
   // ObjectFrame — рахує позиції з x/y елементів, оновлюється на кожен
   // рендер, тобто сам іде за drag/resize). pointer-events:none, щоб не
   // заважати кліками по елементах під лінією.
+  // Бейджі "що цей елемент уміє" — окремий шар ПОВЕРХ полотна, а не всередині
+  // самого елемента: діти рендеряться у контейнері з overflow:hidden, і бейдж,
+  // винесений над верхнім краєм дитини, там просто обрізався б. Позиції
+  // рахуються тим самим getAbsolutePosition, що й лінії зв'язків, тож шар так
+  // само сам іде за drag/resize.
+  //
+  // Показуємо лише в РЕДАГУВАННІ — у РОБОТІ полотно має виглядати рівно так,
+  // як побачить кінцевий глядач. Роблять видимою механіку, яка досі жила
+  // тільки всередині панелей: чи бере елемент участь у зв'язку, чи він живий
+  // показник, чи він часове джерело — і чи той живий показник узагалі щось
+  // показує.
+  const renderBadgesLayer = () => {
+    if (isWorkMode) return null;
+
+    const badgedElements = elements
+      .filter((el) => isVisibleOnPage(el, currentPageId) && !connectionHiddenIds.has(el.id))
+      .map((el) => {
+        const badges: { icon: string; title: string }[] = [];
+        if (connections.some((c) => c.fromId === el.id || c.toId === el.id)) {
+          badges.push({ icon: "🔗", title: "Бере участь у зв'язку — див. вкладку «🔗 Зв'язки»" });
+        }
+        if (el.timeSourceUnit) {
+          badges.push({
+            icon: "🕐",
+            title: `Часове джерело: задає ${TIME_UNIT_LABELS_NOM[el.timeSourceUnit]} підключеній цілі`,
+          });
+        }
+        if (el.liveBinding) {
+          badges.push(
+            el.content === "—"
+              ? {
+                  icon: "⚠️",
+                  title:
+                    "Показник прив'язано, але число не приходить: до цієї картки ще не підключено дату (а для «Лікарів»/«Діагнозів» — ще й лікаря/МКХ-10) через «🔗 Зв'язки»",
+                }
+              : { icon: "📡", title: "Живий показник — число приходить з бази" }
+          );
+        }
+        return badges.length > 0 ? { el, badges, pos: getAbsolutePosition(el.id) } : null;
+      })
+      .filter((item): item is { el: CanvasElement; badges: { icon: string; title: string }[]; pos: { x: number; y: number; width: number; height: number } } => !!item && !!item.pos);
+
+    if (badgedElements.length === 0) return null;
+
+    return (
+      <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 47 }}>
+        {badgedElements.map(({ el, badges, pos }) => (
+          <div
+            key={el.id}
+            className="absolute flex items-center gap-0.5 select-none"
+            // Над верхнім лівим кутом елемента. Верхні елементи полотна
+            // (y < 14) інакше вилізли б за межі — тоді ставимо бейдж усередину.
+            style={{ left: pos.x, top: pos.y >= 14 ? pos.y - 14 : pos.y }}
+          >
+            {badges.map((badge) => (
+              <span
+                key={badge.icon}
+                title={badge.title}
+                className="text-[11px] leading-none bg-white/95 rounded px-0.5 shadow-sm border border-slate-200 pointer-events-auto cursor-help"
+              >
+                {badge.icon}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const renderConnectionsLayer = () => {
     const visibleConnections = connections.filter((c) => {
       const from = elements.find((e) => e.id === c.fromId);
@@ -5376,13 +5681,17 @@ export default function AppBoundedCanvas() {
           const curveOffset = Math.min(60, dist * 0.2);
           const cx = (x1 + x2) / 2 + (-dy / dist) * curveOffset;
           const cy = (y1 + y2) / 2 + (dx / dist) * curveOffset;
+          // Наведення на рядок цього зв'язку в списку — товща й яскравіша
+          // лінія (кінці підсвічує renderCanvasNode через outline).
+          const isHovered = hoveredConnectionId === c.id;
           return (
             <path
               key={c.id}
               d={`M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`}
               fill="none"
               stroke="#a21caf"
-              strokeWidth={2}
+              strokeWidth={isHovered ? 4 : 2}
+              opacity={hoveredConnectionId && !isHovered ? 0.25 : 1}
               markerEnd="url(#connection-arrow)"
             />
           );
@@ -5412,10 +5721,11 @@ export default function AppBoundedCanvas() {
             onClick={(e) => {
               handleSelectElement(el.id, e.shiftKey || e.ctrlKey || e.metaKey);
               // Клік у дереві ієрархії — той самий "клік на елементі", що й
-              // на полотні чи в рядку списку: теж мусить запускати зв'язки,
-              // підключені до цього елемента (напр. коли елемент незручно
-              // клікнути напряму на полотні через панелі зверху).
-              runConnectionActions(el.id);
+              // на полотні чи в рядку списку: у режимі РОБОТА теж запускає
+              // зв'язки, підключені до цього елемента (напр. коли елемент
+              // незручно клікнути напряму на полотні через панелі зверху).
+              // У РЕДАГУВАННІ — лише виділяє, як і клік на самому полотні.
+              if (isWorkMode) runConnectionActions(el.id);
             }}
             className={`p-2 rounded cursor-pointer text-xs flex items-center justify-between gap-2 transition-all ${
               isSelected
@@ -5571,6 +5881,43 @@ export default function AppBoundedCanvas() {
             >
               ↪️ Redo
             </button>
+          </div>
+
+          {/* РЕЖИМ ВЗАЄМОДІЇ — головний перемикач "що робить клік по
+              полотну". Стоїть одразу після Undo/Redo (а не серед кнопок
+              експорту), бо змінює поведінку КОЖНОГО кліку й має бути
+              помітним завжди. */}
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg border" title="Що робить клік по елементу на полотні">
+            {(
+              [
+                { key: "edit" as const, label: "✏️ Редагування", hint: "Клік лише виділяє елемент — нічого не запускається" },
+                { key: "work" as const, label: "▶️ Робота", hint: "Клік працює як на готовій сторінці: зв'язки, переходи, живі дані" },
+              ]
+            ).map((m) => (
+              <button
+                key={m.key}
+                onClick={() => {
+                  setInteractionMode(m.key);
+                  // Режим з'єднання — інструмент редагування; лишити його
+                  // увімкненим у "Роботі" означало б, що клік знову не
+                  // робить того, що обіцяє перемикач.
+                  if (m.key === "work") {
+                    setLinkMode(false);
+                    setPendingLinkSourceId(null);
+                  }
+                }}
+                title={m.hint}
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all ${
+                  interactionMode === m.key
+                    ? m.key === "work"
+                      ? "bg-emerald-600 text-white shadow-xs"
+                      : "bg-white text-slate-800 shadow-xs"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
           </div>
 
           {/* ПЕРЕМИКАЧ СІТКИ (GRID) */}
@@ -7132,7 +7479,22 @@ export default function AppBoundedCanvas() {
                 },
               ];
 
+              // Майстер стоїть ПЕРШИМ і окремою групою — це єдиний пункт,
+              // що дає готовий результат без знання решти механіки, і саме
+              // з нього має починати той, хто бачить конструктор уперше.
+              const wizardEntries: ComplexListEntry[] = [
+                {
+                  id: "live-indicator-wizard",
+                  label: "📡 Живий показник (майстер)",
+                  description:
+                    "Найшвидший спосіб показати реальні дані: обери показник — і на полотні одразу з'явиться готовий робочий приклад (ряд років + картка з живим числом + зв'язок між ними)",
+                  color: "emerald",
+                  onSelect: () => setSelectedComplexObjectId("live-indicator-wizard"),
+                },
+              ];
+
               const groups: { key: string; title: string; entries: ComplexListEntry[] }[] = [
+                { key: "wizard", title: "⚡ Швидкий старт", entries: wizardEntries },
                 { key: "design", title: "🎨 Дизайн-пресети", entries: designEntries },
                 { key: "search", title: "🔍 Живі дані: пошук", entries: searchEntries },
                 { key: "cubes", title: "📊 Живі дані: куби показників", entries: cubeEntries },
@@ -7432,6 +7794,67 @@ export default function AppBoundedCanvas() {
                     ➕ Додати назву й емблему на полотно
                   </button>
                 )}
+              </div>
+            )}
+
+            {selectedComplexObjectId === "live-indicator-wizard" && (
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2.5">
+                <div className="text-[11px] text-emerald-900 leading-snug">
+                  <b>Два питання — і на полотні готовий живий показник.</b>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    З&apos;являться три пов&apos;язані речі: ряд років, картка з числом і лінія зв&apos;язку між ними. Перемкніть режим на <b>▶️ Робота</b> і клікайте роки — число мінятиметься з бази.
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">1. Що показати?</label>
+                  <select
+                    value={wizardField}
+                    onChange={(e) => setWizardField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    {HIERARCHY_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">2. По чому рахувати?</label>
+                  <select
+                    value={wizardLevel}
+                    onChange={(e) => setWizardLevel(e.target.value as "hospital" | "department")}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="hospital">Уся лікарня</option>
+                    <option value="department">Одне відділення</option>
+                  </select>
+                  {wizardLevel === "department" && (
+                    <input
+                      type="text"
+                      value={wizardDepartment}
+                      onChange={(e) => setWizardDepartment(e.target.value)}
+                      placeholder="Назва відділення (частина назви теж підійде)"
+                      className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white"
+                    />
+                  )}
+                </div>
+
+                {wizardError && (
+                  <div className="text-[10px] text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-1 leading-snug">
+                    {wizardError}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleRunLiveIndicatorWizard}
+                  disabled={wizardLoading}
+                  className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
+                >
+                  {wizardLoading ? "Перевіряю дані…" : "📡 Створити живий показник"}
+                </button>
               </div>
             )}
 
@@ -8179,22 +8602,14 @@ export default function AppBoundedCanvas() {
               )}
             </div>
 
-            {selectedComplexObjectId &&
-              selectedComplexObjectId !== "patient-search" &&
-              selectedComplexObjectId !== "doctor-search" &&
-              selectedComplexObjectId !== "dept-stats-search" &&
-              selectedComplexObjectId !== "hospital-org" &&
-              selectedComplexObjectId !== "hospital-kpi" &&
-              selectedComplexObjectId !== "indicator-form" &&
-              selectedComplexObjectId !== "staff-ordinatorska" &&
-              selectedComplexObjectId !== "hierarchy-cube" &&
-              selectedComplexObjectId !== "doctor-hierarchy-cube" &&
-              selectedComplexObjectId !== "readmission-cube" &&
-              selectedComplexObjectId !== "diagnosis-cube" &&
-              selectedComplexObjectId !== "patient-demo-cube" &&
-              selectedComplexObjectId !== "time-pattern-cube" &&
-              selectedComplexObjectId !== "night-shift" &&
-              selectedComplexObjectId !== "weekend-shift" &&
+            {/* Форма налаштувань показується лише для ВБУДОВАНИХ пресетів
+                (COMPLEX_OBJECTS) — у DB-об'єктів і майстра свої власні форми
+                вище. Раніше тут стояв перелік усіх id, які треба пропустити:
+                кожен новий пункт списку доводилось дописувати й туди, а
+                забутий id падав рантайм-помилкою на template.fields
+                (template був undefined під non-null assertion). Тепер умова
+                та сама по суті, але виражена прямо: "чи існує такий пресет". */}
+            {COMPLEX_OBJECTS.some((t) => t.id === selectedComplexObjectId) &&
               (() => {
                 const template = COMPLEX_OBJECTS.find((t) => t.id === selectedComplexObjectId)!;
                 // Редагування вже існуючої кнопки на полотні (обрана через
@@ -8395,6 +8810,15 @@ export default function AppBoundedCanvas() {
             </div>
           )}
           <div className="p-2 border-b border-slate-200 shrink-0">
+            {/* Створення зв'язків — дія редагування: у режимі "▶️ Робота"
+                клік по елементу свідомо віддано самій сторінці, тож
+                з'єднувати там нічим. Замість мовчазної кнопки, що не
+                спрацьовує, — явне пояснення, куди перемкнутись. */}
+            {isWorkMode ? (
+              <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-md p-2 leading-snug">
+                Зараз увімкнено <b>▶️ Робота</b> — клік по полотну перевіряє готову сторінку. Щоб створювати зв&apos;язки, перемкніть у хедері на <b>✏️ Редагування</b>.
+              </div>
+            ) : (
             <button
               type="button"
               onClick={() => {
@@ -8409,6 +8833,7 @@ export default function AppBoundedCanvas() {
             >
               {linkMode ? "🔗 Режим з'єднання: УВІМКНЕНО" : "🔗 Увімкнути режим з'єднання"}
             </button>
+            )}
             {linkMode && (
               <p className="mt-1.5 text-[10px] text-fuchsia-700 leading-snug">
                 {pendingLinkSourceId === null
@@ -8427,7 +8852,14 @@ export default function AppBoundedCanvas() {
               const fromEl = elements.find((item) => item.id === conn.fromId);
               const toEl = elements.find((item) => item.id === conn.toId);
               return (
-                <div key={conn.id} className="rounded-lg border border-slate-200 bg-white p-2 space-y-1.5">
+                <div
+                  key={conn.id}
+                  onMouseEnter={() => setHoveredConnectionId(conn.id)}
+                  onMouseLeave={() => setHoveredConnectionId(null)}
+                  className={`rounded-lg border bg-white p-2 space-y-1.5 transition-colors ${
+                    hoveredConnectionId === conn.id ? "border-fuchsia-400 bg-fuchsia-50/50" : "border-slate-200"
+                  }`}
+                >
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0 text-xs text-slate-700 truncate">
                       <span className="font-bold">{fromEl ? fromEl.content : "?"}</span>
@@ -8442,6 +8874,16 @@ export default function AppBoundedCanvas() {
                       🗑
                     </button>
                   </div>
+                  {/* Зв'язок без жодної позначеної функції — лінія на
+                      полотні є, але клік по джерелу нічого не робить
+                      (runConnectionActions відсіює такі зв'язки). Досі це
+                      було мовчазним: людина бачила стрілку й вважала, що
+                      все налаштовано. */}
+                  {(!conn.actions || conn.actions.length === 0) && (
+                    <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-1 leading-snug">
+                      ⚠️ Зв&apos;язок ще нічого не робить — позначте хоча б одну функцію нижче.
+                    </div>
+                  )}
                   <div className="text-[10px] text-slate-500 font-semibold">Функції (можна кілька):</div>
                   <div className="space-y-1">
                     {CONNECTION_ACTION_OPTIONS.map((opt) => (
@@ -8731,6 +9173,7 @@ export default function AppBoundedCanvas() {
               .filter((el) => el.parentId === null && isVisibleOnPage(el, currentPageId))
               .map((el) => renderCanvasNode(el))}
             {renderConnectionsLayer()}
+            {renderBadgesLayer()}
           </div>
         </main>
       </div>
