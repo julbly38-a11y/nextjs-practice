@@ -387,10 +387,39 @@ interface CanvasElement {
 // розводити раннім return, ніж однією великою умовною JSX-гілкою.
 // chartLabelField для "Точкова" — це числове поле X (не текстова мітка,
 // як у решти 4 типів) — той самий слот, різне призначення за chartKind.
-function ChartBody({ el }: { el: CanvasElement }) {
+function ChartBody({
+  el,
+  onSegmentClick,
+}: {
+  el: CanvasElement;
+  // Клік на КОНКРЕТНОМУ стовпці/секторі (не на всьому графіку) — джерело
+  // для "🔗 Зв'язки" (set-department/set-direction тощо), значення береться
+  // з мітки (chartLabelField) саме того рядка, по якому клікнули. undefined
+  // у режимі "Редагування" (кличе isWorkMode вище) — клік тоді лише виділяє
+  // елемент графіка, як і решту елементів, замість запуску зв'язків.
+  onSegmentClick?: (label: string) => void;
+}) {
   const data = el.chartData ?? [];
   const labelField = el.chartLabelField ?? "__label";
   const valueFields = el.chartValueFields ?? [];
+
+  // Спільний обробник кліку по сегменту для Bar/Pie/Funnel: Recharts передає
+  // (payload_рядка_або_обгортку, index, event) — беремо мітку з payload
+  // (Bar) чи напряму з .name (Pie/Funnel, бо там nameKey=labelField уже
+  // визначає .name), і гасимо спливання, щоб клік не подвоївся звичайним
+  // onClick елемента на полотні (той викликав би runConnectionActions ще
+  // раз, уже БЕЗ мітки конкретного сегмента).
+  const segmentClickProps = onSegmentClick
+    ? {
+        cursor: "pointer",
+        onClick: (data: any, _index: number, event?: { stopPropagation?: () => void }) => {
+          event?.stopPropagation?.();
+          const row = data?.payload ?? data;
+          const label = row?.[labelField] ?? data?.name;
+          onSegmentClick(String(label ?? ""));
+        },
+      }
+    : {};
 
   if (data.length === 0 || valueFields.length === 0) {
     return (
@@ -411,6 +440,7 @@ function ChartBody({ el }: { el: CanvasElement }) {
             nameKey={labelField}
             outerRadius="80%"
             label={(props: { name?: string | number }) => String(props.name ?? "")}
+            {...segmentClickProps}
           >
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
@@ -448,7 +478,7 @@ function ChartBody({ el }: { el: CanvasElement }) {
       <ResponsiveContainer width="100%" height="100%">
         <FunnelChart>
           <Tooltip />
-          <Funnel data={data} dataKey={field} nameKey={labelField} isAnimationActive={false}>
+          <Funnel data={data} dataKey={field} nameKey={labelField} isAnimationActive={false} {...segmentClickProps}>
             <LabelList dataKey={labelField} position="right" fill="#1a1a1a" fontSize={10} />
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
@@ -467,7 +497,7 @@ function ChartBody({ el }: { el: CanvasElement }) {
     const treeData = data.map((row) => ({ name: String(row[labelField] ?? ""), size: Number(row[field]) || 0 }));
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <Treemap data={treeData} dataKey="size" nameKey="name" stroke="#fff" isAnimationActive={false}>
+        <Treemap data={treeData} dataKey="size" nameKey="name" stroke="#fff" isAnimationActive={false} {...segmentClickProps}>
           {treeData.map((_, i) => (
             <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
           ))}
@@ -687,7 +717,7 @@ function ChartBody({ el }: { el: CanvasElement }) {
       <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
         {axis}
         {valueFields.map((field, i) => (
-          <Bar key={field} dataKey={field} fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+          <Bar key={field} dataKey={field} fill={CHART_PALETTE[i % CHART_PALETTE.length]} {...segmentClickProps} />
         ))}
       </BarChart>
     </ResponsiveContainer>
@@ -817,6 +847,8 @@ const CONNECTION_ACTION_OPTIONS: { value: string; label: string }[] = [
   { value: "set-day", label: "📅 Клік на джерелі задає ДЕНЬ цілі" },
   { value: "set-icd", label: "🩻 Клік на джерелі задає МКХ-10 цілі (діагностичний вузол)" },
   { value: "set-doctor", label: "👨‍⚕️ Клік на джерелі задає ЛІКАРЯ цілі (лікарський вузол)" },
+  { value: "set-department", label: "🏢 Клік на джерелі задає ВІДДІЛЕННЯ цілі (з мітки стовпця/сектора діаграми)" },
+  { value: "set-direction", label: "🧭 Клік на джерелі задає НАПРЯМОК цілі (з мітки стовпця/сектора діаграми)" },
 ];
 
 // "Універсальний вузол" картки КПІ (liveBinding) приймає не лише часові
@@ -835,6 +867,8 @@ const CONNECTION_ACTION_OPTIONS: { value: string; label: string }[] = [
 const PARAM_ACTION_KEY: Record<string, string> = {
   "set-icd": "icd",
   "set-doctor": "doctorId",
+  "set-department": "department",
+  "set-direction": "direction",
 };
 
 // Чому числовий слот "📊 Картки КПІ" показує "—" — раніше всі 5 випадків
@@ -1587,9 +1621,17 @@ export default function AppBoundedCanvas() {
     });
   };
 
-  const runConnectionActions = (sourceId: number) => {
+  // clickValueOverride — клік на КОНКРЕТНОМУ сегменті діаграми (📈 Графік):
+  // сам елемент графіка один, а "джерел" усередині нього — по одному на
+  // кожен стовпець/сектор, кожне зі своєю міткою (chartLabelField рядка).
+  // На відміну від пігулки/рядка списку (де значення — це content самого
+  // елемента), тут значення передається окремо з обробника кліку по
+  // сегменту (ChartBody). Без override — поведінка та сама, що й завжди
+  // (значення береться з sourceEl.content, як для пігулок/рядків).
+  const runConnectionActions = (sourceId: number, clickValueOverride?: string) => {
     const sourceEl = elements.find((item) => item.id === sourceId);
     if (!sourceEl) return;
+    const clickValue = clickValueOverride ?? sourceEl.content;
 
     // Дочірні елементи успадковують зв'язки БУДЬ-ЯКОГО предка (не лише
     // прямого) — досить підключити зв'язок один раз до самого БЛОКА чи
@@ -1668,7 +1710,7 @@ export default function AppBoundedCanvas() {
         const target = elements.find((item) => item.id === toId);
         if (!target?.liveBinding) return;
         const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
-        const nextContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+        const nextContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
         liveFetches.push({ targetId: target.id, binding: target.liveBinding, nextContext });
       });
 
@@ -1681,7 +1723,7 @@ export default function AppBoundedCanvas() {
           const target = next[targetIdx];
 
           if (target.liveBinding) {
-            const nextContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+            const nextContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
             next[targetIdx] = { ...target, timeContext: nextContext };
           } else if (target.isBadgeYearField && unit !== "year") {
             // Джерело місяця/тижня/дня, підключене до поля-РОКУ бейджа — не
@@ -1689,7 +1731,7 @@ export default function AppBoundedCanvas() {
             // а під ним створюється (один раз) чи оновлюється рядок дати.
             const dateSubIdx = target.badgeDateSubId != null ? next.findIndex((item) => item.id === target.badgeDateSubId) : -1;
             const prevDateContext = dateSubIdx !== -1 ? next[dateSubIdx].timeContext ?? {} : {};
-            const nextDateContext = { ...prevDateContext, [unit]: sourceEl.content };
+            const nextDateContext = { ...prevDateContext, [unit]: clickValue };
             // .date-sub в оригіналі (hospital-analytics) — text-transform:
             // uppercase; тут немає CSS-класу під це, тож капіталізуємо сам
             // текст. timeContext лишається з "сирими" значеннями джерел
@@ -1735,7 +1777,7 @@ export default function AppBoundedCanvas() {
             // ЙОГО ВЛАСНИЙ timeContext і капіталізація, а не сирий текст
             // джерела як є. Стиль бейджа не залежить від того, куди саме з
             // двох полів підключили зв'язок.
-            const nextOwnContext = { ...(target.timeContext ?? {}), [unit]: sourceEl.content };
+            const nextOwnContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
             next[targetIdx] = {
               ...target,
               content: formatTimeContext(nextOwnContext).toUpperCase(),
@@ -1746,7 +1788,7 @@ export default function AppBoundedCanvas() {
             // зміст, а не додається до попереднього (рік/місяць тощо не
             // накопичуються в один рядок). Складання кількох одиниць в один
             // рядок лишається лише для рядків дати бейджа вище.
-            next[targetIdx] = { ...target, content: sourceEl.content, timeContext: { [unit]: sourceEl.content } };
+            next[targetIdx] = { ...target, content: clickValue, timeContext: { [unit]: clickValue } };
           }
         });
         saveToHistory(pages, next);
@@ -1770,7 +1812,7 @@ export default function AppBoundedCanvas() {
     // `elements` — та сама причина, що й у liveFetches вище.
     const paramActions = sourceEl ? flatActions.filter(({ action }) => action in PARAM_ACTION_KEY) : [];
     if (sourceEl && paramActions.length > 0) {
-      const nextParamValue = (action: string) => (action === "set-doctor" ? sourceEl.linkKey ?? sourceEl.content : sourceEl.content);
+      const nextParamValue = (action: string) => (action === "set-doctor" ? sourceEl.linkKey ?? clickValue : clickValue);
 
       const paramFetches: {
         targetId: number;
@@ -3090,6 +3132,72 @@ export default function AppBoundedCanvas() {
       handleSelectElement(listId);
     } catch (err) {
       alert("Не вдалося завантажити відділення — перевір, чи запущений сервер і чи налаштований Supabase.");
+    }
+  };
+
+  // "🧭 Напрямки" — той самий /api/departments, що й відділення вище, лише
+  // звужений до УНІКАЛЬНИХ значень поля direction (кількох відділень з
+  // однаковим напрямком — один рядок). Кожен рядок — окремий CanvasElement
+  // (content = сама назва напрямку), тож одразу готовий бути ДЖЕРЕЛОМ у
+  // "🔗 Зв'язки" → "🧭 Клік на джерелі задає НАПРЯМОК цілі", без жодного
+  // додаткового налаштування — той самий механізм, що вже й для рядків
+  // "🏥 Список відділень" (set-department) чи "🩺 Ординаторська" (set-doctor).
+  const handleImportDirections = async () => {
+    try {
+      const res = await fetch(`/api/departments?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
+      const data = await res.json();
+      if (!res.ok || !data.departments) {
+        alert(`Помилка завантаження напрямків: ${data.error || res.statusText}`);
+        return;
+      }
+
+      type Department = { direction: string | null };
+      const departments: Department[] = data.departments;
+      const uniqueDirections = Array.from(
+        new Set(departments.map((d) => (d.direction || "").trim()).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b, "uk"));
+
+      if (uniqueDirections.length === 0) {
+        alert("У відділень цієї лікарні не вказано напрямок (поле direction порожнє).");
+        return;
+      }
+
+      const columns: ListColumn[] = [{ id: "direction", label: "Напрямок", width: 1 }];
+      const listId = Date.now();
+      const cardWidth = 300;
+      const cardHeight = Math.min(400, 40 + uniqueDirections.length * 32);
+      const freePos = findFreePosition(forcedParentId, cardWidth, cardHeight);
+      const listElement: CanvasElement = {
+        ...buildComplexObjectBase(listId, "Напрямки (Supabase, схема lpz)"),
+        type: "list",
+        width: cardWidth,
+        height: cardHeight,
+        x: freePos.x,
+        y: freePos.y,
+        padding: 8,
+        borderRadius: 0,
+        parentId: forcedParentId,
+        columns,
+      };
+
+      const rowElements: CanvasElement[] = uniqueDirections.map((direction, i) => ({
+        ...buildComplexObjectBase(listId + 1 + i, direction),
+        type: "text",
+        width: 120,
+        height: 30,
+        x: 1,
+        y: 1,
+        textColor: "#000000",
+        borderRadius: 0,
+        fontSize: 13,
+        parentId: listId,
+        columnValues: { direction },
+      }));
+
+      updateElementsAndHistory([...elements, listElement, ...rowElements]);
+      handleSelectElement(listId);
+    } catch {
+      alert("Не вдалося завантажити напрямки — перевір, чи запущений сервер і чи налаштований Supabase.");
     }
   };
 
@@ -5556,7 +5664,10 @@ export default function AppBoundedCanvas() {
                 <div className="text-[10px] font-semibold text-slate-600 truncate px-1 pointer-events-none">{el.content}</div>
               )}
               <div style={{ width: "100%", height: el.content ? "calc(100% - 16px)" : "100%" }}>
-                <ChartBody el={el} />
+                <ChartBody
+                  el={el}
+                  onSegmentClick={isWorkMode ? (label) => runConnectionActions(el.id, label) : undefined}
+                />
               </div>
             </div>
           )}
@@ -7568,6 +7679,14 @@ export default function AppBoundedCanvas() {
                     setSelectedComplexObjectId("staff-ordinatorska");
                     ensureStaffDeptList();
                   },
+                },
+                {
+                  id: "directions-list",
+                  label: "🧭 Список напрямків (Supabase)",
+                  description:
+                    "Унікальні напрямки з lpz_departments (без дублів по відділеннях) — одразу список на полотні; кожен рядок готовий бути джерелом «🧭 задає НАПРЯМОК цілі» в «🔗 Зв'язки», без жодного додаткового налаштування",
+                  color: "teal",
+                  onSelect: () => handleImportDirections(),
                 },
               ];
 
