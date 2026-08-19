@@ -12,6 +12,8 @@ import {
   type LpzEntityRecord,
 } from "@/lib/lpz-object-fields";
 import { getHospitalTheme } from "@/lib/hospital-themes";
+import { getSupabase } from "@/lib/supabase";
+import type { User } from "@supabase/supabase-js";
 import {
   BarChart,
   Bar,
@@ -39,7 +41,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-type ElementType = "block" | "text" | "button" | "list" | "clock" | "image" | "chart";
+type ElementType = "block" | "text" | "button" | "list" | "clock" | "image" | "chart" | "input";
 
 // "📈 Графік" — дані знімок на момент додавання (як "Список" — не живі,
 // повторне підключення часового джерела для графіків поки не зроблено,
@@ -190,6 +192,7 @@ const TYPE_LABELS: Record<ElementType, string> = {
   clock: "Годинник",
   image: "Зображення",
   chart: "Графік",
+  input: "Поле вводу",
 };
 
 interface ListColumn {
@@ -379,6 +382,27 @@ interface CanvasElement {
   // елементів вище (runConnectionActions). Власні зв'язки, підключені прямо
   // до цього елемента, і далі працюють як завжди.
   excludeFromConnectionCascade?: boolean;
+
+  // Реальний вхід (Supabase Auth) — на відміну від решти полів вище, тут
+  // НІЧОГО не пише в сам CanvasElement/localStorage: те, що людина ВВОДИТЬ
+  // (email/пароль), живе лише в ефемерному authFieldValues (нижче), не в
+  // content — інакше пароль лишався б у відкритому вигляді в
+  // mis_canvas_elements_multipage/JSON-експорті проєкту.
+  //
+  // "Поле вводу" (type: "input") — inputKind визначає HTML-тип (password
+  // ховає символи) і яке саме поле шукає кнопка входу серед своїх сусідів.
+  inputKind?: "email" | "password" | "text";
+  // Кнопка (type: "button"), що в РОБОТІ замість/разом зі звичайним кліком
+  // шукає серед СВОЇХ СУСІДІВ (той самий parentId) поля з inputKind
+  // "email"/"password", бере їхні значення з authFieldValues і викликає
+  // supabase.auth.signInWithPassword — той самий принцип "сусідів", що й у
+  // "Універсального вузла" (див. liveBinding), лише для входу, а не показника.
+  isAuthSubmit?: boolean;
+  // Позначає САМ контейнер (найчастіше "Блок") як "панель входу" —
+  // єдиний, хто лишається видимим у РОБОТІ на сторінці з requireAuth,
+  // доки немає активної сесії (isVisibleOnPage нижче). Усе інше на такій
+  // сторінці — "захищений вміст", з'являється лише після успішного входу.
+  isAuthGatePanel?: boolean;
 }
 
 // Тіло елемента "📈 Графік" (Recharts) — окремий компонент, не inline у
@@ -744,6 +768,11 @@ interface Page {
   meshSpeed?: number;
   meshIntensity?: number;
   meshColors?: string[];
+  // Захист сторінки реальним входом (Supabase Auth) — доки немає активної
+  // сесії, у РОБОТІ (і в експорті HTML) видно лише елемент(и) з
+  // isAuthGatePanel, решта прихована (isVisibleOnPage). У РЕДАГУВАННІ не
+  // діє ніколи — авторові завжди видно все, щоб продовжувати редагувати.
+  requireAuth?: boolean;
 }
 
 // Дефолтна тепла палітра mesh-фону Хотина (ті самі 5 кольорів, що й фолбеки
@@ -1390,6 +1419,11 @@ export default function AppBoundedCanvas() {
   // додати готовий елемент на полотно. Вкладка "🧩 Об'єкти" панелі "Інструменти".
   const [selectedComplexObjectId, setSelectedComplexObjectId] = useState<string | null>(null);
   const [complexObjectDraft, setComplexObjectDraft] = useState<Partial<CanvasElement>>({});
+  // Скільки копій створити одним кліком "➕ Додати на полотно" — той самий
+  // принцип, що й "Кількість" у "Створити" (newCount), лише для пресетів
+  // "Складних об'єктів" (📊 Картка КПІ, 🏷️ Бейдж тощо), де раніше можна було
+  // додати рівно один за раз.
+  const [complexObjectCount, setComplexObjectCount] = useState<number>(1);
 
   // Пошук/групування у вкладці "🧩 Об'єкти" — 25 пунктів (пресети + форми
   // живих даних) одним списком важко проглянути, тому список ділиться на 3
@@ -1505,6 +1539,57 @@ export default function AppBoundedCanvas() {
   // перезавантаження завжди безпечне "редагування".
   const [interactionMode, setInteractionMode] = useState<"edit" | "work">("edit");
   const isWorkMode = interactionMode === "work";
+
+  // Реальний вхід (Supabase Auth, "🔒 Панель входу") — authFieldValues
+  // навмисно ЕФЕМЕРНИЙ (не useState-персист у localStorage/історію, як усе
+  // інше в проєкті): те, що людина набирає в полях email/пароль, ніде, крім
+  // цієї змінної в пам'яті, не зберігається — інакше пароль лишався б у
+  // відкритому тексті в mis_canvas_elements_multipage й у JSON-експорті
+  // проєкту. authUser — поточна сесія Supabase; onAuthStateChange тримає її
+  // синхронною з реальним станом (вхід деінде, вихід, оновлення токена).
+  const [authFieldValues, setAuthFieldValues] = useState<Record<number, string>>({});
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  useEffect(() => {
+    const supabase = getSupabase();
+    supabase.auth.getSession().then(({ data }) => setAuthUser(data.session?.user ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const handleAuthSignOut = async () => {
+    await getSupabase().auth.signOut();
+  };
+
+  // Кнопка з isAuthSubmit шукає поля email/пароль серед СВОЇХ СУСІДІВ (той
+  // самий parentId) — той самий принцип "усе поруч в одній панелі", що й
+  // pillsBox/картки КПІ вище, без окремого зв'язку "кнопка → поле".
+  const handleAuthSubmit = async (submitEl: CanvasElement) => {
+    const siblings = elements.filter((e) => e.parentId === submitEl.parentId);
+    const emailField = siblings.find((e) => e.type === "input" && e.inputKind === "email");
+    const passwordField = siblings.find((e) => e.type === "input" && e.inputKind === "password");
+    if (!emailField || !passwordField) {
+      setAuthError("Не знайдено поля email і/або пароль поруч із цією кнопкою.");
+      return;
+    }
+    const email = (authFieldValues[emailField.id] ?? "").trim();
+    const password = authFieldValues[passwordField.id] ?? "";
+    if (!email || !password) {
+      setAuthError("Вкажіть email і пароль.");
+      return;
+    }
+    setAuthLoading(true);
+    setAuthError(null);
+    const { error } = await getSupabase().auth.signInWithPassword({ email, password });
+    setAuthLoading(false);
+    if (error) {
+      setAuthError(error.message);
+    }
+  };
   // Перемикає ОДНУ функцію в масиві дій зв'язку (чекбокс) — не замінює
   // список цілком, тож на одному зв'язку можна тримати кілька функцій
   // одночасно (напр. "показати ціль" + "задає МІСЯЦЬ цілі").
@@ -2540,6 +2625,11 @@ export default function AppBoundedCanvas() {
     updatePagesAndHistory(nextPages);
   };
 
+  const handleToggleRequireAuth = (checked: boolean) => {
+    const nextPages = pages.map((p) => (p.id === currentPageId ? { ...p, requireAuth: checked } : p));
+    updatePagesAndHistory(nextPages);
+  };
+
   const handleDeleteCurrentPage = () => {
     if (pages.length <= 1) {
       alert("Неможливо видалити останню сторінку!");
@@ -2567,10 +2657,36 @@ export default function AppBoundedCanvas() {
   // Чи видимий елемент на сторінці pageId — власна сторінка, власний isGlobal,
   // конкретно вибрана додаткова сторінка (extraPageIds), або каскад від предка.
   const isVisibleOnPage = (el: CanvasElement, pageId: string): boolean => {
-    if (el.isGlobal === true || el.pageId === pageId || (el.extraPageIds?.includes(pageId) ?? false)) {
-      return true;
+    const baseVisible =
+      el.isGlobal === true ||
+      el.pageId === pageId ||
+      (el.extraPageIds?.includes(pageId) ?? false) ||
+      hasVisibleCascadingAncestor(el, pageId);
+    if (!baseVisible) return false;
+
+    // Захист входом (Page.requireAuth) — лише в РОБОТІ: у РЕДАГУВАННІ автор
+    // мусить бачити (і мати змогу правити) і панель входу, і захищений
+    // вміст одночасно, інакше після ввімкнення захисту сторінку неможливо
+    // було б далі редагувати.
+    if (isWorkMode) {
+      const page = pages.find((p) => p.id === pageId);
+      if (page?.requireAuth && !authUser) {
+        return isInAuthGatePanel(el);
+      }
     }
-    return hasVisibleCascadingAncestor(el, pageId);
+    return true;
+  };
+
+  // Сам елемент чи будь-який його предок позначені isAuthGatePanel —
+  // "панель входу" лишається видимою, навіть коли решта сторінки прихована
+  // requireAuth вище.
+  const isInAuthGatePanel = (el: CanvasElement): boolean => {
+    let current: CanvasElement | undefined = el;
+    while (current) {
+      if (current.isAuthGatePanel) return true;
+      current = elements.find((p) => p.id === current!.parentId);
+    }
+    return false;
   };
 
   // Йдемо вгору по предках. Якщо предок сам видимий на pageId (з будь-якої
@@ -3418,6 +3534,10 @@ export default function AppBoundedCanvas() {
     }
 
     if (el.type === "button") {
+      if (el.isAuthSubmit) {
+        void handleAuthSubmit(el);
+      }
+
       if (el.targetPageId) {
         setCurrentPageId(el.targetPageId);
         setSelectedIds([]);
@@ -3626,38 +3746,55 @@ export default function AppBoundedCanvas() {
 
     const width = (complexObjectDraft.width as number) ?? (template.defaults.width as number) ?? 60;
     const height = (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
-    const freePos = findFreePosition(forcedParentId, width, height);
+    const count = Math.max(1, Math.min(20, complexObjectCount || 1));
+    const gap = 12;
+    // Одразу шукаємо вільне місце під усю ЗАПЛАНОВАНУ ширину ряду копій (не
+    // під одну), той самий принцип, що й у handleAddElement — інакше друга й
+    // наступні копії клали б поверх уже існуючих сусідніх елементів.
+    const totalWidth = width * count + gap * (count - 1);
+    const freePos = findFreePosition(forcedParentId, totalWidth, height);
 
-    const base = buildComplexObjectBase(Date.now(), template.label.replace(/^\S+\s*/, ""));
-    const newElement: CanvasElement = {
-      ...base,
-      ...template.defaults,
-      ...complexObjectDraft,
-      id: base.id,
-      x: freePos.x,
-      y: freePos.y,
-    };
-
-    // Дочірні елементи пресету (напр. число + підпис картки КПІ) — власна
-    // позиція/розмір/стиль з template.children, parentId прив'язаний на
-    // щойно створеного батька.
-    const childElements: CanvasElement[] = (template.children ?? []).map((child, i) => {
-      const childBase = buildComplexObjectBase(newElement.id + 1 + i, child.content);
-      return {
-        ...childBase,
-        ...child.defaults,
-        id: childBase.id,
-        parentId: newElement.id,
-        content: child.content,
-        x: child.x,
-        y: child.y,
-        width: child.width,
-        height: child.height,
+    const allNewElements: CanvasElement[] = [];
+    const copyRootIds: number[] = [];
+    for (let copyIndex = 0; copyIndex < count; copyIndex++) {
+      // +1000 на копію — з запасом покриває id усіх дочірніх елементів
+      // одного пресету (template.children завжди лише кілька штук), щоб
+      // copyIndex-и не перетиналися між собою.
+      const copyBaseId = Date.now() + copyIndex * 1000;
+      const base = buildComplexObjectBase(copyBaseId, template.label.replace(/^\S+\s*/, ""));
+      const newElement: CanvasElement = {
+        ...base,
+        ...template.defaults,
+        ...complexObjectDraft,
+        id: base.id,
+        x: freePos.x + copyIndex * (width + gap),
+        y: freePos.y,
       };
-    });
+      copyRootIds.push(newElement.id);
 
-    updateElementsAndHistory([...elements, newElement, ...childElements]);
-    handleSelectElement(newElement.id);
+      // Дочірні елементи пресету (напр. число + підпис картки КПІ) — власна
+      // позиція/розмір/стиль з template.children, parentId прив'язаний на
+      // щойно створеного батька цієї КОНКРЕТНОЇ копії.
+      const childElements: CanvasElement[] = (template.children ?? []).map((child, i) => {
+        const childBase = buildComplexObjectBase(newElement.id + 1 + i, child.content);
+        return {
+          ...childBase,
+          ...child.defaults,
+          id: childBase.id,
+          parentId: newElement.id,
+          content: child.content,
+          x: child.x,
+          y: child.y,
+          width: child.width,
+          height: child.height,
+        };
+      });
+
+      allNewElements.push(newElement, ...childElements);
+    }
+
+    updateElementsAndHistory([...elements, ...allNewElements]);
+    setSelectedIds(copyRootIds);
   };
 
   // "КПІ лікарні (реальні дані)" — одна кнопка одразу ставить на полотно ДВА
@@ -5658,6 +5795,34 @@ export default function AppBoundedCanvas() {
             </div>
           )}
 
+          {el.isAuthGatePanel && (authLoading || authError) && (
+            <div
+              className="pointer-events-none absolute left-0 right-0 -bottom-5 text-center text-[11px] truncate px-1"
+              style={{ color: authError ? "#dc2626" : "#64748b" }}
+            >
+              {authLoading ? "Входимо…" : authError}
+            </div>
+          )}
+
+          {el.type === "input" && (
+            isWorkMode ? (
+              <input
+                type={el.inputKind === "password" ? "password" : el.inputKind === "email" ? "email" : "text"}
+                value={authFieldValues[el.id] ?? ""}
+                onChange={(e) => setAuthFieldValues((prev) => ({ ...prev, [el.id]: e.target.value }))}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                placeholder={el.content || (el.inputKind === "password" ? "Пароль" : el.inputKind === "email" ? "Email" : "")}
+                className="w-full h-full px-2 bg-white/90 text-black text-sm outline-none"
+                style={{ borderRadius: `${el.borderRadius}px` }}
+              />
+            ) : (
+              <div className="pointer-events-none w-full h-full flex items-center px-2 text-[12px] opacity-70 truncate border border-dashed border-white/40">
+                {el.content || "Поле вводу"} ({el.inputKind || "text"})
+              </div>
+            )
+          )}
+
           {el.type === "chart" && (
             <div className="w-full h-full p-1">
               {el.content && (
@@ -6464,6 +6629,20 @@ export default function AppBoundedCanvas() {
                 </div>
               </div>
             )}
+            <label className="text-[11px] font-bold text-red-900 flex items-center gap-2 cursor-pointer border-t border-blue-200 pt-2">
+              <input
+                type="checkbox"
+                checked={currentPage.requireAuth ?? false}
+                onChange={(e) => handleToggleRequireAuth(e.target.checked)}
+                className="rounded border-red-300 text-red-600 focus:ring-red-500 h-4 w-4"
+              />
+              🔒 Захистити входом (Supabase Auth)
+            </label>
+            {currentPage.requireAuth && (
+              <p className="text-[10px] text-red-700/70 leading-snug pl-1">
+                Потрібен елемент з "🛡️ Це панель входу" (Параметри → "🔐 Реальний вхід") — інакше в «▶️ Робота» сторінка буде повністю порожньою для того, хто не увійшов.
+              </p>
+            )}
             {pages.length > 1 && (
               <button
                 onClick={handleDeleteCurrentPage}
@@ -6495,6 +6674,7 @@ export default function AppBoundedCanvas() {
                   <option value="list">Список</option>
                   <option value="clock">Годинник</option>
                   <option value="image">Зображення</option>
+                  <option value="input">Поле вводу</option>
                 </select>
               </div>
               <div>
@@ -6699,6 +6879,82 @@ export default function AppBoundedCanvas() {
                       </div>
                     </ParamSection>
                   </>
+                )}
+
+                {/* 🔐 РЕАЛЬНИЙ ВХІД (Supabase Auth) — усе про панель авторизації в
+                    одному місці, а не розкидано по трьох різних секціях за типом
+                    елемента: inputKind (лише "Поле вводу"), isAuthSubmit (лише
+                    "Кнопка"), isAuthGatePanel (будь-який контейнер — практично
+                    "Блок"). Поточна сесія показана тут же, бо це властивість
+                    ПРОЄКТУ (Supabase-клієнт), а не конкретного елемента, і місця
+                    в панелі більше ніде для цього нема. */}
+                {singleSelected && (
+                  <ParamSection
+                    label="🔐 Реальний вхід (Supabase Auth)"
+                    isOpen={openParamSections.has("auth")}
+                    onToggle={() => toggleParamSection("auth")}
+                    colorClass="bg-red-50/60 border-red-200 text-red-900"
+                  >
+                    <div className="p-2 bg-white border border-red-200 rounded-md text-[11px]">
+                      {authUser ? (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-emerald-700 truncate">✅ Увійшли як {authUser.email}</span>
+                          <button
+                            type="button"
+                            onClick={() => void handleAuthSignOut()}
+                            className="shrink-0 px-2 py-0.5 rounded bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-600 text-[10px]"
+                          >
+                            Вийти
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">Немає активної сесії — перевірити можна в «▶️ Робота».</span>
+                      )}
+                    </div>
+
+                    {singleSelected.type === "input" && (
+                      <div>
+                        <label className="block text-[10px] text-red-800 mb-1">Тип поля:</label>
+                        <select
+                          value={singleSelected.inputKind ?? "text"}
+                          onChange={(e) => updateSelectedFields("inputKind", e.target.value)}
+                          className="w-full p-1.5 border rounded-md text-xs bg-white"
+                        >
+                          <option value="text">Звичайний текст</option>
+                          <option value="email">Email</option>
+                          <option value="password">Пароль (ховає символи)</option>
+                        </select>
+                        <p className="mt-1 text-[10px] text-red-700/70 leading-snug">
+                          Кнопка з "Кнопка входу" нижче шукає поля email/пароль серед СВОЇХ СУСІДІВ (той самий батько) — усі три елементи мають бути в одному блоці.
+                        </p>
+                      </div>
+                    )}
+
+                    {singleSelected.type === "button" && (
+                      <label className="text-[11px] font-bold text-red-900 flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={singleSelected.isAuthSubmit ?? false}
+                          onChange={(e) => updateSelectedFields("isAuthSubmit", e.target.checked)}
+                          className="rounded border-red-300 text-red-600 focus:ring-red-500 h-4 w-4"
+                        />
+                        🔑 Кнопка входу (шукає поля email/пароль-сусідів і викликає Supabase Auth)
+                      </label>
+                    )}
+
+                    <label className="text-[11px] font-bold text-red-900 flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={singleSelected.isAuthGatePanel ?? false}
+                        onChange={(e) => updateSelectedFields("isAuthGatePanel", e.target.checked)}
+                        className="rounded border-red-300 text-red-600 focus:ring-red-500 h-4 w-4"
+                      />
+                      🛡️ Це панель входу (лишається видимою, коли сторінку захищено)
+                    </label>
+                    <p className="text-[10px] text-red-700/70 leading-snug">
+                      Увімкни ще й "🔒 Захистити входом" у вкладці "Сторінка" — доки немає сесії, у «▶️ Робота» (і в експорті HTML) видно лише цю панель, решта сторінки прихована.
+                    </p>
+                  </ParamSection>
                 )}
 
                 {/* НАЛАШТУВАННЯ ТРИГЕРІВ (HOVER ТА CLICK) — окремо для кожної сторінки:
@@ -8874,12 +9130,31 @@ export default function AppBoundedCanvas() {
                       🔘 Групова ексклюзивність
                     </label>
 
+                    {!editingEl && !template.groupItems && (
+                      <div>
+                        <label className="block text-[10px] text-teal-800 mb-1">Кількість копій:</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          value={complexObjectCount}
+                          onChange={(e) => setComplexObjectCount(Number(e.target.value))}
+                          className="w-full p-1.5 border rounded-md text-xs font-mono bg-white"
+                        />
+                      </div>
+                    )}
+
                     {!editingEl && (
                       <button
                         onClick={handleAddComplexObject}
                         className="w-full bg-teal-600 hover:bg-teal-700 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
                       >
-                        ➕ {template.groupItems ? `Додати всі ${template.groupItems.length} на полотно` : "Додати на полотно"}
+                        ➕{" "}
+                        {template.groupItems
+                          ? `Додати всі ${template.groupItems.length} на полотно`
+                          : complexObjectCount > 1
+                          ? `Додати ${Math.max(1, Math.min(20, complexObjectCount || 1))} на полотно`
+                          : "Додати на полотно"}
                         {forcedParentId ? "" : " (у корінь сторінки)"}
                       </button>
                     )}
