@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { Rnd } from "react-rnd";
 import { INDICATOR_SECTIONS, type IndicatorRow } from "@/lib/indicators";
 import { API_CONNECTION_VARIANTS, SCOPE_LABELS, type ConnectionScope } from "@/lib/api-connections";
+import { DB_RELATIONSHIPS, DB_RELATIONSHIP_KIND_LABELS, type DbRelationshipCategory } from "@/lib/db-relationships";
 import { PATIENT_FIELD_LABELS, formatPatientFieldValue, type PatientRecord } from "@/lib/patient-fields";
 import {
   DOCTOR_FIELD_LABELS,
@@ -260,6 +261,13 @@ interface CanvasElement {
   // світіння) і прокручує до всіх ІНШИХ рядків з тим самим linkKey, де б
   // вони не були — напр. пацієнт ↔ його лікар в ординаторській.
   linkKey?: string;
+  // Той самий принцип, але рядок може одночасно належати КІЛЬКОМ реальним
+  // foreign key з бази (напр. лікар — і своїм resource_id, і своїм
+  // department_structure_id) — linkKey лишається для зворотної сумісності
+  // зі старими збереженими проєктами (один ключ), linkKeys — для решти.
+  // Підсвітка/фільтр рахують "своїм" будь-який рядок, чий набір
+  // linkKey+linkKeys перетинається з набором клікнутого джерела.
+  linkKeys?: string[];
 
   // Налаштування появи
   showOnHoverId?: number | null; // ціль за замовчуванням, якщо для сторінки немає власного запису в *TargetByPage
@@ -851,6 +859,19 @@ const LIVE_INDICATOR_ENDPOINTS: Record<NonNullable<CanvasElement["liveBinding"]>
 // (RPC не приймає рік окремим фільтром, лише повертає всю серію на обраній
 // гранулярності). "Тиждень" (день тижня) свідомо не бере участі: у RPC
 // grain=week — реальний ISO-тиждень, не назва дня тижня, це різні поняття.
+// Набір усіх ключів зв'язку елемента (linkKey + linkKeys, див. коментар
+// біля CanvasElement.linkKeys) — спільна точка для крос-підсвітки й дії
+// "filter" нижче, щоб рядок, прив'язаний одразу до кількох foreign key з
+// бази (напр. лікар — і resource_id, і department_structure_id), рахувався
+// "своїм" для будь-якого з них, а не лише для одного конкретного поля.
+const elementLinkKeys = (el: CanvasElement): string[] =>
+  [el.linkKey, ...(el.linkKeys ?? [])].filter((k): k is string => !!k);
+
+const sharesLinkKey = (a: CanvasElement, b: CanvasElement): boolean => {
+  const bKeys = elementLinkKeys(b);
+  return bKeys.length > 0 && elementLinkKeys(a).some((k) => bKeys.includes(k));
+};
+
 const buildPeriodKey = (ctx: NonNullable<CanvasElement["timeContext"]>): { grain: string; label: string } | null => {
   const year = ctx.year?.trim();
   if (!year) return null;
@@ -900,16 +921,18 @@ const PARAM_ACTION_KEY: Record<string, string> = {
   "set-direction": "direction",
 };
 
-// Чому числовий слот "📊 Картки КПІ" показує "—" — раніше всі 5 випадків
+// Чому числовий слот "📊 Картки КПІ" показує "—" — раніше всі випадки
 // виглядали однаково (мовчазний прочерк), і людина не мала способу
 // дізнатись, чого саме бракує. "http-error"/"no-match" визначаються лише
 // ПІСЛЯ реальної спроби запиту (звідси окремий стан liveIndicatorReasons,
 // а не чиста функція від самого el) — решта виводяться статично з полів
 // елемента, той самий порядок перевірок, що й у resolveLiveIndicatorValue.
-type LiveIndicatorReason = "ok" | "no-period" | "no-icd" | "no-doctor" | "http-error" | "no-match" | "not-connected";
+// Без підключеної дати картка НЕ блокується — вона запитує "Весь час" і
+// показує загальну суму (див. resolveLiveIndicatorValue), тож окремої
+// причини "нема дати" більше нема: це більше не помилка, а звичайний стан.
+type LiveIndicatorReason = "ok" | "no-icd" | "no-doctor" | "http-error" | "no-match" | "not-connected";
 
 const LIVE_INDICATOR_REASON_LABELS: Record<Exclude<LiveIndicatorReason, "ok">, string> = {
-  "no-period": "не підключено дату (рік/місяць/день) через «🔗 Зв'язки»",
   "no-icd": "не підключено МКХ-10 (🩻 діагностичний вузол) через «🔗 Зв'язки»",
   "no-doctor": "не підключено лікаря (👨‍⚕️ лікарський вузол) через «🔗 Зв'язки»",
   "http-error": "помилка запиту до сервера — спробуйте оновити",
@@ -927,7 +950,6 @@ const diagnoseLiveBinding = (
 ): LiveIndicatorReason | null => {
   if (!el.liveBinding) return null;
   if (el.content !== "—") return "ok";
-  if (!el.timeContext?.year) return "no-period";
   if (el.liveBinding.source === "diagnoses" && !el.liveBinding.params.icd) return "no-icd";
   if (el.liveBinding.source === "doctor-hierarchy" && !el.liveBinding.params.doctorId) return "no-doctor";
   return lastKnown ?? "not-connected";
@@ -1412,7 +1434,7 @@ export default function AppBoundedCanvas() {
   const [refsPanelSize, setRefsPanelSize] = useState<{ width: number; height: number }>({ width: 340, height: 560 });
   const [refsPanelOpacity, setRefsPanelOpacity] = useState<number>(0.92);
   const [refsPanelCollapsed, setRefsPanelCollapsed] = useState<boolean>(false);
-  const [refsActiveTab, setRefsActiveTab] = useState<"indicators" | "connections" | "status">("indicators");
+  const [refsActiveTab, setRefsActiveTab] = useState<"indicators" | "connections" | "relationships" | "status">("indicators");
 
   // Список пресетів "Складних об'єктів" (пігулка тощо) — при виборі
   // відкриває поля налаштувань (підсвітка/кольори/розміри), перед тим як
@@ -1489,6 +1511,26 @@ export default function AppBoundedCanvas() {
     "client-safe": "bg-emerald-100 text-emerald-700",
     "server-only": "bg-red-100 text-red-700",
     tooling: "bg-slate-200 text-slate-700",
+  };
+
+  // Довідник РЕАЛЬНИХ зв'язків (foreign key + перевірені soft-збіги) у базі
+  // — lib/db-relationships.ts, знято напряму з Supabase (не вгадано з назв
+  // полів). Вкладка "🔑 Зв'язки бази" панелі "Довідники" — готовий список
+  // ключів для linkKey/linkKeys чи liveBinding.params, коли знадобиться
+  // новий об'єкт чи новий крос-зв'язок, без повторного перечитування схеми.
+  const [openRelationshipIds, setOpenRelationshipIds] = useState<Set<string>>(new Set());
+  const toggleRelationshipOpen = (id: string) => {
+    setOpenRelationshipIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const RELATIONSHIP_CATEGORY_LABELS: Record<DbRelationshipCategory, string> = {
+    entity: "🔗 Зв'язок між сутностями",
+    lookup: "📋 Довідникове поле",
+    "tenant-scope": "🏥 Межа лікарні (тенант)",
   };
 
   // Власні готові елементи користувача: зберігаєш виділений фрагмент
@@ -1653,37 +1695,42 @@ export default function AppBoundedCanvas() {
       .join(" · ");
 
   // Тягне живе число для числового посадочного місця картки, прив'язаного
-  // до показника (liveBinding) — викликається лише коли підключене часове
-  // джерело щойно оновило timeContext цілі (runConnectionActions нижче).
-  // params, зафіксовані при прив'язці (рівень/напрямок/відділення/МКХ-10),
-  // + org поточної лікарні + grain/значення з ctx (buildPeriodKey) — рядок
-  // з відповіді шукається за period_label, що збігається з побудованим
-  // ключем (RPC завжди повертає ВСЮ серію на обраній гранулярності, не
-  // фільтр по конкретному року/місяцю).
+  // до показника (liveBinding) — викликається одразу при самій прив'язці
+  // (handleBindLiveIndicator/picker), а тоді ще раз кожного разу, коли
+  // підключене часове джерело оновлює timeContext цілі (runConnectionActions
+  // нижче). params, зафіксовані при прив'язці (рівень/напрямок/відділення/
+  // МКХ-10), + org поточної лікарні + grain/значення з ctx (buildPeriodKey)
+  // — рядок з відповіді шукається за period_label, що збігається з
+  // побудованим ключем (RPC завжди повертає ВСЮ серію на обраній
+  // гранулярності, не фільтр по конкретному року/місяцю). Без ctx.year
+  // (дату ще не підключено) grain не передається зовсім — RPC тоді повертає
+  // ОДИН рядок-агрегат за весь час (period_label "Весь час") замість серії,
+  // і саме його показуємо за замовчуванням — картка одразу жива, а не "—",
+  // доки хтось не підключить конкретний період.
   const resolveLiveIndicatorValue = async (
     binding: NonNullable<CanvasElement["liveBinding"]>,
     ctx: NonNullable<CanvasElement["timeContext"]>
   ): Promise<{ value: string; reason: LiveIndicatorReason }> => {
-    const period = buildPeriodKey(ctx);
-    if (!period) return { value: "—", reason: "no-period" };
     // Без цих параметрів RPC поверне СЕРІЮ з кількох рядків на один і той
-    // самий period_label (кілька діагнозів/лікарів за той самий рік) —
-    // .find нижче мовчки взяв би перший-ліпший, довільний. Доки відповідний
-    // вузол (🩻 діагностичний / 👨‍⚕️ лікарський) не підключено — лишаємо "—",
-    // той самий принцип, що й для періоду вище.
+    // самий period_label (кілька діагнозів/лікарів за той самий рік чи за
+    // "Весь час") — .find нижче мовчки взяв би перший-ліпший, довільний.
+    // Доки відповідний вузол (🩻 діагностичний / 👨‍⚕️ лікарський) не
+    // підключено — лишаємо "—", незалежно від того, чи є дата.
     if (binding.source === "diagnoses" && !binding.params.icd) return { value: "—", reason: "no-icd" };
     if (binding.source === "doctor-hierarchy" && !binding.params.doctorId) return { value: "—", reason: "no-doctor" };
+    const period = buildPeriodKey(ctx);
     try {
       const params = new URLSearchParams({
         ...binding.params,
-        grain: period.grain,
         org: selectedHospital?.edrpou ?? "",
       });
+      if (period) params.set("grain", period.grain);
       const res = await fetch(`${LIVE_INDICATOR_ENDPOINTS[binding.source]}?${params.toString()}`);
       const data = await res.json();
       if (!res.ok) return { value: "—", reason: "http-error" };
       const rows = (data.rows ?? []) as Record<string, unknown>[];
-      const row = rows.find((r) => r.period_label === period.label);
+      const targetLabel = period ? period.label : "Весь час";
+      const row = rows.find((r) => r.period_label === targetLabel);
       if (!row) return { value: "—", reason: "no-match" };
       const raw = row[binding.field];
       return raw === null || raw === undefined
@@ -1756,15 +1803,15 @@ export default function AppBoundedCanvas() {
         else if (action === "toggle") {
           if (next.has(toId)) next.delete(toId);
           else next.add(toId);
-        } else if (action === "filter" && sourceEl?.linkKey) {
+        } else if (action === "filter" && sourceEl && elementLinkKeys(sourceEl).length > 0) {
           // Ціль — цілий "Список" (toId), фільтруємо його РЯДКИ (дочірні
-          // елементи): лишаємо видимими лише ті, чий linkKey збігається з
-          // linkKey клікнутого джерела (той самий принцип, що й підсвітка
-          // linkKey — просто ховає решту замість підсвічування).
+          // елементи): лишаємо видимими лише ті, чий набір linkKey/linkKeys
+          // перетинається з набором клікнутого джерела (той самий принцип,
+          // що й підсвітка linkKey — просто ховає решту замість підсвічування).
           elements
             .filter((row) => row.parentId === toId)
             .forEach((row) => {
-              if (row.linkKey === sourceEl.linkKey) next.delete(row.id);
+              if (sharesLinkKey(row, sourceEl)) next.delete(row.id);
               else next.add(row.id);
             });
         }
@@ -3236,6 +3283,11 @@ export default function AppBoundedCanvas() {
         borderRadius: 0,
         fontSize: 13,
         parentId: listId,
+        // Реальний foreign key з бази (lpz_empl.department_structure_id =
+        // lpz_departments.structure_id) — рядок одразу готовий крос-
+        // підсвічуватись з рядками "🩺 Ординаторська" того самого
+        // відділення, без жодного ручного "🔗 Зв'язки".
+        linkKey: dept.structure_id,
         columnValues: {
           org: dept.org_edrpou,
           name: dept.name,
@@ -3946,7 +3998,14 @@ export default function AppBoundedCanvas() {
     rows: Record<string, unknown>[],
     fields: CubeFieldDef[],
     labelField: string,
-    title: string
+    title: string,
+    // Опційний реальний ключ з бази (напр. icd_primary для показників по
+    // діагнозу — див. lib/db-relationships.ts) — проставляється як linkKey
+    // на кожен рядок списку, щоб крос-підсвітка/set-* дії в "🔗 Зв'язки"
+    // працювали одразу, без ручного налаштування, коли з'явиться другий
+    // об'єкт з тим самим ключем. Не застосовується у "1 рядок → плитки"
+    // гілці нижче — там немає окремого "рядка", щоб його тегувати.
+    linkKeyField?: string
   ) => {
     if (!rows || rows.length === 0) {
       alert("Немає даних за цим запитом");
@@ -4052,6 +4111,7 @@ export default function AppBoundedCanvas() {
         textColor: "#000000",
         parentId: listId,
         columnValues,
+        linkKey: linkKeyField ? String(row[linkKeyField] ?? "") || undefined : undefined,
       };
     });
     updateElementsAndHistory([...elements, listElement, ...rowElements]);
@@ -4116,9 +4176,10 @@ export default function AppBoundedCanvas() {
       return;
     }
 
+    const binding: NonNullable<CanvasElement["liveBinding"]> = { source, field: field.key, suffix: field.suffix, params };
     const next = elements.map((item) => {
       if (item.id === numberEl.id) {
-        return { ...item, liveBinding: { source, field: field.key, suffix: field.suffix, params }, content: "—", timeContext: undefined };
+        return { ...item, liveBinding: binding, content: "—", timeContext: undefined };
       }
       if (item.id === labelEl.id) {
         return { ...item, content: field.label };
@@ -4127,14 +4188,20 @@ export default function AppBoundedCanvas() {
     });
     updateElementsAndHistory(next);
 
-    // Прив'язка сама по собі не тягне жодних даних (num лишається "—") —
-    // наступний обов'язковий крок ЗАВЖДИ "🔗 Зв'язки" (часове джерело, і
-    // для деяких кубів ще діагностичний/лікарський вузол). Перемикаємо
-    // вкладку одразу, замість лишати користувача шукати її самому після
-    // підказки в тексті вище. НЕ чіпаємо selectedIds — окремий useEffect
-    // (нижче за кодом, стежить за selectedIds) одразу повертав би назад
-    // на "Параметри" при будь-якій, навіть однаковій за вмістом, зміні
-    // виділення (нова посилання на масив — вже інша залежність).
+    // Одразу тягнемо значення "Весь час" (без timeContext) — картка
+    // з'являється з готовим числом, а не чекає, доки хтось підключить дату
+    // через "🔗 Зв'язки". Підключення дати лишається можливим і далі — тоді
+    // resolveLiveIndicatorValue звужує результат до конкретного періоду.
+    void resolveLiveIndicatorValue(binding, {}).then(({ value, reason }) => {
+      applyLiveIndicatorResult(numberEl.id, value, reason);
+    });
+
+    // Перемикаємо вкладку одразу на "🔗 Зв'язки" — звідти підключають дату,
+    // щоб звузити щойно завантажену загальну суму до конкретного періоду.
+    // НЕ чіпаємо selectedIds — окремий useEffect (нижче за кодом, стежить
+    // за selectedIds) одразу повертав би назад на "Параметри" при будь-якій,
+    // навіть однаковій за вмістом, зміні виділення (нова посилання на
+    // масив — вже інша залежність).
     setActivePanelTab("links");
   };
 
@@ -4326,41 +4393,80 @@ export default function AppBoundedCanvas() {
   // зроблено, і далі може повторити/змінити руками. Одна лінія на всі роки —
   // завдяки каскаду (зв'язок веде від БЛОКА пігулок, а клік по кожній
   // окремій пігулці підставляє її власний content, див. runConnectionActions).
+  // Рівні лікарня/напрямок/відділення/лікар — той самий принцип, що й у
+  // "📊 Показник (готова картка)" вище (indicatorPickerLevel): для лікаря —
+  // окреме джерело (doctor-hierarchy) і власний, коротший список полів
+  // (DOCTOR_HIER_FIELDS), для решти — hierarchy + level/direction/department.
+  type WizardLevel = "hospital" | "direction" | "department" | "doctor";
   const [wizardField, setWizardField] = useState<string>("total_cases");
-  const [wizardLevel, setWizardLevel] = useState<"hospital" | "department">("hospital");
+  const [wizardLevel, setWizardLevel] = useState<WizardLevel>("hospital");
+  const [wizardDirection, setWizardDirection] = useState<string>("");
   const [wizardDepartment, setWizardDepartment] = useState<string>("");
+  const [wizardDoctorQuery, setWizardDoctorQuery] = useState<string>("");
+  const [wizardDoctor, setWizardDoctor] = useState<DoctorHierRow | null>(null);
   const [wizardLoading, setWizardLoading] = useState(false);
   const [wizardError, setWizardError] = useState<string | null>(null);
 
+  const handleWizardLevelChange = (level: WizardLevel) => {
+    setWizardLevel(level);
+    setWizardDirection("");
+    setWizardDepartment("");
+    setWizardDoctor(null);
+    setWizardDoctorQuery("");
+    setWizardError(null);
+    setWizardField(level === "doctor" ? DOCTOR_HIER_FIELDS[0].key : HIERARCHY_FIELDS[0].key);
+    if (level === "doctor") void ensureDoctorHierList();
+  };
+
   const handleRunLiveIndicatorWizard = async () => {
-    const field = HIERARCHY_FIELDS.find((f) => f.key === wizardField);
+    const field = wizardFieldOptions.find((f) => f.key === wizardField);
     if (!field) return;
+    if (wizardLevel === "direction" && !wizardDirection.trim()) {
+      setWizardError("Впишіть назву напрямку (або поверніться на рівень «Уся лікарня»)");
+      return;
+    }
     if (wizardLevel === "department" && !wizardDepartment.trim()) {
       setWizardError("Впишіть назву відділення (або поверніться на рівень «Уся лікарня»)");
+      return;
+    }
+    if (wizardLevel === "doctor" && !wizardDoctor) {
+      setWizardError("Оберіть лікаря зі списку (або поверніться на рівень «Уся лікарня»)");
       return;
     }
     setWizardLoading(true);
     setWizardError(null);
 
-    const params: Record<string, string> = { level: wizardLevel };
-    if (wizardLevel === "department") params.department = wizardDepartment.trim();
+    const source: NonNullable<CanvasElement["liveBinding"]>["source"] = wizardLevel === "doctor" ? "doctor-hierarchy" : "hierarchy";
+    const params: Record<string, string> =
+      wizardLevel === "hospital"
+        ? { level: "hospital" }
+        : wizardLevel === "direction"
+          ? { level: "direction", direction: wizardDirection.trim() }
+          : wizardLevel === "department"
+            ? { level: "department", department: wizardDepartment.trim() }
+            : { doctorId: wizardDoctor!.doctor_id };
     const binding: NonNullable<CanvasElement["liveBinding"]> = {
-      source: "hierarchy",
+      source,
       field: field.key,
       suffix: field.suffix,
       params,
     };
 
-    // Поточний рік — активний одразу, щоб картка з'явилась уже з числом, а
-    // не з "—" (яке довелось би "розбудити" ручним кліком, і людина не знала
-    // б, що саме треба клікнути).
-    const currentYear = new Date().getFullYear();
-    const { value } = await resolveLiveIndicatorValue(binding, { year: String(currentYear) });
+    // Картка одразу показує ЗАГАЛЬНУ суму за весь час (як і скрізь —
+    // resolveLiveIndicatorValue без ctx.year повертає "Весь час") — рік НЕ
+    // підключається автоматично. Пігулки-роки й зв'язок нижче лише готують
+    // МЕХАНІЗМ звуження до конкретного періоду; сам період підключається
+    // окремим кліком по пігулці, коли людина цього справді хоче.
+    const { value } = await resolveLiveIndicatorValue(binding, {});
     if (value === "—") {
       setWizardError(
-        wizardLevel === "department"
-          ? `За ${currentYear} рік для відділення «${wizardDepartment.trim()}» даних немає — перевірте назву відділення`
-          : `За ${currentYear} рік даних немає — можливо, у базі ще нема цьогорічних записів`
+        wizardLevel === "direction"
+          ? `Для напрямку «${wizardDirection.trim()}» даних немає — перевірте назву напрямку`
+          : wizardLevel === "department"
+            ? `Для відділення «${wizardDepartment.trim()}» даних немає — перевірте назву відділення`
+            : wizardLevel === "doctor"
+              ? `Для лікаря «${wizardDoctor!.doctor_name}» даних немає`
+              : `Даних немає — можливо, у базі ще нема записів`
       );
       setWizardLoading(false);
       return;
@@ -4414,9 +4520,10 @@ export default function AppBoundedCanvas() {
         content: String(year),
         // Кожна пігулка — повноцінне часове джерело (той самий прапорець, що
         // ставиться вручну в Параметрах), тож її видно як 🕐 і її можна
-        // перепідключити кудись іще без жодного доналаштування.
+        // перепідключити кудись іще без жодного доналаштування. Жодна не
+        // натиснута за замовчуванням — картка досі показує загальну суму,
+        // доки хтось сам не клікне рік.
         timeSourceUnit: "year",
-        isPressed: year === currentYear,
       };
       pillX += pillWidths[i] + pillGap;
       return el;
@@ -4452,10 +4559,20 @@ export default function AppBoundedCanvas() {
       padding: 0,
       isKpiNumberSlot: true,
       liveBinding: binding,
-      timeContext: { year: String(currentYear) },
     };
+    // Для напрямку/відділення/лікаря додаємо назву в підпис — інакше картка
+    // не показувала б, ДО ЧОГО саме належить число (той самий принцип, що
+    // й у "📊 Показник (готова картка)" вище).
+    const wizardLocationSuffix =
+      wizardLevel === "direction"
+        ? ` · ${wizardDirection.trim().toUpperCase()}`
+        : wizardLevel === "department"
+          ? ` · ${wizardDepartment.trim().toUpperCase()}`
+          : wizardLevel === "doctor"
+            ? ` · ${wizardDoctor!.doctor_name.toUpperCase()}`
+            : "";
     const labelEl: CanvasElement = {
-      ...buildComplexObjectBase(labelId, field.label),
+      ...buildComplexObjectBase(labelId, `${field.label}${wizardLocationSuffix}`),
       type: "text",
       width: cardWidth,
       height: 26,
@@ -4734,7 +4851,7 @@ export default function AppBoundedCanvas() {
         alert(`Помилка: ${data.error || res.statusText}`);
         return;
       }
-      addCubeRowsToCanvas(data.rows || [], DIAGNOSIS_FIELDS, "icd_primary", "Показники по діагнозу");
+      addCubeRowsToCanvas(data.rows || [], DIAGNOSIS_FIELDS, "icd_primary", "Показники по діагнозу", "icd_primary");
     } catch {
       alert("Не вдалося звернутись до сервера");
     } finally {
@@ -5080,6 +5197,271 @@ export default function AppBoundedCanvas() {
     setIndicatorFormQuery("");
   };
 
+  // ── "📊 Показники (готова картка)" — список УСІХ реальних показників, де
+  // клік одразу ставить на полотно готову РОБОЧУ "📊 Картку КПІ": liveBinding
+  // уже підключено, число вже завантажене з бекенду ("Весь час" — див.
+  // resolveLiveIndicatorValue), без жодного проміжного кроку. На відміну від
+  // "🔢 Показник (за списком)" вище (довідник ЛСМД, значення вписується
+  // ВРУЧНУ) — тут число завжди РЕАЛЬНЕ й живе, і від "🔗 Показник → картка"
+  // в формах кубів (яка теж прив'язує, але лишає "—", доки не підключиш
+  // дату) — тут результат одразу готовий, дату можна підключити пізніше,
+  // щоб звузити.
+  //
+  // Усі 4 рівні ієрархії лікарня/напрямок/відділення/лікар — той самий
+  // набір рівнів, що й у формі "📊 Показники (лікарня/напрямок/відділення)"
+  // (hierarchyLevel) + окремий рівень "лікар" (RPC lpz_doctor_indicator_cube,
+  // той самий, що й "👨‍⚕️ Лікарі"). readmissions (RPC lpz_readmission_cube)
+  // — лише на рівні "Лікарня": сам RPC не приймає direction/department,
+  // той самий принцип, що й у формі "🔁 Повторні госпіталізації". diagnoses
+  // сюди свідомо не входить: без обраного МКХ-10 показник лишається
+  // доступним лише через власну форму куба ("🩻 Показники по діагнозу").
+  type IndicatorPickerLevel = "hospital" | "direction" | "department" | "doctor";
+  const [indicatorPickerLevel, setIndicatorPickerLevel] = useState<IndicatorPickerLevel>("hospital");
+  const [indicatorPickerLocation, setIndicatorPickerLocation] = useState("");
+  const [indicatorPickerFieldQuery, setIndicatorPickerFieldQuery] = useState("");
+  const [indicatorPickerLoadingKey, setIndicatorPickerLoadingKey] = useState<string | null>(null);
+
+  // Список лікарів для рівня "Лікар" — ті самі рядки (з doctor_id), що й
+  // форма "👨‍⚕️ Лікарі (обсяг, ієрархія)" без фільтра лікаря, кешується
+  // один раз (той самий принцип, що й ensureStaffDeptList нижче), фільтр за
+  // іменем — на клієнті. Спільний для цього пікера і майстра "📡 Живий
+  // показник" (обидва мають власний вибір лікаря, але однаковий кеш списку).
+  type DoctorHierRow = { doctor_id: string; doctor_name: string };
+  const [doctorHierList, setDoctorHierList] = useState<DoctorHierRow[] | null>(null);
+  const [doctorHierListLoading, setDoctorHierListLoading] = useState(false);
+  const [indicatorPickerDoctorQuery, setIndicatorPickerDoctorQuery] = useState("");
+  const [indicatorPickerDoctor, setIndicatorPickerDoctor] = useState<DoctorHierRow | null>(null);
+
+  useEffect(() => {
+    setDoctorHierList(null);
+    setIndicatorPickerDoctor(null);
+  }, [selectedHospital?.edrpou]);
+
+  const ensureDoctorHierList = async () => {
+    if (doctorHierList !== null || doctorHierListLoading) return;
+    setDoctorHierListLoading(true);
+    try {
+      const res = await fetch(`/api/indicators/doctor-hierarchy?org=${encodeURIComponent(selectedHospital?.edrpou ?? "")}`);
+      const data = await res.json();
+      setDoctorHierList(res.ok ? (data.rows ?? []) : []);
+    } catch {
+      setDoctorHierList([]);
+    } finally {
+      setDoctorHierListLoading(false);
+    }
+  };
+
+  const handleIndicatorPickerLevelChange = (level: IndicatorPickerLevel) => {
+    setIndicatorPickerLevel(level);
+    setIndicatorPickerLocation("");
+    setIndicatorPickerDoctor(null);
+    setIndicatorPickerDoctorQuery("");
+    setIndicatorPickerFieldQuery("");
+    if (level === "doctor") void ensureDoctorHierList();
+  };
+
+  const normalizedIndicatorPickerDoctorQuery = indicatorPickerDoctorQuery.trim().toLowerCase();
+  const indicatorPickerDoctorMatches = (doctorHierList ?? []).filter((d) =>
+    normalizedIndicatorPickerDoctorQuery ? d.doctor_name.toLowerCase().includes(normalizedIndicatorPickerDoctorQuery) : true
+  );
+
+  // Той самий пошук/фільтр лікаря, лише для майстра "📡 Живий показник"
+  // (handleRunLiveIndicatorWizard вище) — окремий вибір (wizardDoctor), той
+  // самий кеш (doctorHierList). Обчислюється тут, а не одразу біля
+  // handleWizardLevelChange, бо doctorHierList/DOCTOR_HIER_FIELDS
+  // оголошені лише нижче за кодом.
+  const normalizedWizardDoctorQuery = wizardDoctorQuery.trim().toLowerCase();
+  const wizardDoctorMatches = (doctorHierList ?? []).filter((d) =>
+    normalizedWizardDoctorQuery ? d.doctor_name.toLowerCase().includes(normalizedWizardDoctorQuery) : true
+  );
+  const wizardFieldOptions = wizardLevel === "doctor" ? DOCTOR_HIER_FIELDS : HIERARCHY_FIELDS;
+
+  // params === null означає "рівень ще не уточнено" (не вписано напрямок/
+  // відділення, чи не обрано лікаря) — кнопки показників лишаються
+  // задизейбленими, доки не заповнено.
+  const indicatorPickerParams: Record<string, string> | null =
+    indicatorPickerLevel === "hospital"
+      ? { level: "hospital" }
+      : indicatorPickerLevel === "direction"
+        ? indicatorPickerLocation.trim()
+          ? { level: "direction", direction: indicatorPickerLocation.trim() }
+          : null
+        : indicatorPickerLevel === "department"
+          ? indicatorPickerLocation.trim()
+            ? { level: "department", department: indicatorPickerLocation.trim() }
+            : null
+          : indicatorPickerDoctor
+            ? { doctorId: indicatorPickerDoctor.doctor_id }
+            : null;
+
+  const indicatorPickerEntries: { source: NonNullable<CanvasElement["liveBinding"]>["source"]; field: CubeFieldDef }[] =
+    indicatorPickerLevel === "doctor"
+      ? DOCTOR_HIER_FIELDS.map((field) => ({ source: "doctor-hierarchy" as const, field }))
+      : indicatorPickerLevel === "hospital"
+        ? [
+            ...HIERARCHY_FIELDS.map((field) => ({ source: "hierarchy" as const, field })),
+            ...READMIT_FIELDS.map((field) => ({ source: "readmissions" as const, field })),
+          ]
+        : HIERARCHY_FIELDS.map((field) => ({ source: "hierarchy" as const, field }));
+
+  const normalizedIndicatorPickerFieldQuery = indicatorPickerFieldQuery.trim().toLowerCase();
+  const indicatorPickerFieldMatches = indicatorPickerEntries.filter((entry) =>
+    entry.field.label.toLowerCase().includes(normalizedIndicatorPickerFieldQuery)
+  );
+
+  const handlePickLiveIndicator = async (entry: (typeof indicatorPickerEntries)[number]) => {
+    if (!indicatorPickerParams) return;
+    setIndicatorPickerLoadingKey(`${entry.source}:${entry.field.key}`);
+
+    const binding: NonNullable<CanvasElement["liveBinding"]> = {
+      source: entry.source,
+      field: entry.field.key,
+      suffix: entry.field.suffix,
+      params: indicatorPickerParams,
+    };
+    const { value } = await resolveLiveIndicatorValue(binding, {});
+
+    // Для напрямку/відділення/лікаря додаємо назву в підпис — інакше
+    // картка не показувала б, ДО ЧОГО саме належить число (на відміну від
+    // рівня "Лікарня", де field.label сам по собі достатньо однозначний).
+    const locationSuffix =
+      indicatorPickerLevel === "direction" || indicatorPickerLevel === "department"
+        ? ` · ${indicatorPickerLocation.trim().toUpperCase()}`
+        : indicatorPickerLevel === "doctor" && indicatorPickerDoctor
+          ? ` · ${indicatorPickerDoctor.doctor_name.toUpperCase()}`
+          : "";
+    const label = `${entry.field.label}${locationSuffix}`;
+
+    const tileWidth = 200;
+    const tileHeight = 70;
+    const freePos = findFreePosition(forcedParentId, tileWidth, tileHeight);
+    const parentId = Date.now();
+    const parentEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId, ""),
+      type: "block",
+      width: tileWidth,
+      height: tileHeight,
+      x: freePos.x,
+      y: freePos.y,
+      parentId: forcedParentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+    const numberEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId + 1, value),
+      type: "text",
+      width: tileWidth,
+      height: 44,
+      x: 0,
+      y: 0,
+      parentId,
+      fontSize: 36,
+      fontWeight: "300",
+      textColor: "#1a1a1a",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiNumberSlot: true,
+      liveBinding: binding,
+    };
+    const labelEl: CanvasElement = {
+      ...buildComplexObjectBase(parentId + 2, label),
+      type: "text",
+      width: tileWidth,
+      height: 26,
+      x: 0,
+      y: 44,
+      parentId,
+      fontSize: 20,
+      fontWeight: "300",
+      textColor: "#9a958f",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiLabelSlot: true,
+    };
+
+    updateElementsAndHistory([...elements, parentEl, numberEl, labelEl]);
+    setSelectedIds([parentId]);
+    setIndicatorPickerLoadingKey(null);
+  };
+
+  // ── "+ 📅 Рік/Місяць/День тижня/День" (вкладка "🔗 Зв'язки", банер для
+  // виділеної "📊 Картки КПІ") — додає готовий ряд пігулок-часового джерела
+  // (той самий стиль/логіка, що й у майстрі "📡 Живий показник" —
+  // PILL_STYLE_DEFAULTS, timeSourceUnit) і одразу з'єднує його з карткою
+  // (action set-<unit>). На відміну від майстра, картки з "📊 Показник
+  // (готова картка)" і з ручної "🔗 Показник → картка" створюються БЕЗ
+  // супутніх пігулок — без цієї кнопки підключити дату можна було б лише
+  // якщо десь на полотні вже випадково є готове часове джерело.
+  const TIME_UNIT_PILL_VALUES: Record<"year" | "month" | "week" | "day", string[]> = {
+    year: hospitalKpiYearOptions.map(String),
+    month: MONTH_PILL_LABELS,
+    week: WEEKDAY_LABELS,
+    day: Array.from({ length: 31 }, (_, i) => String(i + 1)),
+  };
+
+  const handleAddTimeSourceToSelectedCard = (unit: "year" | "month" | "week" | "day") => {
+    if (!singleSelected || !singleSelected.isKpiNumberSlot || !singleSelected.liveBinding) return;
+    const card = elements.find((el) => el.id === singleSelected.parentId);
+    if (!card) return;
+
+    const values = TIME_UNIT_PILL_VALUES[unit];
+    const pillGap = 8;
+    const pillHeight = 30;
+    const pillWidths = values.map((v) => Math.max(60, Math.round(v.length * 9 + 32)));
+    const pillsWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+    const freePos = findFreePosition(card.parentId, pillsWidth, pillHeight);
+
+    const baseId = Date.now();
+    const pillsBoxId = baseId;
+    const pillsBox: CanvasElement = {
+      ...buildComplexObjectBase(pillsBoxId, ""),
+      type: "block",
+      width: pillsWidth,
+      height: pillHeight,
+      x: freePos.x,
+      y: freePos.y,
+      parentId: card.parentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+
+    let pillX = 0;
+    const pills: CanvasElement[] = values.map((label, i) => {
+      const el: CanvasElement = {
+        ...buildComplexObjectBase(pillsBoxId + 1 + i, label),
+        ...PILL_STYLE_DEFAULTS,
+        width: pillWidths[i],
+        height: pillHeight,
+        x: pillX,
+        y: 0,
+        parentId: pillsBoxId,
+        content: label,
+        timeSourceUnit: unit,
+      };
+      pillX += pillWidths[i] + pillGap;
+      return el;
+    });
+
+    const connection: ElementConnection = {
+      id: `link-${baseId}`,
+      fromId: pillsBoxId,
+      toId: singleSelected.id,
+      actions: [`set-${unit}`],
+    };
+
+    const nextElements = [...elements, pillsBox, ...pills];
+    setElements(nextElements);
+    setConnections([...connections, connection]);
+    saveToHistory(pages, nextElements, [...connections, connection]);
+    setSelectedIds([pillsBoxId]);
+  };
+
   // "Ординаторська відділення" — 1:1 з .docs-list/.doc-item на сторінці
   // завідувача старого проекту (public/shared/head-cabinet.css +
   // head-cabinet.js:loadStaff): шукаєш відділення (список тягнеться один
@@ -5187,6 +5569,11 @@ export default function AppBoundedCanvas() {
           // Ключ зв'язку з "Перебуває у відділенні" — той самий resource_id,
           // що lpz_hospitalization_doctors.doctor_id (перевірено join'ом).
           linkKey: doc.resource_id,
+          // + другий, окремий ключ — на свій відділ (реальний foreign key
+          // lpz_empl.department_structure_id = lpz_departments.structure_id),
+          // щоб рядок крос-підсвічувався і з рядком свого відділення в
+          // "🏥 Список відділень", а не лише з пацієнтами.
+          linkKeys: [staffSelectedDept.structure_id],
         };
       });
 
@@ -5265,6 +5652,10 @@ export default function AppBoundedCanvas() {
           parentId: listId,
           subContent: sub || "—",
           linkKey: p.doctor_id || undefined,
+          // + ключ на своє відділення (той самий structure_id, що вже несуть
+          // рядки "🏥 Список відділень" і "🩺 Ординаторська") — усі три
+          // списки одного відділення тепер крос-підсвічуються між собою.
+          linkKeys: [staffSelectedDept.structure_id],
         };
       });
 
@@ -5948,9 +6339,9 @@ export default function AppBoundedCanvas() {
                         }
 
                         runConnectionActions(child.id);
-                        if (child.linkKey) {
+                        if (elementLinkKeys(child).length > 0) {
                           const matches = elements.filter(
-                            (o) => o.id !== child.id && o.linkKey === child.linkKey && isVisibleOnPage(o, currentPageId)
+                            (o) => o.id !== child.id && isVisibleOnPage(o, currentPageId) && sharesLinkKey(child, o)
                           );
                           setLinkedHighlightIds(new Set(matches.map((m) => m.id)));
                         } else if (linkedHighlightIds.size > 0) {
@@ -7112,6 +7503,33 @@ export default function AppBoundedCanvas() {
                   </ParamSection>
                 )}
 
+                {/* КЛЮЧ ЗВ'ЯЗКУ (linkKey) — ручний спосіб підключити крос-
+                    підсвітку для будь-якої пари об'єктів, для яких її ще
+                    нема автоматично (готові пресети — див. lib/db-
+                    relationships.ts і панель "📖 Довідники" → "🔑 Зв'язки
+                    бази" для реальних значень ключів з бази). Дає можливість
+                    зв'язати щойно СТВОРЕНИЙ об'єкт з іншим уже на полотні,
+                    навіть якщо для цієї пари ще нема готового пресету. */}
+                {singleSelected && (
+                  <ParamSection
+                    label="🔗 Ключ зв'язку (linkKey)"
+                    isOpen={openParamSections.has("linkKey")}
+                    onToggle={() => toggleParamSection("linkKey")}
+                    colorClass="bg-pink-50/60 border-pink-200 text-pink-900"
+                  >
+                    <p className="text-[10px] text-pink-700/70 leading-snug">
+                      Клік на цьому елементі (у "▶️ Робота") підсвітить УСІ інші елементи сторінки з тим самим ключем — той самий принцип, що й пацієнт ↔ лікар в Ординаторській. Реальні готові ключі з бази — панель "📖 Довідники" → "🔑 Зв'язки бази".
+                    </p>
+                    <input
+                      type="text"
+                      value={singleSelected.linkKey ?? ""}
+                      onChange={(e) => updateSelectedFields("linkKey", e.target.value || undefined)}
+                      className="w-full p-1.5 border rounded-md text-xs bg-white font-mono"
+                      placeholder="напр. id пацієнта, resource_id лікаря…"
+                    />
+                  </ParamSection>
+                )}
+
                 {/* ЖИВІ ЦИФРИ: Позиція та розміри */}
                 <ParamSection
                   label="📏 Позиція та розміри (Live)"
@@ -7948,6 +8366,14 @@ export default function AppBoundedCanvas() {
 
               const cubeEntries: ComplexListEntry[] = [
                 {
+                  id: "indicator-picker",
+                  label: "📊 Показник (готова картка, живі дані)",
+                  description:
+                    "Обери рівень (лікарня/напрямок/відділення/лікар) і показник — на полотно одразу стане готова «Картка КПІ» з РЕАЛЬНИМ числом (загальна сума за весь час); дату можна підключити пізніше через «🔗 Зв'язки», щоб звузити до року/місяця/дня",
+                  color: "cyan",
+                  onSelect: () => setSelectedComplexObjectId("indicator-picker"),
+                },
+                {
                   id: "hospital-kpi",
                   label: "📊 КПІ лікарні (реальні дані)",
                   description:
@@ -8350,35 +8776,31 @@ export default function AppBoundedCanvas() {
                 <div className="text-[11px] text-emerald-900 leading-snug">
                   <b>Два питання — і на полотні готовий живий показник.</b>
                   <div className="text-[10px] text-slate-500 mt-1">
-                    З&apos;являться три пов&apos;язані речі: ряд років, картка з числом і лінія зв&apos;язку між ними. Перемкніть режим на <b>▶️ Робота</b> і клікайте роки — число мінятиметься з бази.
+                    З&apos;являться три пов&apos;язані речі: ряд років, картка з числом і лінія зв&apos;язку між ними. Картка одразу показує загальну суму за весь час — перемкніть режим на <b>▶️ Робота</b> і клікніть рік, щоб звузити до нього.
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">1. Що показати?</label>
-                  <select
-                    value={wizardField}
-                    onChange={(e) => setWizardField(e.target.value)}
-                    className="w-full p-1.5 border rounded-md text-xs bg-white"
-                  >
-                    {HIERARCHY_FIELDS.map((f) => (
-                      <option key={f.key} value={f.key}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">2. По чому рахувати?</label>
+                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">1. По чому рахувати?</label>
                   <select
                     value={wizardLevel}
-                    onChange={(e) => setWizardLevel(e.target.value as "hospital" | "department")}
+                    onChange={(e) => handleWizardLevelChange(e.target.value as WizardLevel)}
                     className="w-full p-1.5 border rounded-md text-xs bg-white"
                   >
                     <option value="hospital">Уся лікарня</option>
+                    <option value="direction">Один напрямок</option>
                     <option value="department">Одне відділення</option>
+                    <option value="doctor">Один лікар</option>
                   </select>
+                  {wizardLevel === "direction" && (
+                    <input
+                      type="text"
+                      value={wizardDirection}
+                      onChange={(e) => setWizardDirection(e.target.value)}
+                      placeholder="Назва напрямку"
+                      className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white"
+                    />
+                  )}
                   {wizardLevel === "department" && (
                     <input
                       type="text"
@@ -8388,6 +8810,64 @@ export default function AppBoundedCanvas() {
                       className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white"
                     />
                   )}
+                  {wizardLevel === "doctor" && !wizardDoctor && (
+                    <>
+                      <input
+                        type="text"
+                        value={wizardDoctorQuery}
+                        onChange={(e) => setWizardDoctorQuery(e.target.value)}
+                        placeholder={doctorHierListLoading ? "Завантаження списку лікарів…" : "🔍 ПІБ лікаря…"}
+                        disabled={doctorHierListLoading}
+                        className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white disabled:bg-slate-50 disabled:text-slate-400"
+                      />
+                      {wizardDoctorQuery.trim() && (
+                        <div className="space-y-1 mt-1.5 max-h-40 overflow-y-auto">
+                          {wizardDoctorMatches.length === 0 ? (
+                            <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
+                          ) : (
+                            wizardDoctorMatches.slice(0, 30).map((d) => (
+                              <button
+                                key={d.doctor_id}
+                                onClick={() => setWizardDoctor(d)}
+                                className="w-full text-left p-1.5 rounded-md border border-emerald-200 bg-white hover:bg-emerald-50 text-xs"
+                              >
+                                {d.doctor_name}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {wizardLevel === "doctor" && wizardDoctor && (
+                    <div className="flex items-center justify-between gap-2 mt-1.5 p-1.5 rounded-md border border-emerald-200 bg-white text-xs">
+                      <span className="font-bold text-slate-700">{wizardDoctor.doctor_name}</span>
+                      <button
+                        onClick={() => {
+                          setWizardDoctor(null);
+                          setWizardDoctorQuery("");
+                        }}
+                        className="text-[10px] text-emerald-700 hover:underline shrink-0"
+                      >
+                        ← Інший лікар
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">2. Що показати?</label>
+                  <select
+                    value={wizardField}
+                    onChange={(e) => setWizardField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    {wizardFieldOptions.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 {wizardError && (
@@ -8403,6 +8883,126 @@ export default function AppBoundedCanvas() {
                 >
                   {wizardLoading ? "Перевіряю дані…" : "📡 Створити живий показник"}
                 </button>
+              </div>
+            )}
+
+            {selectedComplexObjectId === "indicator-picker" && (
+              <div className="p-3 bg-cyan-50/70 border border-cyan-200 rounded-lg space-y-2.5">
+                <div className="text-[10px] text-slate-500">
+                  Обери рівень і показник — на полотно одразу стане готова «Картка КПІ» з реальним числом (загальна сума за весь час).
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-cyan-900 mb-1">Рівень:</label>
+                  <select
+                    value={indicatorPickerLevel}
+                    onChange={(e) => handleIndicatorPickerLevelChange(e.target.value as IndicatorPickerLevel)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="hospital">🏥 Лікарня</option>
+                    <option value="direction">🧭 Напрямок</option>
+                    <option value="department">🏢 Відділення</option>
+                    <option value="doctor">👨‍⚕️ Лікар</option>
+                  </select>
+                </div>
+
+                {(indicatorPickerLevel === "direction" || indicatorPickerLevel === "department") && (
+                  <input
+                    type="text"
+                    value={indicatorPickerLocation}
+                    onChange={(e) => setIndicatorPickerLocation(e.target.value)}
+                    placeholder={indicatorPickerLevel === "direction" ? "Назва напрямку…" : "Назва відділення (частина назви теж підійде)…"}
+                    className="w-full p-1.5 border rounded-md text-xs"
+                  />
+                )}
+
+                {indicatorPickerLevel === "doctor" && !indicatorPickerDoctor && (
+                  <>
+                    <input
+                      type="text"
+                      value={indicatorPickerDoctorQuery}
+                      onChange={(e) => setIndicatorPickerDoctorQuery(e.target.value)}
+                      placeholder={doctorHierListLoading ? "Завантаження списку лікарів…" : "🔍 ПІБ лікаря…"}
+                      disabled={doctorHierListLoading}
+                      className="w-full p-1.5 border rounded-md text-xs disabled:bg-slate-50 disabled:text-slate-400"
+                    />
+                    {indicatorPickerDoctorQuery.trim() && (
+                      <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                        {indicatorPickerDoctorMatches.length === 0 ? (
+                          <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
+                        ) : (
+                          indicatorPickerDoctorMatches.slice(0, 30).map((d) => (
+                            <button
+                              key={d.doctor_id}
+                              onClick={() => setIndicatorPickerDoctor(d)}
+                              className="w-full text-left p-2 rounded-lg border border-cyan-200 bg-white hover:bg-cyan-50 text-xs"
+                            >
+                              {d.doctor_name}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {indicatorPickerLevel === "doctor" && indicatorPickerDoctor && (
+                  <div className="flex items-center justify-between gap-2 p-2 rounded-lg border border-cyan-200 bg-white text-xs">
+                    <span className="font-bold text-slate-700">{indicatorPickerDoctor.doctor_name}</span>
+                    <button
+                      onClick={() => {
+                        setIndicatorPickerDoctor(null);
+                        setIndicatorPickerDoctorQuery("");
+                      }}
+                      className="text-[10px] text-cyan-700 hover:underline shrink-0"
+                    >
+                      ← Інший лікар
+                    </button>
+                  </div>
+                )}
+
+                {(indicatorPickerLevel !== "doctor" || indicatorPickerDoctor) && (
+                  <>
+                    <input
+                      type="text"
+                      value={indicatorPickerFieldQuery}
+                      onChange={(e) => setIndicatorPickerFieldQuery(e.target.value)}
+                      placeholder="🔍 Пошук показника…"
+                      className="w-full p-1.5 border rounded-md text-xs"
+                    />
+                    <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                      {indicatorPickerFieldMatches.length === 0 ? (
+                        <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
+                      ) : (
+                        indicatorPickerFieldMatches.map((entry) => {
+                          const key = `${entry.source}:${entry.field.key}`;
+                          const isLoading = indicatorPickerLoadingKey === key;
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => handlePickLiveIndicator(entry)}
+                              disabled={indicatorPickerLoadingKey !== null || !indicatorPickerParams}
+                              className="w-full text-left p-2 rounded-lg border border-cyan-200 bg-white hover:bg-cyan-50 disabled:opacity-50 text-xs flex items-center justify-between gap-2"
+                            >
+                              <span className="font-bold text-slate-700">{entry.field.label}</span>
+                              {indicatorPickerLevel === "hospital" && (
+                                <span className="text-[10px] text-slate-400 shrink-0">
+                                  {isLoading ? "Завантаження…" : entry.source === "hierarchy" ? "лікарня" : "повторні госп."}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {(indicatorPickerLevel === "direction" || indicatorPickerLevel === "department") && !indicatorPickerLocation.trim() && (
+                  <div className="text-[10px] text-cyan-700 text-center py-1">
+                    Впишіть назву {indicatorPickerLevel === "direction" ? "напрямку" : "відділення"} вище, щоб обрати показник.
+                  </div>
+                )}
               </div>
             )}
 
@@ -9366,16 +9966,46 @@ export default function AppBoundedCanvas() {
           <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
             Інтерактивні зв'язки між елементами полотна — джерело → ціль. Що саме зв'язок робить, приписується окремим кроком пізніше.
           </div>
-          {singleSelected?.isKpiNumberSlot && singleSelected.liveBinding && singleSelected.content === "—" && (
+          {singleSelected?.isKpiNumberSlot && singleSelected.liveBinding && (
             <div className="mx-2 mt-2 p-2.5 rounded-lg bg-fuchsia-50 border border-fuchsia-200 text-[11px] text-fuchsia-900 leading-snug shrink-0">
-              <div className="font-bold mb-1">📍 Крок 2 з 2 — підключіть дату</div>
-              Показник прив&apos;язано, підпис уже на місці — число лишається «—», доки до ЦІЄЇ картки (вона й зараз виділена на полотні) не підключено часове джерело:
-              <ol className="list-decimal ml-4 mt-1 space-y-0.5">
-                <li>Увімкніть «🔗 Режим з&apos;єднання» нижче.</li>
-                <li>Клікніть на елементі з роком/місяцем/днем («🕐 Часове джерело» у Параметрах).</li>
-                <li>Потім клікніть на цій картці — і познач дію «задає РІК/МІСЯЦЬ/…».</li>
-              </ol>
-              Для «Лікарів» і «Показників по діагнозу» без вписаного МКХ-10 — так само підключіть ще й 👨‍⚕️/🩻 вузол.
+              {singleSelected.content === "—" ? (
+                <>
+                  <div className="font-bold mb-1">📍 Ще бракує обов&apos;язкового джерела</div>
+                  Число лишається «—» — цій картці (вона й зараз виділена на полотні) бракує {singleSelected.liveBinding.source === "diagnoses" ? <>🩻 <b>діагностичного вузла</b> (МКХ-10)</> : singleSelected.liveBinding.source === "doctor-hierarchy" ? <>👨‍⚕️ <b>лікарського вузла</b></> : "потрібного джерела"}:
+                  <ol className="list-decimal ml-4 mt-1 space-y-0.5">
+                    <li>Увімкніть «🔗 Режим з&apos;єднання» нижче.</li>
+                    <li>Клікніть на відповідному вузлі-джерелі на полотні.</li>
+                    <li>Потім клікніть на цій картці — і познач відповідну дію.</li>
+                  </ol>
+                </>
+              ) : (
+                <>
+                  <div className="font-bold mb-1">📍 Зараз показує загальну суму (весь час)</div>
+                  Хочете конкретний рік/місяць/день тижня/день замість загальної суми — необов&apos;язково:
+                </>
+              )}
+              <div className="flex flex-wrap gap-1 mt-2">
+                {(
+                  [
+                    { unit: "year" as const, label: "+ 📅 Рік" },
+                    { unit: "month" as const, label: "+ 📅 Місяць" },
+                    { unit: "week" as const, label: "+ 📅 День тижня" },
+                    { unit: "day" as const, label: "+ 📅 День" },
+                  ]
+                ).map(({ unit, label }) => (
+                  <button
+                    key={unit}
+                    type="button"
+                    onClick={() => handleAddTimeSourceToSelectedCard(unit)}
+                    className="text-[10px] font-semibold px-2 py-1 rounded-full bg-white border border-fuchsia-300 text-fuchsia-800 hover:bg-fuchsia-100"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="text-[10px] text-fuchsia-700/70 mt-1">
+                Ставить готовий ряд пігулок поруч і одразу з&apos;єднує з цією карткою — клікайте пігулку в «▶️ Робота», щоб звузити до неї.
+              </div>
             </div>
           )}
           <div className="p-2 border-b border-slate-200 shrink-0">
@@ -9553,6 +10183,7 @@ export default function AppBoundedCanvas() {
                 { key: "indicators" as const, label: "📖 Показники" },
                 { key: "status" as const, label: "📡 Стан даних" },
                 { key: "connections" as const, label: "🔌 Підключення" },
+                { key: "relationships" as const, label: "🔑 Зв'язки бази" },
               ]
             ).map((tab) => (
               <button
@@ -9744,6 +10375,64 @@ export default function AppBoundedCanvas() {
                         </a>
                       )}
                       {variant.note && <div className="italic text-slate-400">{variant.note}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          </>
+          )}
+
+          {refsActiveTab === "relationships" && (
+          <>
+          <div className="px-2 pt-2 text-[10px] text-slate-400 shrink-0">
+            Реальні зв&apos;язки (foreign key з бази + перевірені збіги без формального constraint), схема lpz — готовий довідник ключів для linkKey/liveBinding, коли знадобиться новий об&apos;єкт чи новий крос-зв&apos;язок.
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            {DB_RELATIONSHIPS.map((rel) => {
+              const isOpen = openRelationshipIds.has(rel.id);
+              return (
+                <div key={rel.id} className="border border-slate-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleRelationshipOpen(rel.id)}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1.5 bg-slate-50 hover:bg-slate-100 text-left"
+                  >
+                    <span className="text-[11px] font-bold text-slate-700 font-mono">
+                      {isOpen ? "▼" : "▶"} {rel.fromTable.replace("lpz.", "")}.{rel.fromColumn}
+                    </span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      {rel.wired && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                          підключено
+                        </span>
+                      )}
+                      <span
+                        className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${
+                          rel.kind === "fk" ? "bg-indigo-100 text-indigo-700" : "bg-amber-100 text-amber-700"
+                        }`}
+                      >
+                        {rel.kind === "fk" ? "FK" : "soft"}
+                      </span>
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="p-2 space-y-1.5 text-[10px] text-slate-600">
+                      <div className="font-mono bg-slate-50 border border-slate-200 rounded p-1.5 break-all">
+                        {rel.fromTable}.{rel.fromColumn}
+                        <br />
+                        → {rel.toTable}.{rel.toColumn}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        <span className="inline-block font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                          {RELATIONSHIP_CATEGORY_LABELS[rel.category]}
+                        </span>
+                        <span className="inline-block font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                          {rel.usedByApp ? "дані вже тягне застосунок" : "таблицю/поле застосунок ще не запитує"}
+                        </span>
+                      </div>
+                      <div className="text-slate-400">{DB_RELATIONSHIP_KIND_LABELS[rel.kind]}</div>
+                      {rel.note && <div className="italic text-slate-400">{rel.note}</div>}
                     </div>
                   )}
                 </div>
