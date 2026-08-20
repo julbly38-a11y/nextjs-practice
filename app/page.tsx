@@ -342,6 +342,26 @@ interface CanvasElement {
     params: Record<string, string>;
   };
 
+  // "Поле ієрархії" — контейнер (звичайний блок), що несе власну ІДЕНТИЧНІСТЬ
+  // рівня Лікарня→Напрямок→Відділення→Лікар, АБО одиниці часу (Рік→Місяць→
+  // День тижня/День). Будь-яка "📊 Картка КПІ" (liveBinding), вкладена
+  // всередину — прямо чи через кілька рівнів (parentId, той самий
+  // forcedParentId, яким уже вкладають об'єкти в "Блок") — автоматично
+  // перезаписує СВОЇ liveBinding.params/timeContext значеннями найближчих по
+  // вкладеності полів-предків (collectFieldScope, withFieldScopeApplied) і
+  // одразу перезапитує дані. Це АЛЬТЕРНАТИВНИЙ, додатковий спосіб до
+  // ручного підключення set-direction/set-department/set-doctor/set-year/…
+  // через "🔗 Зв'язки" — усі способи працюють одночасно, контейнерний лише
+  // перезаписує ті ключі, для яких є відповідний предок.
+  fieldKind?: "hospital" | "direction" | "department" | "doctor" | "year" | "month" | "week" | "day";
+  fieldOrgEdrpou?: string;   // "hospital" — знімок selectedHospital.edrpou на момент створення поля
+  fieldHospitalName?: string; // "hospital" — знімок selectedHospital.name на момент створення поля
+  fieldDirection?: string;    // "direction" — назва напрямку (points.direction у lpz_departments)
+  fieldDepartment?: string;   // "department" — точна назва відділення
+  fieldDoctorId?: string;     // "doctor" — resource_id лікаря (lpz_empl.resource_id)
+  fieldDoctorLabel?: string;  // "doctor" — ПІБ лікаря, лише для підпису
+  fieldTimeValue?: string;    // "year"/"month"/"week"/"day" — само значення (напр. "2026", "Березень", "Понеділок", "15")
+
   // "📈 Графік" (type: "chart") — знімок рядків куба (chartData) на момент
   // додавання + яке поле мітка/X (chartLabelField), які поля значення/Y
   // (chartValueFields — масив, бо стовпчикова/лінійна/площинна можуть
@@ -1753,6 +1773,139 @@ export default function AppBoundedCanvas() {
     });
   };
 
+  // Усі id, вкладені (прямо чи через кілька рівнів) в rootId — використано і
+  // для каскадного перескопування "Поля ієрархії" (нижче), і в changeParent.
+  const getDescendantIds = (rootId: number, snapshot: CanvasElement[]): number[] => {
+    const direct = snapshot.filter((el) => el.parentId === rootId).map((el) => el.id);
+    return [...direct, ...direct.flatMap((id) => getDescendantIds(id, snapshot))];
+  };
+
+  // Розріз, зібраний з НАЙБЛИЖЧИХ по вкладеності предків-"Полів ієрархії"
+  // (fieldKind) — незалежно один від одного: "Лікар" не скасовує "Відділення"
+  // вище, кожен kind рахується окремо зі свого найближчого предка. Порожні
+  // поля (direction === undefined) означають "предка такого kind немає" —
+  // withFieldScopeApplied тоді НЕ чіпає відповідний ключ params, лишаючи
+  // ручний вибір (форма кубу / set-direction тощо) як є.
+  const collectFieldScope = (
+    elementId: number,
+    snapshot: CanvasElement[]
+  ): {
+    direction?: string;
+    department?: string;
+    doctorId?: string;
+    hasHospital: boolean;
+    year?: string;
+    month?: string;
+    week?: string;
+    day?: string;
+  } => {
+    let direction: string | undefined;
+    let department: string | undefined;
+    let doctorId: string | undefined;
+    let hasHospital = false;
+    let year: string | undefined;
+    let month: string | undefined;
+    let week: string | undefined;
+    let day: string | undefined;
+    let current = snapshot.find((el) => el.id === elementId);
+    while (current && current.parentId !== null) {
+      current = snapshot.find((el) => el.id === current!.parentId);
+      if (!current) break;
+      if (current.fieldKind === "doctor" && doctorId === undefined && current.fieldDoctorId) {
+        doctorId = current.fieldDoctorId;
+      }
+      if (current.fieldKind === "department" && department === undefined && current.fieldDepartment) {
+        department = current.fieldDepartment;
+      }
+      if (current.fieldKind === "direction" && direction === undefined && current.fieldDirection) {
+        direction = current.fieldDirection;
+      }
+      if (current.fieldKind === "hospital") hasHospital = true;
+      if (current.fieldKind === "year" && year === undefined && current.fieldTimeValue) {
+        year = current.fieldTimeValue;
+      }
+      if (current.fieldKind === "month" && month === undefined && current.fieldTimeValue) {
+        month = current.fieldTimeValue;
+      }
+      if (current.fieldKind === "week" && week === undefined && current.fieldTimeValue) {
+        week = current.fieldTimeValue;
+      }
+      if (current.fieldKind === "day" && day === undefined && current.fieldTimeValue) {
+        day = current.fieldTimeValue;
+      }
+    }
+    return { direction, department, doctorId, hasHospital, year, month, week, day };
+  };
+
+  // Накладає розріз предків-полів на liveBinding.params/timeContext ОДНОГО
+  // елемента. level для "hierarchy"/"readmissions" рахується від
+  // НАЙГЛИБШОГО знайденого предка (відділення > напрямок > лікарня) — ці 2
+  // куби не мають рівня "лікар", для нього окреме джерело "doctor-hierarchy"
+  // (без p_level взагалі, лише прямий doctorId). "diagnoses" — рівня/
+  // напрямку/відділення в цьому кубі нема (лише МКХ-10), тож params не
+  // чіпаємо — АЛЕ час (рік/місяць/день) застосовується до ВСІХ 4 джерел
+  // однаково, це окремий, незалежний від params розріз (timeContext).
+  const withFieldScopeApplied = (el: CanvasElement, snapshot: CanvasElement[]): CanvasElement | null => {
+    if (!el.liveBinding) return null;
+    const scope = collectFieldScope(el.id, snapshot);
+    const hasParamScope = !!(scope.direction || scope.department || scope.doctorId || scope.hasHospital);
+    const hasTimeScope = !!(scope.year || scope.month || scope.week || scope.day);
+    if (!hasParamScope && !hasTimeScope) return null;
+
+    let nextParams = el.liveBinding.params;
+    if (hasParamScope) {
+      nextParams = { ...el.liveBinding.params };
+      if (el.liveBinding.source === "hierarchy" || el.liveBinding.source === "readmissions") {
+        nextParams.level = scope.department ? "department" : scope.direction ? "direction" : "hospital";
+        if (scope.direction) nextParams.direction = scope.direction;
+        if (scope.department) nextParams.department = scope.department;
+      } else if (el.liveBinding.source === "doctor-hierarchy") {
+        if (scope.doctorId) nextParams.doctorId = scope.doctorId;
+        if (scope.direction) nextParams.direction = scope.direction;
+        if (scope.department) nextParams.department = scope.department;
+      }
+    }
+
+    let nextTimeContext = el.timeContext;
+    if (hasTimeScope) {
+      nextTimeContext = { ...el.timeContext };
+      if (scope.year) nextTimeContext.year = scope.year;
+      if (scope.month) nextTimeContext.month = scope.month;
+      if (scope.week) nextTimeContext.week = scope.week;
+      if (scope.day) nextTimeContext.day = scope.day;
+    }
+
+    if (nextParams === el.liveBinding.params && nextTimeContext === el.timeContext) return null;
+    return { ...el, liveBinding: { ...el.liveBinding, params: nextParams }, timeContext: nextTimeContext };
+  };
+
+  // Каскадно перезастосовує розріз предків-полів до ЕЛЕМЕНТА і всіх його
+  // нащадків з liveBinding, тоді перезапитує live-значення для кожного
+  // зміненого. Викликається, коли ЗМІНИЛАСЬ ІДЕНТИЧНІСТЬ поля (напр.
+  // fieldDirection у "Параметри") — а не при переприв'язці батька (те окремо
+  // в changeParent, бо там уже готовий "next" з новим parentId).
+  const applyFieldScopeCascade = (rootId: number, snapshot: CanvasElement[]) => {
+    const ids = [rootId, ...getDescendantIds(rootId, snapshot)];
+    let changed = false;
+    const next = snapshot.map((el) => {
+      if (!ids.includes(el.id)) return el;
+      const updated = withFieldScopeApplied(el, snapshot);
+      if (!updated) return el;
+      changed = true;
+      return updated;
+    });
+    if (changed) updateElementsAndHistory(next);
+
+    ids.forEach((id) => {
+      const el = next.find((item) => item.id === id);
+      if (el?.liveBinding) {
+        void resolveLiveIndicatorValue(el.liveBinding, el.timeContext ?? {}).then(({ value, reason }) =>
+          applyLiveIndicatorResult(id, value, reason)
+        );
+      }
+    });
+  };
+
   // clickValueOverride — клік на КОНКРЕТНОМУ сегменті діаграми (📈 Графік):
   // сам елемент графіка один, а "джерел" усередині нього — по одному на
   // кожен стовпець/сектор, кожне зі своєю міткою (chartLabelField рядка).
@@ -1981,6 +2134,58 @@ export default function AppBoundedCanvas() {
           applyLiveIndicatorResult(targetId, value, reason);
         });
       });
+    }
+
+    // Дії, що ціллю мають "Поле ієрархії/часу" (fieldKind), а не картку з
+    // liveBinding напряму: той самий клік-джерело з РЕАЛЬНИМИ даними бази
+    // (рядок "🏥 Список відділень"/"🧭 Список напрямків"/"🩺 Ординаторська",
+    // чи пігулка "⏰ Часовий блок") пише значення в саме поле
+    // (fieldDirection/fieldDepartment/fieldDoctorId/fieldTimeValue), а звідти
+    // вже вкладеність (applyFieldScopeCascade) сама доносить його до ВСІХ
+    // карток, покладених усередину — жодного окремого вибору "з якого
+    // напрямку/відділення" в самій формі поля більше не питаємо. Лікарський
+    // вузол так само бере linkKey (resource_id), а не ПІБ — той самий
+    // принцип, що й paramActions вище.
+    const fieldTargetActions = sourceEl
+      ? flatActions.filter(({ action }) =>
+          ["set-direction", "set-department", "set-doctor", "set-year", "set-month", "set-week", "set-day"].includes(action)
+        )
+      : [];
+    if (sourceEl && fieldTargetActions.length > 0) {
+      const kindForAction: Record<string, NonNullable<CanvasElement["fieldKind"]>> = {
+        "set-direction": "direction",
+        "set-department": "department",
+        "set-doctor": "doctor",
+        "set-year": "year",
+        "set-month": "month",
+        "set-week": "week",
+        "set-day": "day",
+      };
+      const UNIT_LABELS: Record<string, string> = { year: "Рік", month: "Місяць", week: "День тижня", day: "День" };
+
+      const patchesById = new Map<number, Partial<CanvasElement>>();
+      fieldTargetActions.forEach(({ toId, action }) => {
+        const target = elements.find((item) => item.id === toId);
+        if (!target || target.fieldKind !== kindForAction[action]) return;
+
+        if (action === "set-direction") {
+          patchesById.set(toId, { fieldDirection: clickValue, content: `🧭 Напрямок: ${clickValue}` });
+        } else if (action === "set-department") {
+          patchesById.set(toId, { fieldDepartment: clickValue, content: `🏢 Відділення: ${clickValue}` });
+        } else if (action === "set-doctor") {
+          const doctorId = sourceEl.linkKey ?? clickValue;
+          patchesById.set(toId, { fieldDoctorId: doctorId, fieldDoctorLabel: clickValue, content: `👨‍⚕️ Лікар: ${clickValue}` });
+        } else {
+          const unit = action.replace("set-", "");
+          patchesById.set(toId, { fieldTimeValue: clickValue, content: `📅 ${UNIT_LABELS[unit]}: ${clickValue}` });
+        }
+      });
+
+      if (patchesById.size > 0) {
+        const nextElements = elements.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
+        updateElementsAndHistory(nextElements);
+        patchesById.forEach((_patch, id) => applyFieldScopeCascade(id, nextElements));
+      }
     }
   };
 
@@ -4177,7 +4382,7 @@ export default function AppBoundedCanvas() {
     }
 
     const binding: NonNullable<CanvasElement["liveBinding"]> = { source, field: field.key, suffix: field.suffix, params };
-    const next = elements.map((item) => {
+    const withBinding = elements.map((item) => {
       if (item.id === numberEl.id) {
         return { ...item, liveBinding: binding, content: "—", timeContext: undefined };
       }
@@ -4186,13 +4391,24 @@ export default function AppBoundedCanvas() {
       }
       return item;
     });
+
+    // Якщо картку створили/прив'язали, вже вклавши її у "Поле ієрархії"
+    // (напрямок/відділення/лікар обраний як forcedParentId) — розріз поля
+    // одразу перекриває params форми кубу вище, ще ДО першого запиту.
+    const boundNumberEl = withBinding.find((item) => item.id === numberEl.id)!;
+    const scoped = withFieldScopeApplied(boundNumberEl, withBinding);
+    const next = scoped
+      ? withBinding.map((item) => (item.id === numberEl.id ? scoped : item))
+      : withBinding;
     updateElementsAndHistory(next);
 
-    // Одразу тягнемо значення "Весь час" (без timeContext) — картка
-    // з'являється з готовим числом, а не чекає, доки хтось підключить дату
-    // через "🔗 Зв'язки". Підключення дати лишається можливим і далі — тоді
-    // resolveLiveIndicatorValue звужує результат до конкретного періоду.
-    void resolveLiveIndicatorValue(binding, {}).then(({ value, reason }) => {
+    const finalBinding = scoped?.liveBinding ?? binding;
+    // Якщо картку вклали й у "Поле" одиниці часу (Рік/Місяць/…) — розріз
+    // вище вже поставив timeContext, і перший запит одразу йде за ним
+    // замість дефолтного "Весь час".
+    const finalTimeContext = scoped?.timeContext ?? {};
+
+    void resolveLiveIndicatorValue(finalBinding, finalTimeContext).then(({ value, reason }) => {
       applyLiveIndicatorResult(numberEl.id, value, reason);
     });
 
@@ -4595,12 +4811,23 @@ export default function AppBoundedCanvas() {
       actions: ["set-year"],
     };
 
-    const nextElements = [...elements, pillsBox, ...pills, card, numberEl, labelEl];
+    // Якщо forcedParentId сидить усередині "Поля ієрархії" — розріз предків
+    // перекриває params зібрані з wizardLevel вище (той самий принцип, що й
+    // у handleBindLiveIndicator/handlePickLiveIndicator).
+    const withNew = [...elements, pillsBox, ...pills, card, numberEl, labelEl];
+    const scopedNumberEl = withFieldScopeApplied(numberEl, withNew) ?? numberEl;
+    const nextElements = [...elements, pillsBox, ...pills, card, scopedNumberEl, labelEl];
     setElements(nextElements);
     setConnections([...connections, connection]);
     saveToHistory(pages, nextElements, [...connections, connection]);
     setSelectedIds([cardId]);
     setWizardLoading(false);
+
+    if (scopedNumberEl !== numberEl && scopedNumberEl.liveBinding) {
+      void resolveLiveIndicatorValue(scopedNumberEl.liveBinding, scopedNumberEl.timeContext ?? {}).then(({ value: v, reason }) =>
+        applyLiveIndicatorResult(numberId, v, reason)
+      );
+    }
   };
 
   const handleLoadHierarchy = async () => {
@@ -5383,9 +5610,117 @@ export default function AppBoundedCanvas() {
       isKpiLabelSlot: true,
     };
 
-    updateElementsAndHistory([...elements, parentEl, numberEl, labelEl]);
+    // Якщо forcedParentId (виділений блок у момент кліку) сидить усередині
+    // "Поля ієрархії" — розріз предків одразу перекриває indicatorPickerParams
+    // вище, тим самим принципом, що й у handleBindLiveIndicator.
+    const withNew = [...elements, parentEl, numberEl, labelEl];
+    const scopedNumberEl = withFieldScopeApplied(numberEl, withNew) ?? numberEl;
+
+    updateElementsAndHistory([...elements, parentEl, scopedNumberEl, labelEl]);
     setSelectedIds([parentId]);
     setIndicatorPickerLoadingKey(null);
+
+    if (scopedNumberEl !== numberEl && scopedNumberEl.liveBinding) {
+      void resolveLiveIndicatorValue(scopedNumberEl.liveBinding, scopedNumberEl.timeContext ?? {}).then(({ value, reason }) =>
+        applyLiveIndicatorResult(numberEl.id, value, reason)
+      );
+    }
+  };
+
+  // Одним кліком — по одній "📊 Картці КПІ" на КОЖЕН показник з усіх 3 кубів
+  // (16 hierarchy + 6 readmissions + 3 doctor-hierarchy = 25), сіткою на
+  // полотні. Кожна одразу жива (рівень "hospital"/"Весь час", де
+  // застосовно) — далі САМ переставляєш потрібні картки всередину "Поля
+  // ієрархії" (перетягуванням батька в дереві "🧱 Створити" → "Ієрархія")
+  // і підключаєш дату (поле-час чи "🔗 Зв'язки") — той самий принцип
+  // контейнерів, що й скрізь вище, лише без ручного повторення форми
+  // "📊 Показник" 25 разів.
+  const handleCreateAllIndicatorCards = () => {
+    const allEntries: { source: NonNullable<CanvasElement["liveBinding"]>["source"]; field: CubeFieldDef }[] = [
+      ...HIERARCHY_FIELDS.map((field) => ({ source: "hierarchy" as const, field })),
+      ...READMIT_FIELDS.map((field) => ({ source: "readmissions" as const, field })),
+      ...DOCTOR_HIER_FIELDS.map((field) => ({ source: "doctor-hierarchy" as const, field })),
+    ];
+
+    const tileWidth = 200;
+    const tileHeight = 70;
+    const gapX = 20;
+    const gapY = 16;
+    const cols = 4;
+    const baseId = Date.now();
+    const origin = findFreePosition(forcedParentId, tileWidth, tileHeight);
+
+    const newElements: CanvasElement[] = [];
+    allEntries.forEach((entry, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const cardId = baseId + i * 10;
+      const numberId = cardId + 1;
+      const labelId = cardId + 2;
+
+      const binding: NonNullable<CanvasElement["liveBinding"]> = {
+        source: entry.source,
+        field: entry.field.key,
+        suffix: entry.field.suffix,
+        params: entry.source === "doctor-hierarchy" ? {} : { level: "hospital" },
+      };
+
+      newElements.push({
+        ...buildComplexObjectBase(cardId, ""),
+        type: "block",
+        width: tileWidth,
+        height: tileHeight,
+        x: origin.x + col * (tileWidth + gapX),
+        y: origin.y + row * (tileHeight + gapY),
+        parentId: forcedParentId,
+        customBgColor: "#ffffff",
+        bgOpacity: 0,
+        padding: 0,
+        borderRadius: 0,
+      });
+      newElements.push({
+        ...buildComplexObjectBase(numberId, "—"),
+        type: "text",
+        width: tileWidth,
+        height: 44,
+        x: 0,
+        y: 0,
+        parentId: cardId,
+        fontSize: 36,
+        fontWeight: "300",
+        textColor: "#1a1a1a",
+        textAlign: "right",
+        bgOpacity: 0,
+        padding: 0,
+        isKpiNumberSlot: true,
+        liveBinding: binding,
+      });
+      newElements.push({
+        ...buildComplexObjectBase(labelId, entry.field.label),
+        type: "text",
+        width: tileWidth,
+        height: 26,
+        x: 0,
+        y: 44,
+        parentId: cardId,
+        fontSize: 20,
+        fontWeight: "300",
+        textColor: "#9a958f",
+        textAlign: "right",
+        bgOpacity: 0,
+        padding: 0,
+        isKpiLabelSlot: true,
+      });
+    });
+
+    updateElementsAndHistory([...elements, ...newElements]);
+
+    newElements.forEach((el) => {
+      if (!el.liveBinding) return;
+      void resolveLiveIndicatorValue(el.liveBinding, {}).then(({ value, reason }) => {
+        applyLiveIndicatorResult(el.id, value, reason);
+      });
+    });
   };
 
   // ── "+ 📅 Рік/Місяць/День тижня/День" (вкладка "🔗 Зв'язки", банер для
@@ -5462,6 +5797,119 @@ export default function AppBoundedCanvas() {
     setSelectedIds([pillsBoxId]);
   };
 
+  // "⏰ Часовий блок" — самостійний, НЕ прив'язаний до жодної конкретної
+  // картки об'єкт (на відміну від handleAddTimeSourceToSelectedCard вище,
+  // якому обов'язково потрібна вже виділена "📊 Картка КПІ"): 4 незалежні
+  // рядки пігулок (Рік/Місяць/День тижня/День), кожен — готове часове
+  // джерело (timeSourceUnit). Додається ОДИН РАЗ на сторінку; "приєднання"
+  // довільних об'єктів до нього — це вже наявний, нічим не змінений
+  // механізм "🔗 Зв'язки" (set-year/set-month/set-week/set-day): обираєш
+  // потрібний рядок як джерело, ціль — будь-який елемент (картку, чи одразу
+  // цілий контейнер — каскад успадкування зв'язків у runConnectionActions
+  // сам донесе підключення до всього вкладеного в ціль).
+  const TIME_UNIT_ROW_LABELS: Record<"year" | "month" | "week" | "day", string> = {
+    year: "Рік",
+    month: "Місяць",
+    week: "День тижня",
+    day: "День",
+  };
+
+  const handleAddTimeBlock = () => {
+    const baseId = Date.now();
+    const pillGap = 8;
+    const pillHeight = 30;
+    const captionHeight = 16;
+    const captionGap = 2;
+    const rowGapY = 10;
+    const units: ("year" | "month" | "week" | "day")[] = ["year", "month", "week", "day"];
+
+    let rowY = 0;
+    let maxWidth = 0;
+    const children: CanvasElement[] = [];
+
+    units.forEach((unit, rowIndex) => {
+      const values = TIME_UNIT_PILL_VALUES[unit];
+      const pillWidths = values.map((v) => Math.max(60, Math.round(v.length * 9 + 32)));
+      const rowWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+      maxWidth = Math.max(maxWidth, rowWidth);
+
+      const rowBoxId = baseId + rowIndex * 1000 + 1;
+      const captionId = baseId + rowIndex * 1000 + 2;
+
+      const captionEl: CanvasElement = {
+        ...buildComplexObjectBase(captionId, TIME_UNIT_ROW_LABELS[unit]),
+        type: "text",
+        width: rowWidth,
+        height: captionHeight,
+        x: 0,
+        y: rowY,
+        fontSize: 11,
+        textColor: "#64748b",
+        bgOpacity: 0,
+        padding: 0,
+        parentId: baseId,
+      };
+
+      const rowBox: CanvasElement = {
+        ...buildComplexObjectBase(rowBoxId, ""),
+        type: "block",
+        width: rowWidth,
+        height: pillHeight,
+        x: 0,
+        y: rowY + captionHeight + captionGap,
+        parentId: baseId,
+        customBgColor: "#ffffff",
+        bgOpacity: 0,
+        padding: 0,
+        borderRadius: 0,
+      };
+
+      let pillX = 0;
+      const pills: CanvasElement[] = values.map((label, i) => {
+        const el: CanvasElement = {
+          ...buildComplexObjectBase(rowBoxId + 100 + i, label),
+          ...PILL_STYLE_DEFAULTS,
+          width: pillWidths[i],
+          height: pillHeight,
+          x: pillX,
+          y: 0,
+          parentId: rowBoxId,
+          content: label,
+          timeSourceUnit: unit,
+        };
+        pillX += pillWidths[i] + pillGap;
+        return el;
+      });
+
+      children.push(captionEl, rowBox, ...pills);
+      rowY += captionHeight + captionGap + pillHeight + rowGapY;
+    });
+
+    const totalHeight = rowY - rowGapY;
+    const freePos = findFreePosition(forcedParentId, maxWidth, totalHeight);
+
+    const wrapper: CanvasElement = {
+      ...buildComplexObjectBase(baseId, ""),
+      type: "block",
+      width: maxWidth,
+      height: totalHeight,
+      x: freePos.x,
+      y: freePos.y,
+      parentId: forcedParentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0.04,
+      borderRadius: 8,
+      padding: 6,
+    };
+
+    updateElementsAndHistory([...elements, wrapper, ...children]);
+
+    // НЕ handleSelectElement(id) — та сама причина, що й у
+    // handleAddHierarchyField: замикання "elements" тут ще старе.
+    setSelectedIds([wrapper.id]);
+    setForcedParentId(wrapper.id);
+  };
+
   // "Ординаторська відділення" — 1:1 з .docs-list/.doc-item на сторінці
   // завідувача старого проекту (public/shared/head-cabinet.css +
   // head-cabinet.js:loadStaff): шукаєш відділення (список тягнеться один
@@ -5472,7 +5920,11 @@ export default function AppBoundedCanvas() {
   // ту саму пресет-трійку (батько-кнопка + 2 текстові діти), що й пресет
   // "🩺 Рядок лікаря (ординаторська)", лише заповнена реальними даними й
   // повторена по одному разу на кожного лікаря.
-  type StaffDepartment = { structure_id: string; name: string; org_edrpou: string };
+  // direction — уже приходить у відповіді /api/departments (лишалось поза
+  // типом, хоча дані вже були в staffDeptList) — розширено, щоб той самий
+  // кеш годував і випадний список "Поле: Напрямок"/"Поле: Відділення"
+  // нижче, без другого запиту.
+  type StaffDepartment = { structure_id: string; name: string; org_edrpou: string; direction?: string | null };
   const [staffDeptQuery, setStaffDeptQuery] = useState("");
   const [staffDeptList, setStaffDeptList] = useState<StaffDepartment[] | null>(null);
   const [staffDeptListLoading, setStaffDeptListLoading] = useState(false);
@@ -5668,6 +6120,73 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  // "Поля ієрархії/часу" — 8 порожніх контейнерів рівня (Лікарня/Напрямок/
+  // Відділення/Лікар/Рік/Місяць/День тижня/День), див. коментар біля
+  // CanvasElement.fieldKind. Значення в них НЕ вводиться тут (ні текстом, ні
+  // вибором зі списку) — лише через "🔗 Зв'язки" з реального рядка бази
+  // (fieldTargetActions у runConnectionActions), тож ніякого локального
+  // стану форм тут більше не потрібно.
+  const handleAddHierarchyField = (kind: NonNullable<CanvasElement["fieldKind"]>) => {
+    const id = Date.now();
+    let width = 480;
+    let height = 320;
+    let content = "";
+    const extra: Partial<CanvasElement> = { fieldKind: kind };
+
+    // Лише рівень ієрархії/часу — БЕЗ значення. Значення (яка саме
+    // напрямок/відділення/лікар/рік…) приходить пізніше через "🔗 Зв'язки"
+    // (клік на РЕАЛЬНОМУ рядку з бази — "🏥 Список відділень"/"🧭 Список
+    // напрямків"/"🩺 Ординаторська"/пігулка "⏰ Часовий блок" — той самий
+    // fieldTargetActions у runConnectionActions), а не з форми створення
+    // поля: назва/ключ завжди беруться з реальних даних, не з ручного
+    // вибору в цій формі.
+    if (kind === "hospital") {
+      if (!selectedHospital) {
+        alert("Спершу увійдіть і оберіть активну лікарню");
+        return;
+      }
+      width = 1600;
+      height = 1000;
+      content = `🏥 ${selectedHospital.name} (${selectedHospital.edrpou})`;
+      extra.fieldOrgEdrpou = selectedHospital.edrpou;
+      extra.fieldHospitalName = selectedHospital.name;
+    } else if (kind === "direction") {
+      content = "🧭 Напрямок (не підключено — приєднай через 🔗 Зв'язки)";
+    } else if (kind === "department") {
+      content = "🏢 Відділення (не підключено — приєднай через 🔗 Зв'язки)";
+    } else if (kind === "doctor") {
+      content = "👨‍⚕️ Лікар (не підключено — приєднай через 🔗 Зв'язки)";
+    } else {
+      const unitLabel = { year: "Рік", month: "Місяць", week: "День тижня", day: "День" }[kind];
+      content = `📅 ${unitLabel} (не підключено — приєднай через 🔗 Зв'язки)`;
+    }
+
+    const freePos = kind === "hospital" ? { x: 0, y: 0 } : findFreePosition(forcedParentId, width, height);
+    const newElement: CanvasElement = {
+      ...buildComplexObjectBase(id, content),
+      type: "block",
+      width,
+      height,
+      x: freePos.x,
+      y: freePos.y,
+      customBgColor: "#ffffff",
+      bgOpacity: 0.05,
+      borderRadius: 8,
+      parentId: forcedParentId,
+      ...extra,
+    };
+    updateElementsAndHistory([...elements, newElement]);
+
+    // НЕ handleSelectElement(id) — та функція шукає елемент у замиканні
+    // "elements", яке в цьому виклику ще СТАРЕ (без newElement, доданого
+    // рядком вище), тож перевірка типу "block" провалилась би і
+    // forcedParentId лишився б попереднім. Ставимо напряму: щойно створене
+    // поле відразу стає контейнером для НАСТУПНОГО доданого об'єкта — саме
+    // так і вкладається Напрямок→Відділення→Лікар одне в одне.
+    setSelectedIds([id]);
+    setForcedParentId(id);
+  };
+
   const updateSelectedFields = (field: keyof CanvasElement, value: any) => {
     if (selectedIds.length === 0) return;
     const nextElements = elements.map((el) => {
@@ -5682,6 +6201,7 @@ export default function AppBoundedCanvas() {
 
       return { ...el, [field]: newValue };
     });
+
     updateElementsAndHistory(nextElements);
   };
 
@@ -5971,10 +6491,29 @@ export default function AppBoundedCanvas() {
       alert("Неможливо перемістити блок всередину самого себе!");
       return;
     }
-    const nextElements = elements.map((el) =>
+    const reparented = elements.map((el) =>
       el.id === elementId ? { ...el, parentId: newParent, x: 1, y: 1 } : el
     );
+
+    // Переміщений елемент (і все, що всередині нього — напр. цілий список
+    // КПІ-карток) міг щойно опинитись усередині "Поля ієрархії" (або,
+    // навпаки, вийти з нього) — перерахувати розріз одразу, з "reparented"
+    // (де parentId вже новий), а не зі старого "elements".
+    const rescopeIds = [elementId, ...getDescendantIds(elementId, reparented)];
+    const nextElements = reparented.map((el) => {
+      if (!rescopeIds.includes(el.id)) return el;
+      return withFieldScopeApplied(el, reparented) ?? el;
+    });
     updateElementsAndHistory(nextElements);
+
+    rescopeIds.forEach((id) => {
+      const el = nextElements.find((item) => item.id === id);
+      if (el?.liveBinding) {
+        void resolveLiveIndicatorValue(el.liveBinding, el.timeContext ?? {}).then(({ value, reason }) =>
+          applyLiveIndicatorResult(id, value, reason)
+        );
+      }
+    });
   };
 
   const renderCanvasNode = (el: CanvasElement) => {
@@ -7167,6 +7706,28 @@ export default function AppBoundedCanvas() {
                         className="w-full p-1.5 border rounded-md font-semibold text-blue-700 bg-blue-50/50"
                       />
                     </div>
+
+                    {singleSelected.fieldKind &&
+                      singleSelected.fieldKind !== "hospital" &&
+                      (() => {
+                        const value =
+                          singleSelected.fieldKind === "direction"
+                            ? singleSelected.fieldDirection
+                            : singleSelected.fieldKind === "department"
+                              ? singleSelected.fieldDepartment
+                              : singleSelected.fieldKind === "doctor"
+                                ? singleSelected.fieldDoctorLabel
+                                : singleSelected.fieldTimeValue;
+                        return (
+                          <div className="p-2.5 bg-amber-50/70 border border-amber-200 rounded-lg">
+                            <label className="block text-[11px] font-bold text-amber-900 mb-1">🔑 Значення (з бази, через зв'язок):</label>
+                            <div className="text-xs font-semibold text-slate-700">{value || "— не підключено —"}</div>
+                            <div className="text-[10px] text-amber-700 mt-1">
+                              Задається лише через «🔗 Зв'язки» — клікни на реальному рядку з бази (список відділень/напрямків/ординаторська/пігулка часу) і задай дію «Клік на джерелі задає…» на це поле.
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                     <ParamSection
                       label="👁️ Видимість і каскад"
@@ -8366,6 +8927,14 @@ export default function AppBoundedCanvas() {
 
               const cubeEntries: ComplexListEntry[] = [
                 {
+                  id: "all-indicator-cards",
+                  label: "📊 УСІ показники одразу (25 карток)",
+                  description:
+                    "Один клік — 25 готових живих «Карток КПІ» сіткою (16 hierarchy + 6 повторних госпіталізацій + 3 лікарських), рівень «Лікарня»/«Весь час» за замовчуванням. Далі сам перетягуєш потрібні картки в «Поля ієрархії» (дерево «🧱 Створити») і підключаєш дату.",
+                  color: "emerald",
+                  onSelect: () => handleCreateAllIndicatorCards(),
+                },
+                {
                   id: "indicator-picker",
                   label: "📊 Показник (готова картка, живі дані)",
                   description:
@@ -8459,8 +9028,96 @@ export default function AppBoundedCanvas() {
                 },
               ];
 
+              // Контейнери-"поля" ієрархії Лікарня→Напрямок→Відділення→Лікар —
+              // будь-яка "📊 Картка КПІ", вкладена всередину, автоматично
+              // рахує саме на цьому рівні (fieldKind, applyFieldScopeCascade).
+              // Клік одразу додає ПОРОЖНЄ поле (без форми — нема що заповнювати
+              // наперед): значення (яка саме напрямок/відділення/лікар) поле
+              // отримує пізніше ключем через "🔗 Зв'язки" (fieldTargetActions
+              // у runConnectionActions), з РЕАЛЬНОГО рядка бази, а не з
+              // ручного вибору назви тут.
+              const fieldEntries: ComplexListEntry[] = [
+                {
+                  id: "field-hospital",
+                  label: "🏥 Поле: Лікарня",
+                  description:
+                    "Корінь ієрархії — контейнер на всю сторінку з ключем ЄДРПОУ та назвою активної лікарні. Виділи його перед додаванням наступного поля, щоб те вклалось УСЕРЕДИНУ (forcedParentId).",
+                  color: "slate",
+                  onSelect: () => handleAddHierarchyField("hospital"),
+                },
+                {
+                  id: "field-direction",
+                  label: "🧭 Поле: Напрямок",
+                  description:
+                    "Контейнер РІВНЯ напрямку (порожній). Приєднай значення через «🔗 Зв'язки» — джерело: рядок «🧭 Список напрямків» → дія «задає НАПРЯМОК цілі». Будь-яка «📊 Картка КПІ» всередині одразу порахує саме по ньому.",
+                  color: "teal",
+                  onSelect: () => handleAddHierarchyField("direction"),
+                },
+                {
+                  id: "field-department",
+                  label: "🏢 Поле: Відділення",
+                  description:
+                    "Контейнер РІВНЯ відділення (порожній). Приєднай через «🔗 Зв'язки» — джерело: рядок «🏥 Список відділень» → дія «задає ВІДДІЛЕННЯ цілі». Можна вкласти всередину «Поле: Напрямок».",
+                  color: "cyan",
+                  onSelect: () => handleAddHierarchyField("department"),
+                },
+                {
+                  id: "field-doctor",
+                  label: "👨‍⚕️ Поле: Лікар",
+                  description:
+                    "Контейнер РІВНЯ лікаря (порожній). Приєднай через «🔗 Зв'язки» — джерело: рядок «🩺 Ординаторська» → дія «задає ЛІКАРЯ цілі» (бере resource_id, не ПІБ). Можна вкласти всередину «Поле: Відділення».",
+                  color: "rose700",
+                  onSelect: () => handleAddHierarchyField("doctor"),
+                },
+              ];
+
+              // Той самий принцип: порожні контейнери рівня часу, значення —
+              // лише через "🔗 Зв'язки" (джерело: пігулка "⏰ Часовий блок"
+              // нижче, чи будь-який інший timeSourceUnit-елемент).
+              const timeEntries: ComplexListEntry[] = [
+                {
+                  id: "field-year",
+                  label: "📅 Поле: Рік",
+                  description:
+                    "Контейнер РІВНЯ рік (порожній). Приєднай через «🔗 Зв'язки» — джерело: пігулка року з «⏰ Часовий блок» → дія «задає РІК цілі». Можна вкласти всередину «Поле: Місяць» тощо для звуження.",
+                  color: "amber",
+                  onSelect: () => handleAddHierarchyField("year"),
+                },
+                {
+                  id: "field-month",
+                  label: "📅 Поле: Місяць",
+                  description: "Контейнер РІВНЯ місяць (порожній). Приєднай через «🔗 Зв'язки» — дія «задає МІСЯЦЬ цілі» (звужує до grain=month разом з роком-предком).",
+                  color: "amber",
+                  onSelect: () => handleAddHierarchyField("month"),
+                },
+                {
+                  id: "field-week",
+                  label: "📅 Поле: День тижня",
+                  description: "Контейнер РІВНЯ день тижня (порожній) — лише як мітка (RPC grain=week — це ISO-тиждень, а не день тижня).",
+                  color: "amber",
+                  onSelect: () => handleAddHierarchyField("week"),
+                },
+                {
+                  id: "field-day",
+                  label: "📅 Поле: День",
+                  description: "Контейнер РІВНЯ день (порожній). Приєднай через «🔗 Зв'язки» — дія «задає ДЕНЬ цілі» (звужує до grain=day разом з роком і місяцем-предками).",
+                  color: "amber",
+                  onSelect: () => handleAddHierarchyField("day"),
+                },
+                {
+                  id: "time-block",
+                  label: "⏰ Часовий блок (готові пігулки-джерела)",
+                  description:
+                    "4 незалежні рядки пігулок — Рік / Місяць / День тижня / День — готові РЕАЛЬНІ джерела для «🔗 Зв'язки» (кожна пігулка — конкретне значення з реальних даних). Приєднуй до «Поля» вище чи напряму до карток.",
+                  color: "amber",
+                  onSelect: () => handleAddTimeBlock(),
+                },
+              ];
+
               const groups: { key: string; title: string; entries: ComplexListEntry[] }[] = [
                 { key: "wizard", title: "⚡ Швидкий старт", entries: wizardEntries },
+                { key: "fields", title: "🏥 Поля ієрархії", entries: fieldEntries },
+                { key: "time", title: "⏰ Час", entries: timeEntries },
                 { key: "design", title: "🎨 Дизайн-пресети", entries: designEntries },
                 { key: "search", title: "🔍 Живі дані: пошук", entries: searchEntries },
                 { key: "cubes", title: "📊 Живі дані: куби показників", entries: cubeEntries },
@@ -8885,6 +9542,7 @@ export default function AppBoundedCanvas() {
                 </button>
               </div>
             )}
+
 
             {selectedComplexObjectId === "indicator-picker" && (
               <div className="p-3 bg-cyan-50/70 border border-cyan-200 rounded-lg space-y-2.5">
