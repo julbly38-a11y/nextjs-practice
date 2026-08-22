@@ -374,6 +374,15 @@ interface CanvasElement {
   chartLabelField?: string;
   chartValueFields?: string[];
 
+  // "📈 Хвиляста діаграма (живі дані)" — та сама liveBinding-модель, що й
+  // "📊 Картка КПІ" (params/scope через withFieldScopeApplied, той самий
+  // каскад полів ієрархії), але замість ОДНОГО значення тягне ВЕСЬ ряд
+  // періодів обраної гранулярності одним запитом (resolveLiveIndicatorSeries)
+  // і кладе в chartData. Присутність chartGrain — ознака "цей chartData
+  // живий, оновлюється каскадом", а не одноразовий знімок (на відміну від
+  // звичайного "📈 Графік" без liveBinding).
+  chartGrain?: "year" | "month" | "week" | "day";
+
   // Складене з часових зв'язків (set-year/set-month/set-week/set-day —
   // runConnectionActions) значення часового періоду цього показника.
   // Скільки одиниць підключено джерелами — стільки й заповнено (комусь
@@ -1091,6 +1100,29 @@ const COMPLEX_OBJECTS: ComplexObjectTemplate[] = [
     ],
   },
   {
+    id: "waveChart",
+    label: "📈 Хвиляста діаграма (живі дані)",
+    description:
+      "Супутник «📊 Картки КПІ»: та сама модель прив'язки (liveBinding + каскад полів ієрархії), але замість одного числа показує РЯД по періодах — рік/місяць/тиждень/день. Додається ПОРОЖНЬОЮ: виділи її на полотні, у панелі «📡 Живі показники» обери показник і гранулярність осі та підключи — далі, як і в картки, вкладеність у «Поле ієрархії» (лікарня/напрямок/відділення/лікар) сама звужує ряд.",
+    defaults: {
+      type: "chart",
+      chartKind: "line",
+      content: "",
+      width: 360,
+      height: 220,
+      customBgColor: "#ffffff",
+      bgOpacity: 0.05,
+      borderRadius: 8,
+      chartLabelField: "__label",
+      chartValueFields: ["value"],
+      chartData: [],
+    },
+    fields: [
+      { key: "width", label: "Ширина (px)", type: "number" },
+      { key: "height", label: "Висота (px)", type: "number" },
+    ],
+  },
+  {
     id: "emptyTimeBadge",
     label: "🏷️ Бейдж (порожній, для часових джерел)",
     description:
@@ -1183,7 +1215,20 @@ const hexToRgba = (hex: string, alpha: number): string => {
 // класі — z-index:0, стек визначається порядком у DOM) — і задаємо -1 для
 // фону окремого блоку, де поряд є нестатично не позиційований контент
 // (текст кнопки/заголовка), який інакше опинився б під mesh-шаром.
-const renderMeshLayer = (speed?: number, intensity?: number, colors?: string[], zIndex?: number) => {
+const renderMeshLayer = (
+  speed?: number,
+  intensity?: number,
+  colors?: string[],
+  zIndex?: number,
+  // Лише для фону СТОРІНКИ (<main>) — inset:0 сам собою тягнеться до
+  // власного CSS-розміру <main> (=viewport), а не до фактичної, більшої за
+  // нього прокручуваної області (кореневі елементи можуть сягати, напр.,
+  // 1920×1080). extraStyle підміняє left/top/width/height на реальний
+  // розмір контенту (див. виклик у <main> нижче) — для фону ОКРЕМОГО блоку
+  // цей параметр не передають, inset:0 там і так коректний (розмір самого
+  // блоку).
+  extraStyle?: React.CSSProperties
+) => {
   const spd = speed ?? 1;
   const opacity = (intensity ?? 100) / 100;
   const meshVars: Record<string, string> = {};
@@ -1194,7 +1239,7 @@ const renderMeshLayer = (speed?: number, intensity?: number, colors?: string[], 
   return (
     <div
       className="absolute inset-0 overflow-hidden pointer-events-none"
-      style={{ ...meshVars, opacity, ...(zIndex !== undefined ? { zIndex } : {}) } as React.CSSProperties}
+      style={{ ...meshVars, opacity, ...(zIndex !== undefined ? { zIndex } : {}), ...extraStyle } as React.CSSProperties}
     >
       <div className="ctor-mesh-bg" style={{ animationDuration: `${18 / spd}s` }} />
       <div className="ctor-mesh-bg2" style={{ animationDuration: `${26 / spd}s` }} />
@@ -1761,6 +1806,50 @@ export default function AppBoundedCanvas() {
     }
   };
 
+  // Той самий liveBinding, що й у "📊 Картки КПІ" (resolveLiveIndicatorValue
+  // вище), але замість ОДНОГО значення за конкретний period_label бере ВСІ
+  // рядки, які RPC повертає на обраній гранулярності (grain), — це і є "весь
+  // час" вже РОЗБИТИЙ на періоди, один запит. "Весь час" (period_label без
+  // дати, коли даних на якийсь період нема) у ряд не потрапляє — там нема що
+  // класти на вісь X. Формат точки — {[chartLabelField]: period_label,
+  // [chartValueFields[0]]: значення} під те, що вже вміє ChartBody.
+  const resolveLiveIndicatorSeries = async (
+    binding: NonNullable<CanvasElement["liveBinding"]>,
+    grain: "year" | "month" | "week" | "day"
+  ): Promise<{ points: Record<string, unknown>[]; reason: LiveIndicatorReason }> => {
+    if (binding.source === "diagnoses" && !binding.params.icd) return { points: [], reason: "no-icd" };
+    if (binding.source === "doctor-hierarchy" && !binding.params.doctorId) return { points: [], reason: "no-doctor" };
+    try {
+      const params = new URLSearchParams({
+        ...binding.params,
+        org: selectedHospital?.edrpou ?? "",
+        grain,
+      });
+      const res = await fetch(`${LIVE_INDICATOR_ENDPOINTS[binding.source]}?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) return { points: [], reason: "http-error" };
+      const rows = (data.rows ?? []) as Record<string, unknown>[];
+      const points = rows
+        .filter((r) => r.period_label && r.period_label !== "Весь час")
+        .map((r) => ({
+          __label: String(r.period_label),
+          value: r[binding.field] === null || r[binding.field] === undefined ? null : Number(r[binding.field]),
+        }));
+      return { points, reason: points.length > 0 ? "ok" : "no-match" };
+    } catch {
+      return { points: [], reason: "http-error" };
+    }
+  };
+
+  const applyLiveSeriesResult = (targetId: number, points: Record<string, unknown>[], reason: LiveIndicatorReason) => {
+    setLiveIndicatorReasons((prev) => ({ ...prev, [targetId]: reason }));
+    setElements((prev) => {
+      const next = prev.map((item) => (item.id === targetId ? { ...item, chartData: points } : item));
+      saveToHistory(pages, next);
+      return next;
+    });
+  };
+
   // Спільний "записати результат fetch-у" для 3 місць нижче, що викликають
   // resolveLiveIndicatorValue — і content, і причину (для бейджа/панелі
   // "Стан даних") оновлюємо разом, одним викликом.
@@ -1898,7 +1987,12 @@ export default function AppBoundedCanvas() {
 
     ids.forEach((id) => {
       const el = next.find((item) => item.id === id);
-      if (el?.liveBinding) {
+      if (!el?.liveBinding) return;
+      if (el.chartGrain) {
+        void resolveLiveIndicatorSeries(el.liveBinding, el.chartGrain).then(({ points, reason }) =>
+          applyLiveSeriesResult(id, points, reason)
+        );
+      } else {
         void resolveLiveIndicatorValue(el.liveBinding, el.timeContext ?? {}).then(({ value, reason }) =>
           applyLiveIndicatorResult(id, value, reason)
         );
@@ -1976,6 +2070,14 @@ export default function AppBoundedCanvas() {
       ? flatActions.filter(({ action }) => action === "set-year" || action === "set-month" || action === "set-week" || action === "set-day")
       : [];
     if (sourceEl && timeActions.length > 0) {
+      // Повторний клік на ВЖЕ активній пігулці (groupExclusive, isPressed —
+      // стан ДО цього кліку, isToggle-блок нижче в handleElementClick його
+      // ще не встиг перемкнути) — відключає, а не перевстановлює те саме
+      // значення: одиниця (рік/місяць/…) прибирається з timeContext цілі
+      // замість запису clickValue, картка повертається до "Весь час". Група
+      // пігулок так само скидається в "нічого не натиснуто" нижче.
+      const isReclick = !!sourceEl.groupExclusive && sourceEl.isPressed === true;
+
       // Цілі з liveBinding — timeContext НАКОПИЧУЄТЬСЯ (рік і місяць
       // підключаються окремими лініями, обидва потрібні одночасно, щоб
       // побудувати "2026-03"), а не заміняється, як у звичайних цілей
@@ -1995,7 +2097,9 @@ export default function AppBoundedCanvas() {
         const target = elements.find((item) => item.id === toId);
         if (!target?.liveBinding) return;
         const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
-        const nextContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
+        const nextContext = { ...(target.timeContext ?? {}) };
+        if (isReclick) delete nextContext[unit];
+        else nextContext[unit] = clickValue;
         liveFetches.push({ targetId: target.id, binding: target.liveBinding, nextContext });
       });
 
@@ -2008,7 +2112,9 @@ export default function AppBoundedCanvas() {
           const target = next[targetIdx];
 
           if (target.liveBinding) {
-            const nextContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
+            const nextContext = { ...(target.timeContext ?? {}) };
+            if (isReclick) delete nextContext[unit];
+            else nextContext[unit] = clickValue;
             next[targetIdx] = { ...target, timeContext: nextContext };
           } else if (target.isBadgeYearField && unit !== "year") {
             // Джерело місяця/тижня/дня, підключене до поля-РОКУ бейджа — не
@@ -2062,12 +2168,19 @@ export default function AppBoundedCanvas() {
             // ЙОГО ВЛАСНИЙ timeContext і капіталізація, а не сирий текст
             // джерела як є. Стиль бейджа не залежить від того, куди саме з
             // двох полів підключили зв'язок.
-            const nextOwnContext = { ...(target.timeContext ?? {}), [unit]: clickValue };
+            const nextOwnContext = { ...(target.timeContext ?? {}) };
+            if (isReclick) delete nextOwnContext[unit];
+            else nextOwnContext[unit] = clickValue;
             next[targetIdx] = {
               ...target,
               content: formatTimeContext(nextOwnContext).toUpperCase(),
               timeContext: nextOwnContext,
             };
+          } else if (isReclick) {
+            // Повторний клік на активній пігулці — та сама ціль, що вже
+            // показує ЦЕ значення: повертаємо до "не підключено", а не
+            // залишаємо старий текст висіти без джерела.
+            next[targetIdx] = { ...target, content: "—", timeContext: {} };
           } else {
             // Звичайна (не-бейджева) ціль — новий клік ПОВНІСТЮ заміняє
             // зміст, а не додається до попереднього (рік/місяць тощо не
@@ -2182,8 +2295,20 @@ export default function AppBoundedCanvas() {
       });
 
       if (patchesById.size > 0) {
+        // Функціональний setElements — той самий принцип, що й у виправленні
+        // isToggle нижче в handleElementClick: цей блок сам МІГ вже стати
+        // жертвою застарілого замикання `elements`, якщо щось ІНШЕ в тому ж
+        // обробнику кліку теж чекає на setElements. Рахуємо nextElements і
+        // від замикання (для applyFieldScopeCascade — їй потрібен готовий
+        // масив синхронно), і застосовуємо ЩЕ РАЗ функціонально, щоб не
+        // загубити паралельні оновлення (напр. timeActions вище в цьому ж
+        // виклику).
         const nextElements = elements.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
-        updateElementsAndHistory(nextElements);
+        setElements((prev) => {
+          const next = prev.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
+          saveToHistory(pages, next);
+          return next;
+        });
         patchesById.forEach((_patch, id) => applyFieldScopeCascade(id, nextElements));
       }
     }
@@ -3641,6 +3766,17 @@ export default function AppBoundedCanvas() {
   // користувач сам відсунув панель, а тоді просто повторно клікнув той самий
   // об'єкт.
   const lastPanelAnchorIdRef = useRef<number | null>(null);
+  // Rnd ловить mousedown (onDragStart нижче) РАНІШЕ за будь-який рух миші —
+  // клік по ще не виділеному полю, щоб одразу почати його тягнути, теж
+  // виділяє елемент і запускає ЦЕЙ ефект. Об'єкт, по якому щойно клікнули на
+  // полотні, вже за визначенням видимий (інакше по ньому не можна було б
+  // клікнути) — примусовий canvas.scrollTo() нижче тоді лише зсуває полотно
+  // ПІД пальцем/курсором ПОСЕРЕД жесту тягнення, і Rnd губить синхронізацію
+  // з мишею (елемент "злітає"/сіпається замість плавного руху). Прапорець
+  // тримає скрол вимкненим на час усього жесту (onDragStart→onDragStop) —
+  // виділення через дерево/пресети чи то програмне (де об'єкт МІГ бути поза
+  // екраном) і далі скролить як і раніше.
+  const suppressAutoScrollRef = useRef(false);
   useEffect(() => {
     if (selectedIds.length !== 1) {
       lastPanelAnchorIdRef.current = null;
@@ -3659,6 +3795,8 @@ export default function AppBoundedCanvas() {
     // доданий (майстром/пресетом) чи клікнутий (у дереві) далеко за межами
     // прокрученої зараз області, інакше лишався б невидимим — а порахована
     // нижче "позиція на екрані" стосувалась би точки, якої фізично нема.
+    // Пропускаємо цей крок, якщо виділення прийшло з початку тягнення
+    // (suppressAutoScrollRef) — див. коментар біля оголошення прапорця вище.
     const margin = 24;
     let { scrollLeft, scrollTop } = canvas;
     const { clientWidth, clientHeight } = canvas;
@@ -3672,7 +3810,13 @@ export default function AppBoundedCanvas() {
     } else if (abs.x + abs.width > scrollLeft + clientWidth - margin) {
       scrollLeft = abs.x + abs.width - clientWidth + margin;
     }
-    if (scrollLeft !== canvas.scrollLeft || scrollTop !== canvas.scrollTop) {
+    if (suppressAutoScrollRef.current) {
+      // Скрол пропущено — Крок 2 нижче має рахувати екранну позицію від
+      // РЕАЛЬНОГО поточного скролу, а не від щойно порахованої (і так і не
+      // застосованої) цілі.
+      scrollLeft = canvas.scrollLeft;
+      scrollTop = canvas.scrollTop;
+    } else if (scrollLeft !== canvas.scrollLeft || scrollTop !== canvas.scrollTop) {
       // "smooth" тут ненадійний (у частини браузерів/налаштувань "зменшити
       // анімацію" просто мовчки нічого не прокручує) — миттєвий скрол менш
       // ефектний, зате гарантовано спрацьовує щоразу.
@@ -3801,20 +3945,41 @@ export default function AppBoundedCanvas() {
       }
 
       if (el.isToggle) {
-        const nextElements = elements.map((item) => {
-          if (item.id === el.id) {
-            // У груповому режимі клік завжди активує саме цю кнопку (як
-            // пігулка року — не можна клікнути й зняти активність із усіх).
-            return { ...item, isPressed: el.groupExclusive ? true : !item.isPressed };
-          }
-          // Сестри в тому самому блоці з groupExclusive=true втрачають
-          // активність — лише одна пігулка в групі активна одночасно.
-          if (el.groupExclusive && item.groupExclusive && item.parentId === el.parentId) {
-            return { ...item, isPressed: false };
-          }
-          return item;
+        // Функціональний setElements, а не elements.map + updateElementsAndHistory
+        // (як тут спершу й було): runConnectionActions ВИЩЕ в цьому самому
+        // обробнику вже міг поставити в чергу власний setElements (напр.
+        // fieldTargetActions задає значення поля-цілі) — той виклик ще не
+        // встиг застосуватись до замикання `elements` тут (React не гарантує
+        // синхронне оновлення). Нефункціональний setElements(elements.map(...))
+        // тоді перезаписав би СВІЖИЙ стан ЗАСТАРІЛИМ знімком і стирав щойно
+        // застосований зв'язок — саме так пігулка-рік переставала оновлювати
+        // підключене поле "Рік", хоча сам зв'язок і liveBinding були коректні.
+        // Повторний клік на ВЖЕ активній пігулці групи — вимикає її (і так
+        // лишає всю групу без активної пігулки), замість примусово тримати
+        // натиснутою: той самий "reclick" знімок el.isPressed (ДО цього
+        // кліку), яким вище в runConnectionActions визначено isReclick для
+        // timeActions — обидва мають синхронно погодитись, що це саме
+        // "відключення", а не звичайний вибір.
+        const isGroupReclick = !!el.groupExclusive && el.isPressed === true;
+        setElements((prev) => {
+          const nextElements = prev.map((item) => {
+            if (item.id === el.id) {
+              if (isGroupReclick) return { ...item, isPressed: false };
+              // У груповому режимі клік завжди активує саме цю кнопку (як
+              // пігулка року — не можна клікнути й зняти активність із усіх,
+              // ОКРІМ повторного кліку на ній самій вище).
+              return { ...item, isPressed: el.groupExclusive ? true : !item.isPressed };
+            }
+            // Сестри в тому самому блоці з groupExclusive=true втрачають
+            // активність — лише одна пігулка в групі активна одночасно.
+            if (el.groupExclusive && item.groupExclusive && item.parentId === el.parentId) {
+              return { ...item, isPressed: false };
+            }
+            return item;
+          });
+          saveToHistory(pages, nextElements);
+          return nextElements;
         });
-        updateElementsAndHistory(nextElements);
       }
 
       // Пігулка-фільтр КПІ (kpiGroupId) — тягне свіжі дані й живцем оновлює
@@ -4005,11 +4170,25 @@ export default function AppBoundedCanvas() {
     const height = (complexObjectDraft.height as number) ?? (template.defaults.height as number) ?? 30;
     const count = Math.max(1, Math.min(20, complexObjectCount || 1));
     const gap = 12;
+
+    // "📊 Картка КПІ" і "📈 Хвиляста діаграма" завжди мають сенс лише
+    // всередині "Поля ієрархії" (звідти вони й беруть свій розріз —
+    // withFieldScopeApplied), а тягнути порожнє поле руками ПЕРЕД кожною
+    // карткою незручно. Тож для цих двох пресетів кожна копія одразу
+    // отримує власне авто-створене поле рівня "Лікарня" (весь час/уся
+    // лікарня за замовчуванням, як і решта КПІ-механіки) — рівень можна
+    // звузити пізніше через "🔗 Зв'язки", не пересуваючи саму картку.
+    const AUTO_FIELD_WRAP_IDS = new Set(["kpiCard", "waveChart"]);
+    const shouldWrapInField = AUTO_FIELD_WRAP_IDS.has(template.id);
+    const fieldPadding = 16;
+    const unitWidth = shouldWrapInField ? width + fieldPadding * 2 : width;
+    const unitHeight = shouldWrapInField ? height + fieldPadding * 2 : height;
+
     // Одразу шукаємо вільне місце під усю ЗАПЛАНОВАНУ ширину ряду копій (не
     // під одну), той самий принцип, що й у handleAddElement — інакше друга й
     // наступні копії клали б поверх уже існуючих сусідніх елементів.
-    const totalWidth = width * count + gap * (count - 1);
-    const freePos = findFreePosition(forcedParentId, totalWidth, height);
+    const totalWidth = unitWidth * count + gap * (count - 1);
+    const freePos = findFreePosition(forcedParentId, totalWidth, unitHeight);
 
     const allNewElements: CanvasElement[] = [];
     const copyRootIds: number[] = [];
@@ -4019,13 +4198,47 @@ export default function AppBoundedCanvas() {
       // copyIndex-и не перетиналися між собою.
       const copyBaseId = Date.now() + copyIndex * 1000;
       const base = buildComplexObjectBase(copyBaseId, template.label.replace(/^\S+\s*/, ""));
+
+      let elParentId = forcedParentId;
+      let elX = freePos.x + copyIndex * (unitWidth + gap);
+      let elY = freePos.y;
+
+      if (shouldWrapInField) {
+        const fieldId = copyBaseId - 1;
+        // Порожній content — поле лише несе fieldKind="hospital" для каскаду
+        // (withFieldScopeApplied), показувати назву лікарні як текст
+        // усередині тісної обгортки (16px відступу навколо самої картки)
+        // нема куди: довгий напис лише переламується й лягає поверх картки.
+        const fieldEl: CanvasElement = {
+          ...buildComplexObjectBase(fieldId, ""),
+          type: "block",
+          width: unitWidth,
+          height: unitHeight,
+          x: elX,
+          y: elY,
+          customBgColor: "#ffffff",
+          bgOpacity: 0.05,
+          borderRadius: 8,
+          parentId: forcedParentId,
+          fieldKind: "hospital",
+          ...(selectedHospital
+            ? { fieldOrgEdrpou: selectedHospital.edrpou, fieldHospitalName: selectedHospital.name }
+            : {}),
+        };
+        allNewElements.push(fieldEl);
+        elParentId = fieldId;
+        elX = fieldPadding;
+        elY = fieldPadding;
+      }
+
       const newElement: CanvasElement = {
         ...base,
         ...template.defaults,
         ...complexObjectDraft,
         id: base.id,
-        x: freePos.x + copyIndex * (width + gap),
-        y: freePos.y,
+        parentId: elParentId,
+        x: elX,
+        y: elY,
       };
       copyRootIds.push(newElement.id);
 
@@ -4421,6 +4634,48 @@ export default function AppBoundedCanvas() {
     setActivePanelTab("links");
   };
 
+  // Той самий принцип, що й handleBindLiveIndicator вище, але для "📈
+  // Хвилястої діаграми": ціль — сам виділений елемент-графік (chartKind
+  // "line"), а не пара число+підпис, і замість ОДНОГО значення одразу тягне
+  // РЯД period_label→value обраної гранулярності (resolveLiveIndicatorSeries)
+  // в chartData. Розріз полів ієрархії (withFieldScopeApplied) застосовує
+  // лише params (напрямок/відділення/лікар/рівень) — timeContext діаграму не
+  // цікавить, вона й так показує весь ряд обраної гранулярності, а не одну
+  // точку.
+  const handleBindChartIndicator = (
+    source: NonNullable<CanvasElement["liveBinding"]>["source"],
+    field: CubeFieldDef,
+    params: Record<string, string>,
+    grain: NonNullable<CanvasElement["chartGrain"]>
+  ) => {
+    if (selectedIds.length !== 1) {
+      alert("Спершу виділіть на полотні порожню «📈 Хвилясту діаграму»");
+      return;
+    }
+    const el = elements.find((item) => item.id === selectedIds[0]);
+    if (!el || el.type !== "chart") {
+      alert("Це не «📈 Хвиляста діаграма» — додайте її зі списку об'єктів (вкладка «Об'єкти») і виділіть перед прив'язкою");
+      return;
+    }
+
+    const binding: NonNullable<CanvasElement["liveBinding"]> = { source, field: field.key, suffix: field.suffix, params };
+    const withBinding = elements.map((item) =>
+      item.id === el.id ? { ...item, liveBinding: binding, chartGrain: grain, chartData: [] } : item
+    );
+
+    const bound = withBinding.find((item) => item.id === el.id)!;
+    const scoped = withFieldScopeApplied(bound, withBinding);
+    const next = scoped ? withBinding.map((item) => (item.id === el.id ? scoped : item)) : withBinding;
+    updateElementsAndHistory(next);
+
+    const finalBinding = scoped?.liveBinding ?? binding;
+    void resolveLiveIndicatorSeries(finalBinding, grain).then(({ points, reason }) => {
+      applyLiveSeriesResult(el.id, points, reason);
+    });
+
+    setActivePanelTab("links");
+  };
+
   // Додає "📈 Графік" (Recharts) на полотно — знімок отриманих rows, без
   // жодного подальшого підключення до дати (на відміну від "📊 Картки
   // КПІ" вище): якщо треба інший період — перебудовуєш графік наново з
@@ -4571,6 +4826,8 @@ export default function AppBoundedCanvas() {
   const [hierarchyShift, setHierarchyShift] = useState<string>("");
   const [hierarchyLoading, setHierarchyLoading] = useState(false);
   const [hierarchyBindField, setHierarchyBindField] = useState("");
+  const [hierarchyWaveBindField, setHierarchyWaveBindField] = useState("");
+  const [hierarchyWaveBindGrain, setHierarchyWaveBindGrain] = useState<NonNullable<CanvasElement["chartGrain"]>>("year");
   const [hierarchyChartKind, setHierarchyChartKind] = useState<ChartKind>("bar");
   const [hierarchyChartField, setHierarchyChartField] = useState("");
   const [hierarchyChartFieldY, setHierarchyChartFieldY] = useState("");
@@ -4593,242 +4850,6 @@ export default function AppBoundedCanvas() {
     { key: "children", label: "ДІТЕЙ" },
     { key: "elderly", label: "ПОХИЛОГО ВІКУ" },
   ];
-
-  // ── Майстер "📡 Живий показник" ───────────────────────────────────────
-  // Збирає ГОТОВУ робочу зв'язку з бекендом однією дією, замість ручного
-  // ланцюга з ~16 кроків через 4 вкладки (додати порожню картку → знайти
-  // форму куба → прив'язати показник → окремо створити елемент-дату →
-  // позначити його часовим джерелом → увімкнути режим з'єднання → два
-  // кліки → чекбокс дії → і аж тоді клік по джерелу). Найбільший бар'єр був
-  // не в складності кожного кроку, а в тому, що про існування половини з них
-  // ніде не сказано — зокрема, що елемент-дату треба створити САМОМУ.
-  //
-  // Свідомо НЕ ховає механіку, а показує її: на полотні лишається той самий
-  // набір частин, що й при ручному складанні (ряд пігулок-років у блоці +
-  // картка КПІ + лінія зв'язку між ними), тож людина бачить, З ЧОГО це
-  // зроблено, і далі може повторити/змінити руками. Одна лінія на всі роки —
-  // завдяки каскаду (зв'язок веде від БЛОКА пігулок, а клік по кожній
-  // окремій пігулці підставляє її власний content, див. runConnectionActions).
-  // Рівні лікарня/напрямок/відділення/лікар — той самий принцип, що й у
-  // "📊 Показник (готова картка)" вище (indicatorPickerLevel): для лікаря —
-  // окреме джерело (doctor-hierarchy) і власний, коротший список полів
-  // (DOCTOR_HIER_FIELDS), для решти — hierarchy + level/direction/department.
-  type WizardLevel = "hospital" | "direction" | "department" | "doctor";
-  const [wizardField, setWizardField] = useState<string>("total_cases");
-  const [wizardLevel, setWizardLevel] = useState<WizardLevel>("hospital");
-  const [wizardDirection, setWizardDirection] = useState<string>("");
-  const [wizardDepartment, setWizardDepartment] = useState<string>("");
-  const [wizardDoctorQuery, setWizardDoctorQuery] = useState<string>("");
-  const [wizardDoctor, setWizardDoctor] = useState<DoctorHierRow | null>(null);
-  const [wizardLoading, setWizardLoading] = useState(false);
-  const [wizardError, setWizardError] = useState<string | null>(null);
-
-  const handleWizardLevelChange = (level: WizardLevel) => {
-    setWizardLevel(level);
-    setWizardDirection("");
-    setWizardDepartment("");
-    setWizardDoctor(null);
-    setWizardDoctorQuery("");
-    setWizardError(null);
-    setWizardField(level === "doctor" ? DOCTOR_HIER_FIELDS[0].key : HIERARCHY_FIELDS[0].key);
-    if (level === "doctor") void ensureDoctorHierList();
-  };
-
-  const handleRunLiveIndicatorWizard = async () => {
-    const field = wizardFieldOptions.find((f) => f.key === wizardField);
-    if (!field) return;
-    if (wizardLevel === "direction" && !wizardDirection.trim()) {
-      setWizardError("Впишіть назву напрямку (або поверніться на рівень «Уся лікарня»)");
-      return;
-    }
-    if (wizardLevel === "department" && !wizardDepartment.trim()) {
-      setWizardError("Впишіть назву відділення (або поверніться на рівень «Уся лікарня»)");
-      return;
-    }
-    if (wizardLevel === "doctor" && !wizardDoctor) {
-      setWizardError("Оберіть лікаря зі списку (або поверніться на рівень «Уся лікарня»)");
-      return;
-    }
-    setWizardLoading(true);
-    setWizardError(null);
-
-    const source: NonNullable<CanvasElement["liveBinding"]>["source"] = wizardLevel === "doctor" ? "doctor-hierarchy" : "hierarchy";
-    const params: Record<string, string> =
-      wizardLevel === "hospital"
-        ? { level: "hospital" }
-        : wizardLevel === "direction"
-          ? { level: "direction", direction: wizardDirection.trim() }
-          : wizardLevel === "department"
-            ? { level: "department", department: wizardDepartment.trim() }
-            : { doctorId: wizardDoctor!.doctor_id };
-    const binding: NonNullable<CanvasElement["liveBinding"]> = {
-      source,
-      field: field.key,
-      suffix: field.suffix,
-      params,
-    };
-
-    // Картка одразу показує ЗАГАЛЬНУ суму за весь час (як і скрізь —
-    // resolveLiveIndicatorValue без ctx.year повертає "Весь час") — рік НЕ
-    // підключається автоматично. Пігулки-роки й зв'язок нижче лише готують
-    // МЕХАНІЗМ звуження до конкретного періоду; сам період підключається
-    // окремим кліком по пігулці, коли людина цього справді хоче.
-    const { value } = await resolveLiveIndicatorValue(binding, {});
-    if (value === "—") {
-      setWizardError(
-        wizardLevel === "direction"
-          ? `Для напрямку «${wizardDirection.trim()}» даних немає — перевірте назву напрямку`
-          : wizardLevel === "department"
-            ? `Для відділення «${wizardDepartment.trim()}» даних немає — перевірте назву відділення`
-            : wizardLevel === "doctor"
-              ? `Для лікаря «${wizardDoctor!.doctor_name}» даних немає`
-              : `Даних немає — можливо, у базі ще нема записів`
-      );
-      setWizardLoading(false);
-      return;
-    }
-
-    const years = hospitalKpiYearOptions;
-    const pillGap = 8;
-    const pillHeight = 30;
-    const pillWidths = years.map((y) => Math.max(60, Math.round(String(y).length * 9 + 32)));
-    const pillsWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
-
-    const cardWidth = 200;
-    const cardHeight = 70;
-    const rowGap = 24;
-    const totalWidth = Math.max(pillsWidth, cardWidth);
-    const totalHeight = pillHeight + rowGap + cardHeight;
-    const freePos = findFreePosition(forcedParentId, totalWidth, totalHeight);
-
-    const baseId = Date.now();
-    const pillsBoxId = baseId;
-    const cardId = baseId + 100;
-    const numberId = baseId + 101;
-    const labelId = baseId + 102;
-
-    // Прозорий блок-обгортка для пігулок — саме він, а не кожна пігулка
-    // окремо, стає джерелом зв'язку (каскад).
-    const pillsBox: CanvasElement = {
-      ...buildComplexObjectBase(pillsBoxId, ""),
-      type: "block",
-      width: pillsWidth,
-      height: pillHeight,
-      x: freePos.x,
-      y: freePos.y,
-      parentId: forcedParentId,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    };
-
-    let pillX = 0;
-    const pills: CanvasElement[] = years.map((year, i) => {
-      const el: CanvasElement = {
-        ...buildComplexObjectBase(pillsBoxId + 1 + i, String(year)),
-        ...PILL_STYLE_DEFAULTS,
-        width: pillWidths[i],
-        height: pillHeight,
-        x: pillX,
-        y: 0,
-        parentId: pillsBoxId,
-        content: String(year),
-        // Кожна пігулка — повноцінне часове джерело (той самий прапорець, що
-        // ставиться вручну в Параметрах), тож її видно як 🕐 і її можна
-        // перепідключити кудись іще без жодного доналаштування. Жодна не
-        // натиснута за замовчуванням — картка досі показує загальну суму,
-        // доки хтось сам не клікне рік.
-        timeSourceUnit: "year",
-      };
-      pillX += pillWidths[i] + pillGap;
-      return el;
-    });
-
-    const cardY = freePos.y + pillHeight + rowGap;
-    const card: CanvasElement = {
-      ...buildComplexObjectBase(cardId, ""),
-      type: "block",
-      width: cardWidth,
-      height: cardHeight,
-      x: freePos.x,
-      y: cardY,
-      parentId: forcedParentId,
-      customBgColor: "#ffffff",
-      bgOpacity: 0,
-      padding: 0,
-      borderRadius: 0,
-    };
-    const numberEl: CanvasElement = {
-      ...buildComplexObjectBase(numberId, value),
-      type: "text",
-      width: cardWidth,
-      height: 44,
-      x: 0,
-      y: 0,
-      parentId: cardId,
-      fontSize: 36,
-      fontWeight: "300",
-      textColor: "#1a1a1a",
-      textAlign: "right",
-      bgOpacity: 0,
-      padding: 0,
-      isKpiNumberSlot: true,
-      liveBinding: binding,
-    };
-    // Для напрямку/відділення/лікаря додаємо назву в підпис — інакше картка
-    // не показувала б, ДО ЧОГО саме належить число (той самий принцип, що
-    // й у "📊 Показник (готова картка)" вище).
-    const wizardLocationSuffix =
-      wizardLevel === "direction"
-        ? ` · ${wizardDirection.trim().toUpperCase()}`
-        : wizardLevel === "department"
-          ? ` · ${wizardDepartment.trim().toUpperCase()}`
-          : wizardLevel === "doctor"
-            ? ` · ${wizardDoctor!.doctor_name.toUpperCase()}`
-            : "";
-    const labelEl: CanvasElement = {
-      ...buildComplexObjectBase(labelId, `${field.label}${wizardLocationSuffix}`),
-      type: "text",
-      width: cardWidth,
-      height: 26,
-      x: 0,
-      y: 44,
-      parentId: cardId,
-      fontSize: 20,
-      fontWeight: "300",
-      textColor: "#9a958f",
-      textAlign: "right",
-      bgOpacity: 0,
-      padding: 0,
-      isKpiLabelSlot: true,
-    };
-
-    const connection: ElementConnection = {
-      id: `link-${baseId}`,
-      fromId: pillsBoxId,
-      toId: numberId,
-      actions: ["set-year"],
-    };
-
-    // Якщо forcedParentId сидить усередині "Поля ієрархії" — розріз предків
-    // перекриває params зібрані з wizardLevel вище (той самий принцип, що й
-    // у handleBindLiveIndicator/handlePickLiveIndicator).
-    const withNew = [...elements, pillsBox, ...pills, card, numberEl, labelEl];
-    const scopedNumberEl = withFieldScopeApplied(numberEl, withNew) ?? numberEl;
-    const nextElements = [...elements, pillsBox, ...pills, card, scopedNumberEl, labelEl];
-    setElements(nextElements);
-    setConnections([...connections, connection]);
-    saveToHistory(pages, nextElements, [...connections, connection]);
-    setSelectedIds([cardId]);
-    setWizardLoading(false);
-
-    if (scopedNumberEl !== numberEl && scopedNumberEl.liveBinding) {
-      void resolveLiveIndicatorValue(scopedNumberEl.liveBinding, scopedNumberEl.timeContext ?? {}).then(({ value: v, reason }) =>
-        applyLiveIndicatorResult(numberId, v, reason)
-      );
-    }
-  };
 
   const handleLoadHierarchy = async () => {
     setHierarchyLoading(true);
@@ -4899,6 +4920,8 @@ export default function AppBoundedCanvas() {
   const [doctorHierChartField, setDoctorHierChartField] = useState("");
   const [doctorHierChartFieldY, setDoctorHierChartFieldY] = useState("");
   const [doctorHierBindField, setDoctorHierBindField] = useState("");
+  const [doctorHierWaveBindField, setDoctorHierWaveBindField] = useState("");
+  const [doctorHierWaveBindGrain, setDoctorHierWaveBindGrain] = useState<NonNullable<CanvasElement["chartGrain"]>>("year");
 
   const DOCTOR_HIER_FIELDS: CubeFieldDef[] = [
     { key: "total_cases", label: "ВИПАДКІВ" },
@@ -5492,17 +5515,6 @@ export default function AppBoundedCanvas() {
     normalizedIndicatorPickerDoctorQuery ? d.doctor_name.toLowerCase().includes(normalizedIndicatorPickerDoctorQuery) : true
   );
 
-  // Той самий пошук/фільтр лікаря, лише для майстра "📡 Живий показник"
-  // (handleRunLiveIndicatorWizard вище) — окремий вибір (wizardDoctor), той
-  // самий кеш (doctorHierList). Обчислюється тут, а не одразу біля
-  // handleWizardLevelChange, бо doctorHierList/DOCTOR_HIER_FIELDS
-  // оголошені лише нижче за кодом.
-  const normalizedWizardDoctorQuery = wizardDoctorQuery.trim().toLowerCase();
-  const wizardDoctorMatches = (doctorHierList ?? []).filter((d) =>
-    normalizedWizardDoctorQuery ? d.doctor_name.toLowerCase().includes(normalizedWizardDoctorQuery) : true
-  );
-  const wizardFieldOptions = wizardLevel === "doctor" ? DOCTOR_HIER_FIELDS : HIERARCHY_FIELDS;
-
   // params === null означає "рівень ще не уточнено" (не вписано напрямок/
   // відділення, чи не обрано лікаря) — кнопки показників лишаються
   // задизейбленими, доки не заповнено.
@@ -5625,6 +5637,104 @@ export default function AppBoundedCanvas() {
         applyLiveIndicatorResult(numberEl.id, value, reason)
       );
     }
+  };
+
+  // Готова "📊 Картка КПІ" на ОДИН конкретний показник — без форми/дропдауна:
+  // клік по пункту списку "🧩 Об'єкти" одразу ставить на полотно РОБОЧУ
+  // картку (рівень "Лікарня", "Весь час"), уже вкладену у власне "Поле"
+  // (той самий авто-wrap, що й у порожньої "📊 Картки КПІ"/"📈 Хвилястої
+  // діаграми" в handleAddComplexObject) — готову тягнути в потрібну
+  // ієрархію чи підключати дату через "🔗 Зв'язки", без жодного окремого
+  // кроку "прив'яжи показник".
+  const handleAddQuickIndicatorCard = async (field: CubeFieldDef) => {
+    const binding: NonNullable<CanvasElement["liveBinding"]> = {
+      source: "hierarchy",
+      field: field.key,
+      suffix: field.suffix,
+      params: { level: "hospital" },
+    };
+    const { value } = await resolveLiveIndicatorValue(binding, {});
+
+    const cardWidth = 200;
+    const cardHeight = 70;
+    const fieldPadding = 16;
+    const unitWidth = cardWidth + fieldPadding * 2;
+    const unitHeight = cardHeight + fieldPadding * 2;
+    const freePos = findFreePosition(forcedParentId, unitWidth, unitHeight);
+
+    const baseId = Date.now();
+    const fieldId = baseId;
+    const cardId = baseId + 1;
+    const numberId = baseId + 2;
+    const labelId = baseId + 3;
+
+    // Порожній content — той самий принцип, що й у авто-полі для "📊 Картки
+    // КПІ"/"📈 Хвилястої діаграми" вище: тісна обгортка (16px відступу
+    // навколо картки) не має місця для довгої назви лікарні, лише
+    // переламувала б текст поверх самої картки.
+    const fieldEl: CanvasElement = {
+      ...buildComplexObjectBase(fieldId, ""),
+      type: "block",
+      width: unitWidth,
+      height: unitHeight,
+      x: freePos.x,
+      y: freePos.y,
+      customBgColor: "#ffffff",
+      bgOpacity: 0.05,
+      borderRadius: 8,
+      parentId: forcedParentId,
+      fieldKind: "hospital",
+      ...(selectedHospital ? { fieldOrgEdrpou: selectedHospital.edrpou, fieldHospitalName: selectedHospital.name } : {}),
+    };
+    const cardEl: CanvasElement = {
+      ...buildComplexObjectBase(cardId, ""),
+      type: "block",
+      width: cardWidth,
+      height: cardHeight,
+      x: fieldPadding,
+      y: fieldPadding,
+      parentId: fieldId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+    const numberEl: CanvasElement = {
+      ...buildComplexObjectBase(numberId, value),
+      type: "text",
+      width: cardWidth,
+      height: 44,
+      x: 0,
+      y: 0,
+      parentId: cardId,
+      fontSize: 36,
+      fontWeight: "300",
+      textColor: "#1a1a1a",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiNumberSlot: true,
+      liveBinding: binding,
+    };
+    const labelEl: CanvasElement = {
+      ...buildComplexObjectBase(labelId, field.label),
+      type: "text",
+      width: cardWidth,
+      height: 26,
+      x: 0,
+      y: 44,
+      parentId: cardId,
+      fontSize: 20,
+      fontWeight: "300",
+      textColor: "#9a958f",
+      textAlign: "right",
+      bgOpacity: 0,
+      padding: 0,
+      isKpiLabelSlot: true,
+    };
+
+    updateElementsAndHistory([...elements, fieldEl, cardEl, numberEl, labelEl]);
+    setSelectedIds([cardId]);
   };
 
   // Одним кліком — по одній "📊 Картці КПІ" на КОЖЕН показник з усіх 3 кубів
@@ -5908,6 +6018,132 @@ export default function AppBoundedCanvas() {
     // handleAddHierarchyField: замикання "elements" тут ще старе.
     setSelectedIds([wrapper.id]);
     setForcedParentId(wrapper.id);
+  };
+
+  // "📅→📅 Рік → Місяць (каскад)" (банер "🔗 Зв'язки" для виділеної живої
+  // картки, поруч із 4 кнопками handleAddTimeSourceToSelectedCard) — на
+  // відміну від тих 4-х (кожна ставить ОДИН незалежний ряд пігулок), ця
+  // одразу будує ДВОРІВНЕВУ структуру й підключає її РАЗОМ 3 зв'язками:
+  //   Блок:Рік  --show-->  Блок:Місяць   (місяці ховаються, поки не обрано рік)
+  //   Блок:Рік  --set-year-->   ціль
+  //   Блок:Місяць --set-month--> ціль
+  // Обидва рядки — звичайні timeSourceUnit-пігулки (той самий isReclick у
+  // runConnectionActions), тож повторний клік на активному роді/місяці й
+  // так відключає саме цю одиницю — нічого додаткового тут не потрібно.
+  // Ціль має liveBinding → timeContext накопичує рік І місяць одночасно
+  // (branch у runConnectionActions вище), а не заміняє один одним.
+  const handleAddCascadeTimeBlockToSelectedCard = () => {
+    if (!singleSelected || !singleSelected.isKpiNumberSlot || !singleSelected.liveBinding) return;
+    const card = elements.find((el) => el.id === singleSelected.parentId);
+    if (!card) return;
+
+    const pillGap = 8;
+    const pillHeight = 30;
+    const captionHeight = 16;
+    const captionGap = 2;
+    const rowGapY = 10;
+
+    // Відступ 10000 між рядками (а не +1/+2) — інакше діапазони id пігулок
+    // обох рядків (rowBoxId + 1000 + i) перекривались би між собою (до 12
+    // пігулок місяця з offset лише +1 від року) і React бачив дублікати key.
+    const baseId = Date.now();
+    const yearRowId = baseId + 1;
+    const monthRowId = baseId + 10000;
+
+    const buildRow = (unit: "year" | "month", rowBoxId: number, rowY: number) => {
+      const values = TIME_UNIT_PILL_VALUES[unit];
+      const pillWidths = values.map((v) => Math.max(60, Math.round(v.length * 9 + 32)));
+      const rowWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+
+      const captionEl: CanvasElement = {
+        ...buildComplexObjectBase(rowBoxId + 500, TIME_UNIT_ROW_LABELS[unit]),
+        type: "text",
+        width: rowWidth,
+        height: captionHeight,
+        x: 0,
+        y: rowY,
+        fontSize: 11,
+        textColor: "#64748b",
+        bgOpacity: 0,
+        padding: 0,
+        parentId: baseId,
+      };
+
+      const rowBox: CanvasElement = {
+        ...buildComplexObjectBase(rowBoxId, ""),
+        type: "block",
+        width: rowWidth,
+        height: pillHeight,
+        x: 0,
+        y: rowY + captionHeight + captionGap,
+        parentId: baseId,
+        customBgColor: "#ffffff",
+        bgOpacity: 0,
+        padding: 0,
+        borderRadius: 0,
+      };
+
+      let pillX = 0;
+      const pills: CanvasElement[] = values.map((label, i) => {
+        const el: CanvasElement = {
+          ...buildComplexObjectBase(rowBoxId + 1000 + i, label),
+          ...PILL_STYLE_DEFAULTS,
+          width: pillWidths[i],
+          height: pillHeight,
+          x: pillX,
+          y: 0,
+          parentId: rowBoxId,
+          content: label,
+          timeSourceUnit: unit,
+        };
+        pillX += pillWidths[i] + pillGap;
+        return el;
+      });
+
+      return { rowWidth, rowHeight: captionHeight + captionGap + pillHeight, elements: [captionEl, rowBox, ...pills] };
+    };
+
+    const yearRow = buildRow("year", yearRowId, 0);
+    const monthRowY = yearRow.rowHeight + rowGapY;
+    const monthRow = buildRow("month", monthRowId, monthRowY);
+
+    const maxWidth = Math.max(yearRow.rowWidth, monthRow.rowWidth);
+    const totalHeight = monthRowY + monthRow.rowHeight;
+    const freePos = findFreePosition(card.parentId, maxWidth, totalHeight);
+
+    const wrapper: CanvasElement = {
+      ...buildComplexObjectBase(baseId, ""),
+      type: "block",
+      width: maxWidth,
+      height: totalHeight,
+      x: freePos.x,
+      y: freePos.y,
+      parentId: card.parentId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0.04,
+      borderRadius: 8,
+      padding: 6,
+    };
+
+    const nextElements = [...elements, wrapper, ...yearRow.elements, ...monthRow.elements];
+    const nextConnections: ElementConnection[] = [
+      ...connections,
+      { id: `link-${baseId}-show`, fromId: yearRowId, toId: monthRowId, actions: ["show"] },
+      { id: `link-${baseId}-year`, fromId: yearRowId, toId: singleSelected.id, actions: ["set-year"] },
+      { id: `link-${baseId}-month`, fromId: monthRowId, toId: singleSelected.id, actions: ["set-month"] },
+    ];
+
+    setElements(nextElements);
+    setConnections(nextConnections);
+    saveToHistory(pages, nextElements, nextConnections);
+    // Місяці сховані, поки не обрано рік — те саме, що клік по "show" зробив
+    // би сам, лише застосовано одразу при створенні блока.
+    setConnectionHiddenIds((prev) => {
+      const next = new Set(prev);
+      next.add(monthRowId);
+      return next;
+    });
+    setSelectedIds([wrapper.id]);
   };
 
   // "Ординаторська відділення" — 1:1 з .docs-list/.doc-item на сторінці
@@ -6508,7 +6744,12 @@ export default function AppBoundedCanvas() {
 
     rescopeIds.forEach((id) => {
       const el = nextElements.find((item) => item.id === id);
-      if (el?.liveBinding) {
+      if (!el?.liveBinding) return;
+      if (el.chartGrain) {
+        void resolveLiveIndicatorSeries(el.liveBinding, el.chartGrain).then(({ points, reason }) =>
+          applyLiveSeriesResult(id, points, reason)
+        );
+      } else {
         void resolveLiveIndicatorValue(el.liveBinding, el.timeContext ?? {}).then(({ value, reason }) =>
           applyLiveIndicatorResult(id, value, reason)
         );
@@ -6579,6 +6820,13 @@ export default function AppBoundedCanvas() {
         minHeight={minHeight}
         onDragStart={(e) => {
           e.stopPropagation();
+          // Клік по ще не виділеному елементу, щоб одразу почати його
+          // тягнути, теж міняє selectedIds — а той об'єкт уже за визначенням
+          // видимий (інакше по ньому не можна було б клікнути), тож
+          // авто-скрол полотна (useEffect біля lastPanelAnchorIdRef) лише
+          // зсував би його ПІД курсором посеред жесту й ламав синхронізацію
+          // з Rnd. Тримаємо прапорець увімкненим до onDragStop.
+          suppressAutoScrollRef.current = true;
           // Rnd ловить mousedown (а отже й початок звичайного кліку) РАНІШЕ
           // за onClick нижче. Якщо тут не перевіряти модифікатори, він би
           // завжди примусово скидав виділення до одного елемента ще ДО
@@ -6594,6 +6842,7 @@ export default function AppBoundedCanvas() {
         }}
         onDragStop={(e, d) => {
           e.stopPropagation();
+          suppressAutoScrollRef.current = false;
           // Див. коментар біля suppressNextCanvasClickRef: якщо це вкладений
           // елемент у тісному батькові, курсор при відпусканні кнопки миші
           // цілком міг опинитись далеко за межами самого елемента (bounds=
@@ -9014,19 +9263,7 @@ export default function AppBoundedCanvas() {
                 },
               ];
 
-              // Майстер стоїть ПЕРШИМ і окремою групою — це єдиний пункт,
-              // що дає готовий результат без знання решти механіки, і саме
-              // з нього має починати той, хто бачить конструктор уперше.
-              const wizardEntries: ComplexListEntry[] = [
-                {
-                  id: "live-indicator-wizard",
-                  label: "📡 Живий показник (майстер)",
-                  description:
-                    "Найшвидший спосіб показати реальні дані: обери показник — і на полотні одразу з'явиться готовий робочий приклад (ряд років + картка з живим числом + зв'язок між ними)",
-                  color: "emerald",
-                  onSelect: () => setSelectedComplexObjectId("live-indicator-wizard"),
-                },
-              ];
+              const wizardEntries: ComplexListEntry[] = [];
 
               // Контейнери-"поля" ієрархії Лікарня→Напрямок→Відділення→Лікар —
               // будь-яка "📊 Картка КПІ", вкладена всередину, автоматично
@@ -9114,8 +9351,21 @@ export default function AppBoundedCanvas() {
                 },
               ];
 
+              // Готові картки — по одній на КОЖЕН показник рівня "Лікарня"/"Весь
+              // час", жодного дропдауна чи форми: клік по пункту списку відразу
+              // додає робочу картку (handleAddQuickIndicatorCard), уже у власному
+              // полі, готову тягнути в потрібну ієрархію чи підключати дату.
+              const indicatorCardEntries: ComplexListEntry[] = HIERARCHY_FIELDS.map((field) => ({
+                id: `indicator-card-${field.key}`,
+                label: `📊 ${field.label}`,
+                description: `Готова «Картка КПІ»: лікарня, весь час, показник «${field.label}». Одразу у власному полі — лишається перетягнути в потрібну ієрархію чи підключити дату через «🔗 Зв'язки».`,
+                color: "cyan" as const,
+                onSelect: () => void handleAddQuickIndicatorCard(field),
+              }));
+
               const groups: { key: string; title: string; entries: ComplexListEntry[] }[] = [
                 { key: "wizard", title: "⚡ Швидкий старт", entries: wizardEntries },
+                { key: "indicator-cards", title: "📊 Готові картки показників", entries: indicatorCardEntries },
                 { key: "fields", title: "🏥 Поля ієрархії", entries: fieldEntries },
                 { key: "time", title: "⏰ Час", entries: timeEntries },
                 { key: "design", title: "🎨 Дизайн-пресети", entries: designEntries },
@@ -9427,122 +9677,6 @@ export default function AppBoundedCanvas() {
                 )}
               </div>
             )}
-
-            {selectedComplexObjectId === "live-indicator-wizard" && (
-              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2.5">
-                <div className="text-[11px] text-emerald-900 leading-snug">
-                  <b>Два питання — і на полотні готовий живий показник.</b>
-                  <div className="text-[10px] text-slate-500 mt-1">
-                    З&apos;являться три пов&apos;язані речі: ряд років, картка з числом і лінія зв&apos;язку між ними. Картка одразу показує загальну суму за весь час — перемкніть режим на <b>▶️ Робота</b> і клікніть рік, щоб звузити до нього.
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">1. По чому рахувати?</label>
-                  <select
-                    value={wizardLevel}
-                    onChange={(e) => handleWizardLevelChange(e.target.value as WizardLevel)}
-                    className="w-full p-1.5 border rounded-md text-xs bg-white"
-                  >
-                    <option value="hospital">Уся лікарня</option>
-                    <option value="direction">Один напрямок</option>
-                    <option value="department">Одне відділення</option>
-                    <option value="doctor">Один лікар</option>
-                  </select>
-                  {wizardLevel === "direction" && (
-                    <input
-                      type="text"
-                      value={wizardDirection}
-                      onChange={(e) => setWizardDirection(e.target.value)}
-                      placeholder="Назва напрямку"
-                      className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white"
-                    />
-                  )}
-                  {wizardLevel === "department" && (
-                    <input
-                      type="text"
-                      value={wizardDepartment}
-                      onChange={(e) => setWizardDepartment(e.target.value)}
-                      placeholder="Назва відділення (частина назви теж підійде)"
-                      className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white"
-                    />
-                  )}
-                  {wizardLevel === "doctor" && !wizardDoctor && (
-                    <>
-                      <input
-                        type="text"
-                        value={wizardDoctorQuery}
-                        onChange={(e) => setWizardDoctorQuery(e.target.value)}
-                        placeholder={doctorHierListLoading ? "Завантаження списку лікарів…" : "🔍 ПІБ лікаря…"}
-                        disabled={doctorHierListLoading}
-                        className="w-full mt-1.5 p-1.5 border rounded-md text-xs bg-white disabled:bg-slate-50 disabled:text-slate-400"
-                      />
-                      {wizardDoctorQuery.trim() && (
-                        <div className="space-y-1 mt-1.5 max-h-40 overflow-y-auto">
-                          {wizardDoctorMatches.length === 0 ? (
-                            <div className="text-[11px] text-slate-400 text-center py-1">Нічого не знайдено</div>
-                          ) : (
-                            wizardDoctorMatches.slice(0, 30).map((d) => (
-                              <button
-                                key={d.doctor_id}
-                                onClick={() => setWizardDoctor(d)}
-                                className="w-full text-left p-1.5 rounded-md border border-emerald-200 bg-white hover:bg-emerald-50 text-xs"
-                              >
-                                {d.doctor_name}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-                  {wizardLevel === "doctor" && wizardDoctor && (
-                    <div className="flex items-center justify-between gap-2 mt-1.5 p-1.5 rounded-md border border-emerald-200 bg-white text-xs">
-                      <span className="font-bold text-slate-700">{wizardDoctor.doctor_name}</span>
-                      <button
-                        onClick={() => {
-                          setWizardDoctor(null);
-                          setWizardDoctorQuery("");
-                        }}
-                        className="text-[10px] text-emerald-700 hover:underline shrink-0"
-                      >
-                        ← Інший лікар
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-semibold text-emerald-900 mb-1">2. Що показати?</label>
-                  <select
-                    value={wizardField}
-                    onChange={(e) => setWizardField(e.target.value)}
-                    className="w-full p-1.5 border rounded-md text-xs bg-white"
-                  >
-                    {wizardFieldOptions.map((f) => (
-                      <option key={f.key} value={f.key}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {wizardError && (
-                  <div className="text-[10px] text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-1 leading-snug">
-                    {wizardError}
-                  </div>
-                )}
-
-                <button
-                  onClick={handleRunLiveIndicatorWizard}
-                  disabled={wizardLoading}
-                  className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-medium py-1.5 rounded-md text-xs shadow-sm"
-                >
-                  {wizardLoading ? "Перевіряю дані…" : "📡 Створити живий показник"}
-                </button>
-              </div>
-            )}
-
 
             {selectedComplexObjectId === "indicator-picker" && (
               <div className="p-3 bg-cyan-50/70 border border-cyan-200 rounded-lg space-y-2.5">
@@ -9924,6 +10058,56 @@ export default function AppBoundedCanvas() {
                   </button>
                 </div>
 
+                <div className="pt-2 border-t border-cyan-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-cyan-900">🔗 Показник → хвиляста діаграма</div>
+                  <div className="text-[10px] text-slate-400">
+                    Виділи на полотні порожню «📈 Хвилясту діаграму», обери показник і гранулярність осі — рівень/напрямок/відділення вище фіксуються одразу, весь ряд підвантажиться одним запитом.
+                  </div>
+                  <select
+                    value={hierarchyWaveBindField}
+                    onChange={(e) => setHierarchyWaveBindField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Оберіть показник…</option>
+                    {HIERARCHY_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={hierarchyWaveBindGrain}
+                    onChange={(e) => setHierarchyWaveBindGrain(e.target.value as NonNullable<CanvasElement["chartGrain"]>)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      const field = HIERARCHY_FIELDS.find((f) => f.key === hierarchyWaveBindField);
+                      if (!field) return;
+                      handleBindChartIndicator(
+                        "hierarchy",
+                        field,
+                        {
+                          level: hierarchyLevel,
+                          direction: hierarchyDirection.trim(),
+                          department: hierarchyDepartment.trim(),
+                          shift: hierarchyShift,
+                        },
+                        hierarchyWaveBindGrain
+                      );
+                    }}
+                    disabled={!hierarchyWaveBindField}
+                    className="w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300"
+                  >
+                    🔗 Прив&apos;язати до вибраної діаграми
+                  </button>
+                </div>
+
                 {renderChartAdderSection(
                   "cyan",
                   HIERARCHY_FIELDS,
@@ -10009,6 +10193,54 @@ export default function AppBoundedCanvas() {
                     className="w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300"
                   >
                     🔗 Прив&apos;язати до вибраної картки
+                  </button>
+                </div>
+
+                <div className="pt-2 border-t border-cyan-200 space-y-1.5">
+                  <div className="text-[10px] font-bold text-cyan-900">🔗 Показник → хвиляста діаграма</div>
+                  <div className="text-[10px] text-slate-400">
+                    Напрямок/відділення вище фіксуються одразу. Лікаря підключи до діаграми так само, як і до картки — 👨‍⚕️ лікарський вузол через «🔗 Зв&apos;язки», дія «задає ЛІКАРЯ цілі».
+                  </div>
+                  <select
+                    value={doctorHierWaveBindField}
+                    onChange={(e) => setDoctorHierWaveBindField(e.target.value)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="">Оберіть показник…</option>
+                    {DOCTOR_HIER_FIELDS.map((f) => (
+                      <option key={f.key} value={f.key}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={doctorHierWaveBindGrain}
+                    onChange={(e) => setDoctorHierWaveBindGrain(e.target.value as NonNullable<CanvasElement["chartGrain"]>)}
+                    className="w-full p-1.5 border rounded-md text-xs bg-white"
+                  >
+                    <option value="year">По роках</option>
+                    <option value="month">По місяцях</option>
+                    <option value="week">По тижнях</option>
+                    <option value="day">По днях</option>
+                  </select>
+                  <button
+                    onClick={() => {
+                      const field = DOCTOR_HIER_FIELDS.find((f) => f.key === doctorHierWaveBindField);
+                      if (!field) return;
+                      handleBindChartIndicator(
+                        "doctor-hierarchy",
+                        field,
+                        {
+                          direction: doctorHierDirection.trim(),
+                          department: doctorHierDepartment.trim(),
+                        },
+                        doctorHierWaveBindGrain
+                      );
+                    }}
+                    disabled={!doctorHierWaveBindField}
+                    className="w-full bg-white hover:bg-cyan-100 disabled:opacity-50 text-cyan-800 font-medium py-1.5 rounded-md text-xs border border-cyan-300"
+                  >
+                    🔗 Прив&apos;язати до вибраної діаграми
                   </button>
                 </div>
 
@@ -10660,9 +10892,17 @@ export default function AppBoundedCanvas() {
                     {label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => handleAddCascadeTimeBlockToSelectedCard()}
+                  className="text-[10px] font-semibold px-2 py-1 rounded-full bg-fuchsia-700 border border-fuchsia-700 text-white hover:bg-fuchsia-800"
+                >
+                  + 📅→📅 Рік → Місяць (каскад)
+                </button>
               </div>
               <div className="text-[10px] text-fuchsia-700/70 mt-1">
                 Ставить готовий ряд пігулок поруч і одразу з&apos;єднує з цією карткою — клікайте пігулку в «▶️ Робота», щоб звузити до неї.
+                Кнопка «Рік → Місяць» ставить ОБИДВА ряди одразу, вкладені в один блок: місяці з&apos;являються лише після кліку на рік, і одразу підключені — нічого зв&apos;язувати вручну.
               </div>
             </div>
           )}
@@ -11123,26 +11363,67 @@ export default function AppBoundedCanvas() {
           className="absolute inset-0 overflow-auto"
           style={{ backgroundColor: currentPage.meshBackground ? "#f0ece8" : "#ffffff" }}
         >
-          {currentPage.meshBackground &&
-            renderMeshLayer(currentPage.meshSpeed, currentPage.meshIntensity, currentPage.meshColors)}
+          {(() => {
+            // <main> скролиться далі за свій CSS-розмір (overflow-auto,
+            // а сам розмір — inset:0 до viewport) — mesh/сітка нижче, будучи
+            // ТЕЖ absolute+inset:0, інакше тягнулись би лише на цей самий
+            // viewport-розмір, а не на фактичну прокручувану область (напр.
+            // 1920×1080, коли кореневі елементи сягають туди). max(100%, Npx)
+            // покриває обидва випадки: контент менший за viewport (лишає
+            // 100%) чи більший (тягнеться на весь контент, не обривається).
+            //
+            // Той самий розмір йде й на ".relative" обгортку нижче (був
+            // w-full h-full = той самий viewport-розмір) — вона слугує
+            // bounds="parent" для КОЖНОГО кореневого Rnd-елемента. Коли
+            // елемент (типово "Поле ієрархії", розміщене автопозиціюванням
+            // за межами видимої зараз області) лежить нижче/правіше за цю
+            // занижену межу, react-rnd рахує його вже "поза bounds" і
+            // тягнення глючить/не рухає елемент зовсім — саме це й виглядає
+            // як "розмітка злітає, поле неможливо перемістити".
+            const rootElements = elements.filter(
+              (el) => el.parentId === null && isVisibleOnPage(el, currentPageId)
+            );
+            const contentWidth = rootElements.reduce((max, el) => Math.max(max, el.x + el.width), 0);
+            const contentHeight = rootElements.reduce((max, el) => Math.max(max, el.y + el.height), 0);
+            const bgSizeStyle: React.CSSProperties = {
+              left: 0,
+              top: 0,
+              width: contentWidth > 0 ? `max(100%, ${contentWidth}px)` : "100%",
+              height: contentHeight > 0 ? `max(100%, ${contentHeight}px)` : "100%",
+            };
+            return (
+              <>
+                {currentPage.meshBackground &&
+                  renderMeshLayer(
+                    currentPage.meshSpeed,
+                    currentPage.meshIntensity,
+                    currentPage.meshColors,
+                    undefined,
+                    bgSizeStyle
+                  )}
 
-          {/* ФОН СІТКИ (Динамічний) */}
-          <div
-            className="absolute inset-0 opacity-60 pointer-events-none transition-all"
-            style={{
-              backgroundImage: enableGrid
-                ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)"
-                : "radial-gradient(#e2e8f0 1px, transparent 1px)",
-              backgroundSize: enableGrid ? "5px 5px" : "16px 16px",
-            }}
-          />
-          <div className="relative w-full h-full">
-            {elements
-              .filter((el) => el.parentId === null && isVisibleOnPage(el, currentPageId))
-              .map((el) => renderCanvasNode(el))}
-            {renderConnectionsLayer()}
-            {renderBadgesLayer()}
-          </div>
+                {/* ФОН СІТКИ (Динамічний) */}
+                <div
+                  className="absolute opacity-60 pointer-events-none transition-all"
+                  style={{
+                    ...bgSizeStyle,
+                    backgroundImage: enableGrid
+                      ? "radial-gradient(#3b82f6 1.5px, transparent 1.5px)"
+                      : "radial-gradient(#e2e8f0 1px, transparent 1px)",
+                    backgroundSize: enableGrid ? "5px 5px" : "16px 16px",
+                  }}
+                />
+
+                <div className="relative" style={{ width: bgSizeStyle.width, height: bgSizeStyle.height }}>
+                  {elements
+                    .filter((el) => el.parentId === null && isVisibleOnPage(el, currentPageId))
+                    .map((el) => renderCanvasNode(el))}
+                  {renderConnectionsLayer()}
+                  {renderBadgesLayer()}
+                </div>
+              </>
+            );
+          })()}
         </main>
       </div>
     </div>
