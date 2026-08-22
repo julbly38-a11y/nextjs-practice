@@ -1887,6 +1887,16 @@ export default function AppBoundedCanvas() {
     month?: string;
     week?: string;
     day?: string;
+    // Чи є взагалі предок-поле цього kind-у, НЕЗАЛЕЖНО від того, чи в нього
+    // вже є значення. Без цього withFieldScopeApplied не міг відрізнити
+    // "предка такого kind немає" (timeContext не чіпати — керує щось інше,
+    // напр. пряме "🔗 Зв'язки" на саму картку) від "предок є, але його щойно
+    // ОЧИСТИЛИ" (timeContext ТРЕБА прибрати цей ключ, а не мовчки лишити
+    // старе значення) — обидва випадки давали б однаковий undefined вище.
+    hasYearField: boolean;
+    hasMonthField: boolean;
+    hasWeekField: boolean;
+    hasDayField: boolean;
   } => {
     let direction: string | undefined;
     let department: string | undefined;
@@ -1896,6 +1906,10 @@ export default function AppBoundedCanvas() {
     let month: string | undefined;
     let week: string | undefined;
     let day: string | undefined;
+    let hasYearField = false;
+    let hasMonthField = false;
+    let hasWeekField = false;
+    let hasDayField = false;
     let current = snapshot.find((el) => el.id === elementId);
     while (current && current.parentId !== null) {
       current = snapshot.find((el) => el.id === current!.parentId);
@@ -1910,20 +1924,24 @@ export default function AppBoundedCanvas() {
         direction = current.fieldDirection;
       }
       if (current.fieldKind === "hospital") hasHospital = true;
-      if (current.fieldKind === "year" && year === undefined && current.fieldTimeValue) {
-        year = current.fieldTimeValue;
+      if (current.fieldKind === "year") {
+        hasYearField = true;
+        if (year === undefined && current.fieldTimeValue) year = current.fieldTimeValue;
       }
-      if (current.fieldKind === "month" && month === undefined && current.fieldTimeValue) {
-        month = current.fieldTimeValue;
+      if (current.fieldKind === "month") {
+        hasMonthField = true;
+        if (month === undefined && current.fieldTimeValue) month = current.fieldTimeValue;
       }
-      if (current.fieldKind === "week" && week === undefined && current.fieldTimeValue) {
-        week = current.fieldTimeValue;
+      if (current.fieldKind === "week") {
+        hasWeekField = true;
+        if (week === undefined && current.fieldTimeValue) week = current.fieldTimeValue;
       }
-      if (current.fieldKind === "day" && day === undefined && current.fieldTimeValue) {
-        day = current.fieldTimeValue;
+      if (current.fieldKind === "day") {
+        hasDayField = true;
+        if (day === undefined && current.fieldTimeValue) day = current.fieldTimeValue;
       }
     }
-    return { direction, department, doctorId, hasHospital, year, month, week, day };
+    return { direction, department, doctorId, hasHospital, year, month, week, day, hasYearField, hasMonthField, hasWeekField, hasDayField };
   };
 
   // Накладає розріз предків-полів на liveBinding.params/timeContext ОДНОГО
@@ -1938,8 +1956,14 @@ export default function AppBoundedCanvas() {
     if (!el.liveBinding) return null;
     const scope = collectFieldScope(el.id, snapshot);
     const hasParamScope = !!(scope.direction || scope.department || scope.doctorId || scope.hasHospital);
-    const hasTimeScope = !!(scope.year || scope.month || scope.week || scope.day);
-    if (!hasParamScope && !hasTimeScope) return null;
+    // "Є предок-поле цього kind-у" (а не "має значення") — навіть коли поле
+    // щойно ОЧИЩЕНО (fieldTimeValue знято, напр. повторним кліком на роком),
+    // timeContext цілі однаково треба перерахувати (прибрати застарілий
+    // ключ), а не мовчки лишити його висіти, доки хтось не підключить нове
+    // значення. Звичайний hasTimeScope (є значення) використовується лише
+    // для params нижче, де такої проблеми немає.
+    const hasAnyTimeField = scope.hasYearField || scope.hasMonthField || scope.hasWeekField || scope.hasDayField;
+    if (!hasParamScope && !hasAnyTimeField) return null;
 
     let nextParams = el.liveBinding.params;
     if (hasParamScope) {
@@ -1956,12 +1980,29 @@ export default function AppBoundedCanvas() {
     }
 
     let nextTimeContext = el.timeContext;
-    if (hasTimeScope) {
-      nextTimeContext = { ...el.timeContext };
-      if (scope.year) nextTimeContext.year = scope.year;
-      if (scope.month) nextTimeContext.month = scope.month;
-      if (scope.week) nextTimeContext.week = scope.week;
-      if (scope.day) nextTimeContext.day = scope.day;
+    if (hasAnyTimeField) {
+      // Кожен ключ керується НЕЗАЛЕЖНО і лише якщо для нього є свій предок-
+      // поле: значення пишеться, коли поле заповнене, і АКТИВНО прибирається
+      // (delete, не просто "не чіпати"), коли предок є, але зараз порожній —
+      // інакше картка, вкладена в Поле:Рік→Поле:Місяць, після очищення обох
+      // полів і далі показувала б останнє закешоване значення назавжди.
+      nextTimeContext = { ...(el.timeContext ?? {}) };
+      if (scope.hasYearField) {
+        if (scope.year) nextTimeContext.year = scope.year;
+        else delete nextTimeContext.year;
+      }
+      if (scope.hasMonthField) {
+        if (scope.month) nextTimeContext.month = scope.month;
+        else delete nextTimeContext.month;
+      }
+      if (scope.hasWeekField) {
+        if (scope.week) nextTimeContext.week = scope.week;
+        else delete nextTimeContext.week;
+      }
+      if (scope.hasDayField) {
+        if (scope.day) nextTimeContext.day = scope.day;
+        else delete nextTimeContext.day;
+      }
     }
 
     if (nextParams === el.liveBinding.params && nextTimeContext === el.timeContext) return null;
@@ -2078,6 +2119,25 @@ export default function AppBoundedCanvas() {
       // пігулок так само скидається в "нічого не натиснуто" нижче.
       const isReclick = !!sourceEl.groupExclusive && sourceEl.isPressed === true;
 
+      // Вимкнення саме РОКУ (повторний клік) скидає ввесь часовий контекст
+      // цілі, а не лише ключ "year": місяць/тиждень/день без року — стан,
+      // який бекенд не вміє порахувати (RPC грануляція завжди рахує
+      // місяць/день У МЕЖАХ конкретного року, "місяць за всі роки" не
+      // підтримується), тож лишати їх висіти після зняття року показало б
+      // "—" замість очікуваних загальних показників за весь період.
+      // Вимкнення місяця/тижня/дня — навпаки, чіпає лише свій власний ключ:
+      // "рік" сам собою лишається коректним, повноцінним станом.
+      const nextContextFor = (
+        prevContext: NonNullable<CanvasElement["timeContext"]>,
+        unit: "year" | "month" | "week" | "day"
+      ): NonNullable<CanvasElement["timeContext"]> => {
+        if (isReclick && unit === "year") return {};
+        const next = { ...prevContext };
+        if (isReclick) delete next[unit];
+        else next[unit] = clickValue;
+        return next;
+      };
+
       // Цілі з liveBinding — timeContext НАКОПИЧУЄТЬСЯ (рік і місяць
       // підключаються окремими лініями, обидва потрібні одночасно, щоб
       // побудувати "2026-03"), а не заміняється, як у звичайних цілей
@@ -2097,9 +2157,7 @@ export default function AppBoundedCanvas() {
         const target = elements.find((item) => item.id === toId);
         if (!target?.liveBinding) return;
         const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
-        const nextContext = { ...(target.timeContext ?? {}) };
-        if (isReclick) delete nextContext[unit];
-        else nextContext[unit] = clickValue;
+        const nextContext = nextContextFor(target.timeContext ?? {}, unit);
         liveFetches.push({ targetId: target.id, binding: target.liveBinding, nextContext });
       });
 
@@ -2112,10 +2170,36 @@ export default function AppBoundedCanvas() {
           const target = next[targetIdx];
 
           if (target.liveBinding) {
-            const nextContext = { ...(target.timeContext ?? {}) };
-            if (isReclick) delete nextContext[unit];
-            else nextContext[unit] = clickValue;
+            const nextContext = nextContextFor(target.timeContext ?? {}, unit);
             next[targetIdx] = { ...target, timeContext: nextContext };
+
+            // Повний скид (клік на РОЦІ, коли до тієї самої цілі підключені
+            // ще й місяць/тиждень/день) — пігулки цих одиниць мають
+            // візуально розпресуватись РАЗОМ із рештою фільтра. Без цього
+            // timeContext цілі вже порожній (показує загальні дані), а
+            // пігулка місяця й далі виглядає натиснутою — виглядає так,
+            // ніби нічого не скинулось, хоча дані вже коректні.
+            // Лише при ПОВНОМУ скиді (nextContext порожній — isReclick на
+            // "рік"): звичайна зміна року (клік на ІНШИЙ рік, місяць має
+            // лишитись активним) сюди не заходить.
+            // Шукаємо НЕ через граф зв'язків (fromId зв'язку може вказувати
+            // і на цілий рядок-контейнер, і на окрему пігулку — залежно як
+            // саме її підключили через "🔗 Зв'язки"), а напряму за
+            // значенням: яке timeSourceUnit-значення щойно було в
+            // timeContext цілі — та сама пігулка (за unit і content) у
+            // натиснутому стані розпресовується, хай де вона на полотні.
+            if (Object.keys(nextContext).length === 0) {
+              const prevContext = target.timeContext ?? {};
+              (["month", "week", "day"] as const).forEach((otherUnit) => {
+                const prevValue = prevContext[otherUnit];
+                if (prevValue === undefined) return;
+                for (let i = 0; i < next.length; i++) {
+                  if (next[i].isPressed && next[i].timeSourceUnit === otherUnit && next[i].content === prevValue) {
+                    next[i] = { ...next[i], isPressed: false };
+                  }
+                }
+              });
+            }
           } else if (target.isBadgeYearField && unit !== "year") {
             // Джерело місяця/тижня/дня, підключене до поля-РОКУ бейджа — не
             // дописується в сам рік: рік стискається й підіймається вгору,
@@ -2275,8 +2359,20 @@ export default function AppBoundedCanvas() {
         "set-day": "day",
       };
       const UNIT_LABELS: Record<string, string> = { year: "Рік", month: "Місяць", week: "День тижня", day: "День" };
+      const placeholderFor = (unit: string) => `📅 ${UNIT_LABELS[unit]} (не підключено — приєднай через 🔗 Зв'язки)`;
+
+      // Повторний клік на ВЖЕ активній пігулці групи — та сама семантика, що
+      // й для прямого set-year/set-month на "📊 Картку КПІ" вище (isReclick
+      // там), лише тут ціль — Поле, не картка з liveBinding.
+      const isReclick = !!sourceEl.groupExclusive && sourceEl.isPressed === true;
 
       const patchesById = new Map<number, Partial<CanvasElement>>();
+      // Пігулки, які треба розпресувати ВІЗУАЛЬНО (окремо від патчів полів):
+      // коли рік скидається каскадом, вкладені місяць/тиждень/день теж
+      // скидаються — і джерела-пігулки цих одиниць, якщо вони зараз
+      // натиснуті, мають перестати виглядати активними.
+      const pillsToUnpress: { unit: string; value: string }[] = [];
+
       fieldTargetActions.forEach(({ toId, action }) => {
         const target = elements.find((item) => item.id === toId);
         if (!target || target.fieldKind !== kindForAction[action]) return;
@@ -2289,8 +2385,33 @@ export default function AppBoundedCanvas() {
           const doctorId = sourceEl.linkKey ?? clickValue;
           patchesById.set(toId, { fieldDoctorId: doctorId, fieldDoctorLabel: clickValue, content: `👨‍⚕️ Лікар: ${clickValue}` });
         } else {
-          const unit = action.replace("set-", "");
-          patchesById.set(toId, { fieldTimeValue: clickValue, content: `📅 ${UNIT_LABELS[unit]}: ${clickValue}` });
+          const unit = action.replace("set-", "") as "year" | "month" | "week" | "day";
+          if (isReclick) {
+            // Повторний клік — знімаємо значення поля, а не перезаписуємо
+            // його тим самим: без цього "Поле: Рік" неможливо було повернути
+            // в "не підключено", клік завжди лишав його заповненим.
+            patchesById.set(toId, { fieldTimeValue: undefined, content: placeholderFor(unit) });
+            if (unit === "year") {
+              // Рік — найзовнішня одиниця: скидаємо ще й УСІ вкладені в це
+              // поле місяць/тиждень/день (той самий принцип, що й у прямому
+              // set-year на картку — без року вони не мають сенсу, бекенд не
+              // рахує "місяць за всі роки"). Каскадом донизу, не лише прямі
+              // діти — Поле:Місяць може лежати глибше через Поле:Відділення.
+              getDescendantIds(toId, elements).forEach((descId) => {
+                const desc = elements.find((item) => item.id === descId);
+                if (!desc) return;
+                if (
+                  (desc.fieldKind === "month" || desc.fieldKind === "week" || desc.fieldKind === "day") &&
+                  desc.fieldTimeValue
+                ) {
+                  pillsToUnpress.push({ unit: desc.fieldKind, value: desc.fieldTimeValue });
+                  patchesById.set(descId, { fieldTimeValue: undefined, content: placeholderFor(desc.fieldKind) });
+                }
+              });
+            }
+          } else {
+            patchesById.set(toId, { fieldTimeValue: clickValue, content: `📅 ${UNIT_LABELS[unit]}: ${clickValue}` });
+          }
         }
       });
 
@@ -2305,7 +2426,15 @@ export default function AppBoundedCanvas() {
         // виклику).
         const nextElements = elements.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
         setElements((prev) => {
-          const next = prev.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
+          const patched = prev.map((el) => (patchesById.has(el.id) ? { ...el, ...patchesById.get(el.id)! } : el));
+          const next =
+            pillsToUnpress.length === 0
+              ? patched
+              : patched.map((el) =>
+                  el.isPressed && pillsToUnpress.some((p) => p.unit === el.timeSourceUnit && p.value === el.content)
+                    ? { ...el, isPressed: false }
+                    : el
+                );
           saveToHistory(pages, next);
           return next;
         });
@@ -5907,16 +6036,6 @@ export default function AppBoundedCanvas() {
     setSelectedIds([pillsBoxId]);
   };
 
-  // "⏰ Часовий блок" — самостійний, НЕ прив'язаний до жодної конкретної
-  // картки об'єкт (на відміну від handleAddTimeSourceToSelectedCard вище,
-  // якому обов'язково потрібна вже виділена "📊 Картка КПІ"): 4 незалежні
-  // рядки пігулок (Рік/Місяць/День тижня/День), кожен — готове часове
-  // джерело (timeSourceUnit). Додається ОДИН РАЗ на сторінку; "приєднання"
-  // довільних об'єктів до нього — це вже наявний, нічим не змінений
-  // механізм "🔗 Зв'язки" (set-year/set-month/set-week/set-day): обираєш
-  // потрібний рядок як джерело, ціль — будь-який елемент (картку, чи одразу
-  // цілий контейнер — каскад успадкування зв'язків у runConnectionActions
-  // сам донесе підключення до всього вкладеного в ціль).
   const TIME_UNIT_ROW_LABELS: Record<"year" | "month" | "week" | "day", string> = {
     year: "Рік",
     month: "Місяць",
@@ -5924,85 +6043,34 @@ export default function AppBoundedCanvas() {
     day: "День",
   };
 
-  const handleAddTimeBlock = () => {
+  // "⏰ Блок: Рік/Місяць/День тижня/День" — ОКРЕМА кнопка й окремий блок на
+  // КОЖНУ одиницю (не 4 ряди разом в одному спільному wrapper-і, як було
+  // раніше) — кожен виклик додає лише ОДИН незалежний блок з пігулками
+  // однієї одиниці. Toggle зі скиданням на повторному кліку — вже наявний,
+  // нічим не змінений глобальний механізм isReclick у runConnectionActions,
+  // тут нічого додаткового не потрібно (1:1 з togglefiltersexample.tsx).
+  const handleAddTimeBlock = (unit: "year" | "month" | "week" | "day") => {
     const baseId = Date.now();
     const pillGap = 8;
     const pillHeight = 30;
     const captionHeight = 16;
     const captionGap = 2;
-    const rowGapY = 10;
-    const units: ("year" | "month" | "week" | "day")[] = ["year", "month", "week", "day"];
 
-    let rowY = 0;
-    let maxWidth = 0;
-    const children: CanvasElement[] = [];
+    const values = TIME_UNIT_PILL_VALUES[unit];
+    const pillWidths = values.map((v) => Math.max(60, Math.round(v.length * 9 + 32)));
+    const rowWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
+    const wrapperWidth = rowWidth + 12;
+    const wrapperHeight = captionHeight + captionGap + pillHeight + 12;
 
-    units.forEach((unit, rowIndex) => {
-      const values = TIME_UNIT_PILL_VALUES[unit];
-      const pillWidths = values.map((v) => Math.max(60, Math.round(v.length * 9 + 32)));
-      const rowWidth = pillWidths.reduce((sum, w) => sum + w, 0) + pillGap * (pillWidths.length - 1);
-      maxWidth = Math.max(maxWidth, rowWidth);
-
-      const rowBoxId = baseId + rowIndex * 1000 + 1;
-      const captionId = baseId + rowIndex * 1000 + 2;
-
-      const captionEl: CanvasElement = {
-        ...buildComplexObjectBase(captionId, TIME_UNIT_ROW_LABELS[unit]),
-        type: "text",
-        width: rowWidth,
-        height: captionHeight,
-        x: 0,
-        y: rowY,
-        fontSize: 11,
-        textColor: "#64748b",
-        bgOpacity: 0,
-        padding: 0,
-        parentId: baseId,
-      };
-
-      const rowBox: CanvasElement = {
-        ...buildComplexObjectBase(rowBoxId, ""),
-        type: "block",
-        width: rowWidth,
-        height: pillHeight,
-        x: 0,
-        y: rowY + captionHeight + captionGap,
-        parentId: baseId,
-        customBgColor: "#ffffff",
-        bgOpacity: 0,
-        padding: 0,
-        borderRadius: 0,
-      };
-
-      let pillX = 0;
-      const pills: CanvasElement[] = values.map((label, i) => {
-        const el: CanvasElement = {
-          ...buildComplexObjectBase(rowBoxId + 100 + i, label),
-          ...PILL_STYLE_DEFAULTS,
-          width: pillWidths[i],
-          height: pillHeight,
-          x: pillX,
-          y: 0,
-          parentId: rowBoxId,
-          content: label,
-          timeSourceUnit: unit,
-        };
-        pillX += pillWidths[i] + pillGap;
-        return el;
-      });
-
-      children.push(captionEl, rowBox, ...pills);
-      rowY += captionHeight + captionGap + pillHeight + rowGapY;
-    });
-
-    const totalHeight = rowY - rowGapY;
-    const freePos = findFreePosition(forcedParentId, maxWidth, totalHeight);
+    const freePos = findFreePosition(forcedParentId, wrapperWidth, wrapperHeight);
+    const rowBoxId = baseId + 1;
+    const captionId = baseId + 2;
 
     const wrapper: CanvasElement = {
       ...buildComplexObjectBase(baseId, ""),
       type: "block",
-      width: maxWidth,
-      height: totalHeight,
+      width: wrapperWidth,
+      height: wrapperHeight,
       x: freePos.x,
       y: freePos.y,
       parentId: forcedParentId,
@@ -6012,12 +6080,60 @@ export default function AppBoundedCanvas() {
       padding: 6,
     };
 
-    updateElementsAndHistory([...elements, wrapper, ...children]);
+    const captionEl: CanvasElement = {
+      ...buildComplexObjectBase(captionId, TIME_UNIT_ROW_LABELS[unit]),
+      type: "text",
+      width: rowWidth,
+      height: captionHeight,
+      x: 0,
+      y: 0,
+      fontSize: 11,
+      textColor: "#64748b",
+      bgOpacity: 0,
+      padding: 0,
+      parentId: baseId,
+    };
 
-    // НЕ handleSelectElement(id) — та сама причина, що й у
-    // handleAddHierarchyField: замикання "elements" тут ще старе.
+    const rowBox: CanvasElement = {
+      ...buildComplexObjectBase(rowBoxId, ""),
+      type: "block",
+      width: rowWidth,
+      height: pillHeight,
+      x: 0,
+      y: captionHeight + captionGap,
+      parentId: baseId,
+      customBgColor: "#ffffff",
+      bgOpacity: 0,
+      padding: 0,
+      borderRadius: 0,
+    };
+
+    let pillX = 0;
+    const pills: CanvasElement[] = values.map((label, i) => {
+      const el: CanvasElement = {
+        ...buildComplexObjectBase(rowBoxId + 100 + i, label),
+        ...PILL_STYLE_DEFAULTS,
+        width: pillWidths[i],
+        height: pillHeight,
+        x: pillX,
+        y: 0,
+        parentId: rowBoxId,
+        content: label,
+        timeSourceUnit: unit,
+      };
+      pillX += pillWidths[i] + pillGap;
+      return el;
+    });
+
+    updateElementsAndHistory([...elements, wrapper, captionEl, rowBox, ...pills]);
+
+    // НЕ setForcedParentId(wrapper.id) — на відміну від "Поля ієрархії"
+    // (де самé вкладення в щойно додане поле — очікувана поведінка),
+    // кожен виклик тут створює ПОВНІСТЮ самостійний блок: наступний доданий
+    // блок іншої одиниці (чи будь-який інший пресет) не повинен випадково
+    // опинитись УСЕРЕДИНІ щойно доданого, лише тому, що forcedParentId
+    // лишився вказувати на нього.
     setSelectedIds([wrapper.id]);
-    setForcedParentId(wrapper.id);
   };
 
   // "📅→📅 Рік → Місяць (каскад)" (банер "🔗 Зв'язки" для виділеної живої
@@ -9342,12 +9458,35 @@ export default function AppBoundedCanvas() {
                   onSelect: () => handleAddHierarchyField("day"),
                 },
                 {
-                  id: "time-block",
-                  label: "⏰ Часовий блок (готові пігулки-джерела)",
+                  id: "time-block-year",
+                  label: "⏰ Блок: Рік (пігулки-джерело)",
                   description:
-                    "4 незалежні рядки пігулок — Рік / Місяць / День тижня / День — готові РЕАЛЬНІ джерела для «🔗 Зв'язки» (кожна пігулка — конкретне значення з реальних даних). Приєднуй до «Поля» вище чи напряму до карток.",
+                    "Окремий блок з пігулками років — готове РЕАЛЬНЕ джерело для «🔗 Зв'язки». Повторний клік на активній пігулці скидає її. Приєднуй до «Поля» вище чи напряму до карток.",
                   color: "amber",
-                  onSelect: () => handleAddTimeBlock(),
+                  onSelect: () => handleAddTimeBlock("year"),
+                },
+                {
+                  id: "time-block-month",
+                  label: "⏰ Блок: Місяць (пігулки-джерело)",
+                  description:
+                    "Окремий блок з пігулками місяців — те саме, що й блок «Рік», лише інша одиниця. Незалежний від блоку років — не вкладений у нього.",
+                  color: "amber",
+                  onSelect: () => handleAddTimeBlock("month"),
+                },
+                {
+                  id: "time-block-week",
+                  label: "⏰ Блок: День тижня (пігулки-джерело)",
+                  description:
+                    "Окремий блок з пігулками днів тижня — лише мітка (RPC grain=week — це ISO-тиждень, а не день тижня, див. «Поле: День тижня» вище).",
+                  color: "amber",
+                  onSelect: () => handleAddTimeBlock("week"),
+                },
+                {
+                  id: "time-block-day",
+                  label: "⏰ Блок: День (пігулки-джерело)",
+                  description: "Окремий блок з пігулками чисел 1–31 — те саме, що й блок «Рік», лише інша одиниця.",
+                  color: "amber",
+                  onSelect: () => handleAddTimeBlock("day"),
                 },
               ];
 
